@@ -1,0 +1,10 @@
+{
+  "name": "cine-elo-build",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "esbuild": "^0.21.5",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}
