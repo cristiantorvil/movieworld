@@ -181,6 +181,7 @@ function CineEloApp() {
         updatedCount++;
         return {
           ...m,
+          rating: existing.rating != null ? existing.rating : m.rating,
           elo: existing.elo,
           comparisons: existing.games || 0,
           wins: existing.wins || 0,
@@ -198,6 +199,7 @@ function CineEloApp() {
           genre: sm.genre || "",
           poster: sm.poster || "",
           tmdbId: sm.tmdbId || "",
+          rating: sm.rating,
           elo:
             sm.elo != null
               ? sm.elo
@@ -390,18 +392,25 @@ function CineEloApp() {
             SEED_MOVIES.map((s) => [s[0], s])
           );
           const migrated = saved.map((m) => {
-            if (m.tmdbId && m.poster !== undefined && m.director !== undefined) {
+            const seedEntry = seedByTitle.get(m.title);
+            const hasRating = m.rating !== undefined;
+            if (
+              m.tmdbId &&
+              m.poster !== undefined &&
+              m.director !== undefined &&
+              hasRating
+            ) {
               return m;
             }
-            const seedEntry = seedByTitle.get(m.title);
-            if (!seedEntry) return m;
-            const [, , , , sDirector, sGenre, sPoster, sTmdbId] = seedEntry;
+            if (!seedEntry) return hasRating ? m : { ...m, rating: null };
+            const [, , sRating, , sDirector, sGenre, sPoster, sTmdbId] = seedEntry;
             return {
               ...m,
               director: m.director || sDirector || "",
               genre: m.genre || sGenre || "",
               poster: m.poster || sPoster || "",
               tmdbId: m.tmdbId || sTmdbId || "",
+              rating: hasRating ? m.rating : sRating,
             };
           });
           setMovies(migrated);
@@ -433,6 +442,7 @@ function CineEloApp() {
               genre: genre || "",
               poster: poster || "",
               tmdbId: tmdbId || "",
+              rating: existing && existing.rating != null ? existing.rating : rating,
               elo:
                 existing && existing.elo != null
                   ? existing.elo
@@ -456,6 +466,7 @@ function CineEloApp() {
               genre: sm.genre || "",
               poster: sm.poster || "",
               tmdbId: sm.tmdbId || "",
+              rating: sm.rating,
               elo:
                 sm.elo != null
                   ? sm.elo
@@ -769,7 +780,8 @@ function CineEloApp() {
 
   const duelPool = useMemo(() => {
     if (!movies) return [];
-    let pool = movies;
+    // Las pelis con rating 0 (no vistas, solo en watchlist) no compiten.
+    let pool = movies.filter((m) => Number(m.rating) !== 0);
 
     const effectiveMax =
       duelRankMax > 0 ? Math.min(duelRankMax, movies.length) : movies.length;
@@ -1079,6 +1091,7 @@ function CineEloApp() {
       genre: genre || "",
       poster: poster || "",
       tmdbId: tmdbId || "",
+      rating,
       elo: computeInitialElo(rating, plays),
       comparisons: 0,
       wins: 0,
