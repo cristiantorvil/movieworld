@@ -64,6 +64,9 @@ function CineEloApp() {
   const [directorQuery, setDirectorQuery] = useState("");
   const [directorDropdownOpen, setDirectorDropdownOpen] = useState(false);
   const [duelGenre, setDuelGenre] = useState("");
+  const [onlyUndueled, setOnlyUndueled] = useState(false);
+  const [winnerStaysMode, setWinnerStaysMode] = useState(false);
+  const pendingChampionRef = useRef(null);
   const [duelRankMin, setDuelRankMin] = useState(1);
   const [duelRankMax, setDuelRankMax] = useState(0); // 0 = sin tope
   const [duelYearMin, setDuelYearMin] = useState(null);
@@ -104,6 +107,24 @@ function CineEloApp() {
     const next = !quickMode;
     setQuickMode(next);
     window.storage.set("cine-elo-quick-mode", String(next), false).catch(() => {});
+  };
+
+  // cargar preferencia de "ganador se mantiene"
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.storage.get("cine-elo-winner-stays", false);
+        if (res && res.value) setWinnerStaysMode(res.value === "true");
+      } catch (e) {
+        // default false
+      }
+    })();
+  }, []);
+
+  const toggleWinnerStays = () => {
+    const next = !winnerStaysMode;
+    setWinnerStaysMode(next);
+    window.storage.set("cine-elo-winner-stays", String(next), false).catch(() => {});
   };
 
   // cargar tamaño de duelo guardado
@@ -182,6 +203,7 @@ function CineEloApp() {
         return {
           ...m,
           rating: existing.rating != null ? existing.rating : m.rating,
+          plays: existing.plays != null ? existing.plays : m.plays,
           elo: existing.elo,
           comparisons: existing.games || 0,
           wins: existing.wins || 0,
@@ -200,6 +222,7 @@ function CineEloApp() {
           poster: sm.poster || "",
           tmdbId: sm.tmdbId || "",
           rating: sm.rating,
+          plays: sm.plays,
           elo:
             sm.elo != null
               ? sm.elo
@@ -394,16 +417,24 @@ function CineEloApp() {
           const migrated = saved.map((m) => {
             const seedEntry = seedByTitle.get(m.title);
             const hasRating = m.rating !== undefined;
+            const hasPlays = m.plays !== undefined;
             if (
               m.tmdbId &&
               m.poster !== undefined &&
               m.director !== undefined &&
-              hasRating
+              hasRating &&
+              hasPlays
             ) {
               return m;
             }
-            if (!seedEntry) return hasRating ? m : { ...m, rating: null };
-            const [, , sRating, , sDirector, sGenre, sPoster, sTmdbId] = seedEntry;
+            if (!seedEntry) {
+              return {
+                ...m,
+                rating: hasRating ? m.rating : null,
+                plays: hasPlays ? m.plays : null,
+              };
+            }
+            const [, , sRating, sPlays, sDirector, sGenre, sPoster, sTmdbId] = seedEntry;
             return {
               ...m,
               director: m.director || sDirector || "",
@@ -411,6 +442,7 @@ function CineEloApp() {
               poster: m.poster || sPoster || "",
               tmdbId: m.tmdbId || sTmdbId || "",
               rating: hasRating ? m.rating : sRating,
+              plays: hasPlays ? m.plays : sPlays,
             };
           });
           setMovies(migrated);
@@ -443,6 +475,7 @@ function CineEloApp() {
               poster: poster || "",
               tmdbId: tmdbId || "",
               rating: existing && existing.rating != null ? existing.rating : rating,
+              plays: existing && existing.plays != null ? existing.plays : plays,
               elo:
                 existing && existing.elo != null
                   ? existing.elo
@@ -467,6 +500,7 @@ function CineEloApp() {
               poster: sm.poster || "",
               tmdbId: sm.tmdbId || "",
               rating: sm.rating,
+              plays: sm.plays,
               elo:
                 sm.elo != null
                   ? sm.elo
@@ -522,14 +556,14 @@ function CineEloApp() {
     return candidates[candidates.length - 1];
   };
 
-  const pickContenders = useCallback((list, size) => {
+  const pickContenders = useCallback((list, size, keepId) => {
     if (!list || list.length < 2) {
       setPair(null);
       return;
     }
     const n = Math.min(size, list.length);
-    const first = weightedPick(list, [], null);
-    const chosen = [first];
+    const champion = keepId ? list.find((m) => m.id === keepId) : null;
+    const chosen = champion ? [champion] : [weightedPick(list, [], null)];
     while (chosen.length < n) {
       const anchorElo =
         chosen.reduce((s, m) => s + m.elo, 0) / chosen.length;
@@ -818,6 +852,9 @@ function CineEloApp() {
             .includes(duelGenre)
       );
     }
+    if (onlyUndueled) {
+      pool = pool.filter((m) => m.comparisons === 0);
+    }
     return pool;
   }, [
     movies,
@@ -828,12 +865,15 @@ function CineEloApp() {
     duelYearMax,
     decadeBounds,
     duelDirector,
+    onlyUndueled,
     duelGenre,
   ]);
 
   useEffect(() => {
     if (duelPool && duelPool.length >= 2 && !pair) {
-      pickContenders(duelPool, duelSize);
+      const keepId = pendingChampionRef.current;
+      pendingChampionRef.current = null;
+      pickContenders(duelPool, duelSize, keepId);
     }
     if (duelPool && duelPool.length < 2) {
       setPair(null);
@@ -921,6 +961,10 @@ function CineEloApp() {
     const winner = pair.find((m) => m.id === winnerId);
     const losers = pair.filter((m) => m.id !== winnerId);
     if (!winner) return;
+
+    // Si "ganador se mantiene" está activo, el próximo duelo arranca con
+    // este mismo ganador en vez de armarse desde cero.
+    pendingChampionRef.current = winnerStaysMode ? winner.id : null;
 
     // Guardamos el estado previo para poder deshacer este duelo.
     const prevMovies = movies;
@@ -1092,6 +1136,7 @@ function CineEloApp() {
       poster: poster || "",
       tmdbId: tmdbId || "",
       rating,
+      plays,
       elo: computeInitialElo(rating, plays),
       comparisons: 0,
       wins: 0,
@@ -1117,6 +1162,7 @@ function CineEloApp() {
   const hasActiveFilters =
     duelDirector ||
     duelGenre ||
+    onlyUndueled ||
     duelRankMin > 1 ||
     (duelRankMax > 0 && movies && duelRankMax < movies.length) ||
     (duelYearMin != null && duelYearMin > decadeBounds[0]) ||
@@ -1218,6 +1264,15 @@ function CineEloApp() {
                     onClick={toggleQuickMode}
                   >
                     ⚡ Modo rápido{quickMode ? " · ON" : ""}
+                  </button>
+                  <button
+                    className={
+                      "quick-toggle" + (winnerStaysMode ? " active" : "")
+                    }
+                    onClick={toggleWinnerStays}
+                    title="El ganador se queda a enfrentar rivales nuevos"
+                  >
+                    👑 Ganador se mantiene{winnerStaysMode ? " · ON" : ""}
                   </button>
                   <button
                     className="undo-toggle"
@@ -1432,6 +1487,18 @@ function CineEloApp() {
                       </div>
                     </label>
 
+                    <label className="filter-label filter-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={onlyUndueled}
+                        onChange={(e) => {
+                          setOnlyUndueled(e.target.checked);
+                          setPair(null);
+                        }}
+                      />
+                      Solo pelis sin duelos
+                    </label>
+
                     {hasActiveFilters && (
                       <button
                         className="skip"
@@ -1439,6 +1506,7 @@ function CineEloApp() {
                           setDuelDirector("");
                           setDirectorQuery("");
                           setDuelGenre("");
+                          setOnlyUndueled(false);
                           setDuelRankRange(1, 0);
                           setDuelYearRange(decadeBounds[0], decadeBounds[1]);
                         }}
@@ -2286,6 +2354,7 @@ function RankingList({ ranking, filterText, globalRanking }) {
                 </span>
                 <span className="rank-meta">
                   {m.comparisons} comparaciones · {m.wins} ganadas
+                  {m.plays ? ` · vista ${m.plays}x` : ""}
                 </span>
               </div>
               <span className="rank-elo">{m.elo}</span>
@@ -2504,6 +2573,18 @@ function StyleSheet() {
         letter-spacing: 0.08em;
         text-transform: uppercase;
         color: #8A8D98;
+      }
+      .filter-checkbox {
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+      }
+      .filter-checkbox input {
+        width: 15px;
+        height: 15px;
+        accent-color: #F2C14E;
+        cursor: pointer;
       }
       .filter-select {
         background: #22242E;
