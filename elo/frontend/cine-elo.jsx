@@ -117,6 +117,67 @@ function computeInitialElo(rating, plays) {
   return Math.round(START_ELO + ratingBonus + playsBonus);
 }
 
+// Pisa los movies locales con lo que haya en el Sheet (progreso + metadata
+// de TMDB), y agrega las que estén en el Sheet pero no localmente. Se usa
+// tanto al abrir la app (para no quedar pegado con datos viejos de otro
+// dispositivo/navegador) como en el botón manual "restaurar desde el Sheet".
+function mergeSheetIntoMovies(localMovies, sheetMovies) {
+  const sheetMap = new Map(sheetMovies.map((m) => [m.title, m]));
+  const localTitles = new Set(localMovies.map((m) => m.title));
+  let updatedCount = 0;
+
+  const next = localMovies.map((m) => {
+    const existing = sheetMap.get(m.title);
+    if (!existing || existing.elo == null) return m;
+    updatedCount++;
+    return {
+      ...m,
+      director: existing.director || m.director,
+      genre: existing.genre || m.genre,
+      poster: existing.poster || m.poster,
+      tmdbId: existing.tmdbId || m.tmdbId,
+      country: existing.country || m.country,
+      originalLanguage: existing.originalLanguage || m.originalLanguage,
+      runtime: existing.runtime || m.runtime,
+      overview: existing.overview || m.overview,
+      collection: existing.collection || m.collection,
+      productionCompanies: existing.productionCompanies || m.productionCompanies,
+      rating: existing.rating != null ? existing.rating : m.rating,
+      plays: existing.plays != null ? existing.plays : m.plays,
+      elo: existing.elo,
+      comparisons: existing.games || 0,
+      wins: existing.wins || 0,
+    };
+  });
+
+  const newOnes = [];
+  sheetMovies.forEach((sm) => {
+    if (!sm.title || localTitles.has(sm.title)) return;
+    newOnes.push({
+      id: uid(),
+      title: sm.title,
+      year: sm.year || undefined,
+      director: sm.director || "",
+      genre: sm.genre || "",
+      poster: sm.poster || "",
+      tmdbId: sm.tmdbId || "",
+      country: sm.country || "",
+      originalLanguage: sm.originalLanguage || "",
+      runtime: sm.runtime || null,
+      overview: sm.overview || "",
+      collection: sm.collection || "",
+      productionCompanies: sm.productionCompanies || "",
+      rating: sm.rating,
+      plays: sm.plays,
+      elo: sm.elo != null ? sm.elo : computeInitialElo(sm.rating, sm.plays),
+      comparisons: sm.games || 0,
+      wins: sm.wins || 0,
+    });
+  });
+
+  return { merged: [...next, ...newOnes], updatedCount, newCount: newOnes.length };
+}
+
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Archivo:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap');`;
 
 function Sprockets() {
@@ -392,67 +453,13 @@ function CineEloApp() {
         setRestoringFromSheet(false);
         return;
       }
-      const sheetMap = new Map(pullData.movies.map((m) => [m.title, m]));
-      const localTitles = new Set(movies.map((m) => m.title));
-      let updatedCount = 0;
+      const { merged, updatedCount, newCount } = mergeSheetIntoMovies(movies, pullData.movies);
 
-      const next = movies.map((m) => {
-        const existing = sheetMap.get(m.title);
-        if (!existing || existing.elo == null) return m;
-        updatedCount++;
-        return {
-          ...m,
-          director: existing.director || m.director,
-          genre: existing.genre || m.genre,
-          poster: existing.poster || m.poster,
-          tmdbId: existing.tmdbId || m.tmdbId,
-          country: existing.country || m.country,
-          originalLanguage: existing.originalLanguage || m.originalLanguage,
-          runtime: existing.runtime || m.runtime,
-          overview: existing.overview || m.overview,
-          collection: existing.collection || m.collection,
-          productionCompanies: existing.productionCompanies || m.productionCompanies,
-          rating: existing.rating != null ? existing.rating : m.rating,
-          plays: existing.plays != null ? existing.plays : m.plays,
-          elo: existing.elo,
-          comparisons: existing.games || 0,
-          wins: existing.wins || 0,
-        };
-      });
-
-      const newOnes = [];
-      pullData.movies.forEach((sm) => {
-        if (!sm.title || localTitles.has(sm.title)) return;
-        newOnes.push({
-          id: uid(),
-          title: sm.title,
-          year: sm.year || undefined,
-          director: sm.director || "",
-          genre: sm.genre || "",
-          poster: sm.poster || "",
-          tmdbId: sm.tmdbId || "",
-          country: sm.country || "",
-          originalLanguage: sm.originalLanguage || "",
-          runtime: sm.runtime || null,
-          overview: sm.overview || "",
-          collection: sm.collection || "",
-          productionCompanies: sm.productionCompanies || "",
-          rating: sm.rating,
-          plays: sm.plays,
-          elo:
-            sm.elo != null
-              ? sm.elo
-              : computeInitialElo(sm.rating, sm.plays),
-          comparisons: sm.games || 0,
-          wins: sm.wins || 0,
-        });
-      });
-
-      setMovies([...next, ...newOnes]);
+      setMovies(merged);
       setResult(null);
       setPair(null);
       setRestoreMsg(
-        `Listo: ${updatedCount} actualizadas, ${newOnes.length} películas nuevas agregadas desde el Sheet.`
+        `Listo: ${updatedCount} actualizadas, ${newCount} películas nuevas agregadas desde el Sheet.`
       );
     } catch (e) {
       setRestoreMsg("Hubo un error leyendo el Sheet. Probá de nuevo.");
@@ -675,7 +682,25 @@ function CineEloApp() {
               plays: hasPlays ? m.plays : sPlays,
             };
           });
-          setMovies(migrated);
+
+          // Sincronizamos con el Sheet ya al abrir, no solo cuando tocás
+          // "restaurar desde el Sheet" a mano — si no, un dispositivo/
+          // navegador que ya tenía algo guardado localmente se queda pegado
+          // con esos valores viejos para siempre, aunque el Sheet (la fuente
+          // real) haya cambiado desde otro lado.
+          try {
+            const pullRes = await fetch(`${DEFAULT_SYNC_URL}?action=pull`);
+            const pullData = await pullRes.json();
+            if (pullData && pullData.ok && Array.isArray(pullData.movies)) {
+              const { merged } = mergeSheetIntoMovies(migrated, pullData.movies);
+              setMovies(merged);
+            } else {
+              setMovies(migrated);
+            }
+          } catch (e) {
+            // sin conexión: seguimos con lo que había en local, como antes.
+            setMovies(migrated);
+          }
         } else {
           // Navegador sin progreso local: antes de arrancar de cero, intentamos
           // traer el progreso real desde el Sheet, para no pisarlo con valores
