@@ -575,10 +575,16 @@ function CineEloApp() {
             SEED_MOVIES.map((s) => [s[0], s])
           );
           const migrated = saved.map((m) => {
-            const seedEntry = seedByTitle.get(m.title);
+            // Guardas viejas (de antes del fix en el backend) pueden tener
+            // títulos numéricos (ej. "2046", "300") guardados como number en
+            // vez de string — cualquier .toLowerCase() sobre eso rompe la
+            // app entera. Se corrige acá una vez, para todas las pelis.
+            const title = String(m.title);
+            const seedEntry = seedByTitle.get(title);
             const hasRating = m.rating !== undefined;
             const hasPlays = m.plays !== undefined;
             if (
+              typeof m.title === "string" &&
               m.tmdbId &&
               m.poster !== undefined &&
               m.director !== undefined &&
@@ -590,6 +596,7 @@ function CineEloApp() {
             if (!seedEntry) {
               return {
                 ...m,
+                title,
                 rating: hasRating ? m.rating : null,
                 plays: hasPlays ? m.plays : null,
               };
@@ -597,6 +604,7 @@ function CineEloApp() {
             const [, , sRating, sPlays, sDirector, sGenre, sPoster, sTmdbId] = seedEntry;
             return {
               ...m,
+              title,
               director: m.director || sDirector || "",
               genre: m.genre || sGenre || "",
               poster: m.poster || sPoster || "",
