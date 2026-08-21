@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agregar película — Cine Elo</title>
+<style>
+  :root {
+    --bg: #101116;
+    --card: #181a21;
+    --card-border: #2a2d38;
+    --text: #EDEAE3;
+    --muted: #8A8D98;
+    --gold: #F2C14E;
+    --gold-text: #14151A;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 60px;
+  }
+  .wrap {
+    width: 100%;
+    max-width: 480px;
+  }
+  a.back {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 13px;
+  }
+  a.back:hover { color: var(--gold); }
+  header {
+    text-align: center;
+    margin: 20px 0 28px;
+  }
+  header h1 {
+    font-size: clamp(24px, 6vw, 32px);
+    margin: 0 0 6px;
+  }
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .field {
+    margin-bottom: 16px;
+  }
+  label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  input[type="text"], input[type="number"], select {
+    width: 100%;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    color: var(--text);
+    font-size: 15px;
+  }
+  input:focus, select:focus {
+    outline: none;
+    border-color: var(--gold);
+  }
+  .results {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .result-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 8px 12px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .result-item:hover, .result-item:focus {
+    border-color: var(--gold);
+  }
+  .result-item img {
+    width: 40px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #0b0c10;
+    flex-shrink: 0;
+  }
+  .result-item .meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .result-item .title { font-size: 14px; font-weight: 600; }
+  .result-item .year { font-size: 12px; color: var(--muted); }
+  .hint {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 8px;
+  }
+  .hint button {
+    background: none;
+    border: none;
+    color: var(--gold);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0;
+    text-decoration: underline;
+  }
+
+  .selected-card {
+    display: none;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 20px;
+    margin-top: 8px;
+  }
+  .selected-card.show { display: block; }
+  .selected-head {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+  .selected-head img {
+    width: 70px;
+    height: 105px;
+    object-fit: cover;
+    border-radius: 6px;
+    background: #0b0c10;
+    flex-shrink: 0;
+  }
+  .selected-head .meta h2 {
+    margin: 0 0 4px;
+    font-size: 17px;
+  }
+  .selected-head .meta p {
+    margin: 2px 0;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .row2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .btn-gold {
+    width: 100%;
+    background: var(--gold);
+    color: var(--gold-text);
+    border: none;
+    font-weight: 700;
+    font-size: 15px;
+    padding: 14px;
+    border-radius: 10px;
+    cursor: pointer;
+    margin-top: 18px;
+  }
+  .btn-gold:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .btn-ghost {
+    width: 100%;
+    background: none;
+    color: var(--muted);
+    border: 1px solid var(--card-border);
+    font-size: 13px;
+    padding: 10px;
+    border-radius: 10px;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  .status {
+    text-align: center;
+    font-size: 14px;
+    margin-top: 16px;
+    min-height: 20px;
+  }
+  .status.ok { color: #40C057; }
+  .status.err { color: #F03E3E; }
+
+  .recent {
+    margin-top: 32px;
+  }
+  .recent h3 {
+    font-size: 12px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0 0 10px;
+  }
+  .recent ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .recent li {
+    font-size: 13px;
+    color: var(--text);
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 8px 12px;
+  }
+  .recent li span {
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="../index.html">← MovieWorld</a>
+    <header>
+      <h1>🎬 Agregar película</h1>
+      <p>Buscá en TMDB y se guarda directo en la Sheet — aparece en Cine Elo la próxima vez que sincronices ahí.</p>
+    </header>
+
+    <div class="field">
+      <label for="search">Título</label>
+      <input type="text" id="search" placeholder="Ej. Stalker" autocomplete="off" />
+      <div class="results" id="results"></div>
+      <p class="hint" id="hint"></p>
+    </div>
+
+    <div class="selected-card" id="selectedCard">
+      <div class="selected-head">
+        <img id="selPoster" alt="" />
+        <div class="meta">
+          <h2 id="selTitle"></h2>
+          <p id="selDirector"></p>
+          <p id="selGenre"></p>
+          <p id="selCountry"></p>
+        </div>
+      </div>
+
+      <div class="row2">
+        <div class="field">
+          <label for="rating">Tu rating (opcional)</label>
+          <select id="rating">
+            <option value="">Sin ver / watchlist</option>
+            <option value="0.5">★ 0.5</option>
+            <option value="1">★ 1</option>
+            <option value="1.5">★ 1.5</option>
+            <option value="2">★ 2</option>
+            <option value="2.5">★ 2.5</option>
+            <option value="3">★ 3</option>
+            <option value="3.5">★ 3.5</option>
+            <option value="4">★ 4</option>
+            <option value="4.5">★ 4.5</option>
+            <option value="5">★ 5</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="plays">Veces vista</label>
+          <input type="number" id="plays" min="0" value="1" />
+        </div>
+      </div>
+
+      <button class="btn-gold" id="saveBtn">Guardar en la Sheet</button>
+      <button class="btn-ghost" id="cancelBtn">elegir otra</button>
+      <p class="status" id="status"></p>
+    </div>
+
+    <div class="recent" id="recentWrap" style="display:none;">
+      <h3>Agregadas en esta sesión</h3>
+      <ul id="recentList"></ul>
+    </div>
+  </div>
+
+<script>
+(function () {
+  var SYNC_URL = "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
+  var TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w200";
+  var START_ELO = 1200;
+
+  var searchInput = document.getElementById("search");
+  var resultsEl = document.getElementById("results");
+  var hintEl = document.getElementById("hint");
+  var selectedCard = document.getElementById("selectedCard");
+  var selPoster = document.getElementById("selPoster");
+  var selTitle = document.getElementById("selTitle");
+  var selDirector = document.getElementById("selDirector");
+  var selGenre = document.getElementById("selGenre");
+  var selCountry = document.getElementById("selCountry");
+  var ratingSel = document.getElementById("rating");
+  var playsInput = document.getElementById("plays");
+  var saveBtn = document.getElementById("saveBtn");
+  var cancelBtn = document.getElementById("cancelBtn");
+  var statusEl = document.getElementById("status");
+  var recentWrap = document.getElementById("recentWrap");
+  var recentList = document.getElementById("recentList");
+
+  var current = null; // detalles de TMDB de la peli elegida
+  var searchTimer = null;
+
+  function computeInitialElo(rating, plays) {
+    var r = typeof rating === "number" ? rating : 2.5;
+    var p = typeof plays === "number" ? plays : 1;
+    var ratingBonus = (r - 2.5) * 100;
+    var playsBonus = Math.min(p - 1, 10) * 10;
+    return Math.round(START_ELO + ratingBonus + playsBonus);
+  }
+
+  function clearResults() {
+    resultsEl.innerHTML = "";
+  }
+
+  function renderResults(results) {
+    clearResults();
+    if (!results.length) {
+      hintEl.innerHTML = "Sin resultados en TMDB. " +
+        '<button type="button" id="manualBtn">Agregar igual, a mano</button>';
+      document.getElementById("manualBtn").onclick = function () {
+        selectManual(searchInput.value.trim());
+      };
+      return;
+    }
+    hintEl.textContent = "";
+    results.forEach(function (r) {
+      var item = document.createElement("button");
+      item.type = "button";
+      item.className = "result-item";
+      var img = r.poster
+        ? '<img src="' + TMDB_POSTER_BASE + r.poster + '" alt="" />'
+        : '<img alt="" />';
+      item.innerHTML =
+        img +
+        '<span class="meta"><span class="title"></span><span class="year"></span></span>';
+      item.querySelector(".title").textContent = r.title;
+      item.querySelector(".year").textContent = r.year || "";
+      item.onclick = function () { selectFromSearch(r.tmdbId); };
+      resultsEl.appendChild(item);
+    });
+  }
+
+  function doSearch(query) {
+    if (!query || query.length < 2) {
+      clearResults();
+      hintEl.textContent = "";
+      return;
+    }
+    hintEl.textContent = "Buscando…";
+    fetch(SYNC_URL + "?action=tmdbSearch&query=" + encodeURIComponent(query))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.ok) renderResults(data.results || []);
+        else hintEl.textContent = "Error buscando en TMDB.";
+      })
+      .catch(function () {
+        hintEl.textContent = "No se pudo conectar con el backend.";
+      });
+  }
+
+  searchInput.addEventListener("input", function () {
+    clearTimeout(searchTimer);
+    var q = searchInput.value.trim();
+    searchTimer = setTimeout(function () { doSearch(q); }, 350);
+  });
+
+  function selectFromSearch(tmdbId) {
+    hintEl.textContent = "Cargando detalles…";
+    fetch(SYNC_URL + "?action=tmdbDetails&id=" + encodeURIComponent(tmdbId))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.ok) {
+          hintEl.textContent = "No se pudieron traer los detalles.";
+          return;
+        }
+        current = {
+          tmdbId: tmdbId,
+          title: data.title || searchInput.value.trim(),
+          year: data.year || "",
+          director: data.director || "",
+          genre: data.genre || "",
+          poster: data.poster || "",
+          country: data.country || "",
+          originalLanguage: data.originalLanguage || "",
+          runtime: data.runtime || "",
+          overview: data.overview || "",
+          collection: data.collection || "",
+          productionCompanies: data.productionCompanies || "",
+        };
+        showSelected();
+      })
+      .catch(function () {
+        hintEl.textContent = "No se pudo conectar con el backend.";
+      });
+  }
+
+  function selectManual(title) {
+    current = {
+      tmdbId: "",
+      title: title,
+      year: "",
+      director: "",
+      genre: "",
+      poster: "",
+      country: "",
+      originalLanguage: "",
+      runtime: "",
+      overview: "",
+      collection: "",
+      productionCompanies: "",
+    };
+    showSelected();
+  }
+
+  function showSelected() {
+    selPoster.src = current.poster
+      ? TMDB_POSTER_BASE + current.poster
+      : "";
+    selTitle.textContent = current.title + (current.year ? " (" + current.year + ")" : "");
+    selDirector.textContent = current.director || "Director desconocido";
+    selGenre.textContent = current.genre || "";
+    selCountry.textContent = current.country || "";
+    ratingSel.value = "";
+    playsInput.value = "1";
+    statusEl.textContent = "";
+    statusEl.className = "status";
+    selectedCard.classList.add("show");
+    selectedCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  cancelBtn.onclick = function () {
+    current = null;
+    selectedCard.classList.remove("show");
+    searchInput.value = "";
+    clearResults();
+    searchInput.focus();
+  };
+
+  saveBtn.onclick = function () {
+    if (!current) return;
+    var ratingVal = ratingSel.value ? Number(ratingSel.value) : 0;
+    var playsVal = ratingSel.value ? Math.max(Number(playsInput.value) || 1, 1) : 0;
+
+    var payload = {
+      title: current.title,
+      tmdbId: current.tmdbId,
+      year: current.year,
+      director: current.director,
+      genre: current.genre,
+      poster: current.poster,
+      country: current.country,
+      originalLanguage: current.originalLanguage,
+      runtime: current.runtime,
+      overview: current.overview,
+      collection: current.collection,
+      productionCompanies: current.productionCompanies,
+      elo: computeInitialElo(ratingVal, playsVal || 1),
+      games: 0,
+      wins: 0,
+      losses: 0,
+      ties: 0,
+    };
+
+    saveBtn.disabled = true;
+    statusEl.textContent = "Guardando…";
+    statusEl.className = "status";
+
+    fetch(SYNC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify([payload]),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        saveBtn.disabled = false;
+        if (data.ok) {
+          statusEl.textContent = "Guardada ✓";
+          statusEl.className = "status ok";
+          addToRecent(current.title, current.year);
+          setTimeout(function () {
+            current = null;
+            selectedCard.classList.remove("show");
+            searchInput.value = "";
+            clearResults();
+            searchInput.focus();
+          }, 700);
+        } else {
+          statusEl.textContent = "Error: " + (data.error || "desconocido");
+          statusEl.className = "status err";
+        }
+      })
+      .catch(function () {
+        saveBtn.disabled = false;
+        statusEl.textContent = "No se pudo conectar con el backend.";
+        statusEl.className = "status err";
+      });
+  };
+
+  function addToRecent(title, year) {
+    recentWrap.style.display = "block";
+    var li = document.createElement("li");
+    li.innerHTML = "🎬 " + title + " <span>" + (year || "") + "</span>";
+    recentList.insertBefore(li, recentList.firstChild);
+  }
+
+  searchInput.focus();
+})();
+</script>
+</body>
+</html>
