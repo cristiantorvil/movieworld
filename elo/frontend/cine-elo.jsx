@@ -178,6 +178,48 @@ function mergeSheetIntoMovies(localMovies, sheetMovies) {
   return { merged: [...next, ...newOnes], updatedCount, newCount: newOnes.length };
 }
 
+// TMDB guarda el idioma original como código ISO 639-1 (en, es, fr...).
+// Mapeamos los más comunes en el catálogo a nombre legible; lo que no esté
+// acá se muestra tal cual (código en mayúsculas) en vez de romper.
+const LANGUAGE_NAMES = {
+  en: "Inglés",
+  es: "Español",
+  fr: "Francés",
+  it: "Italiano",
+  de: "Alemán",
+  ja: "Japonés",
+  ko: "Coreano",
+  zh: "Chino (mandarín)",
+  cn: "Chino",
+  pt: "Portugués",
+  ru: "Ruso",
+  sv: "Sueco",
+  da: "Danés",
+  no: "Noruego",
+  fi: "Finlandés",
+  pl: "Polaco",
+  nl: "Neerlandés",
+  hi: "Hindi",
+  ar: "Árabe",
+  tr: "Turco",
+  he: "Hebreo",
+  cs: "Checo",
+  el: "Griego",
+  hu: "Húngaro",
+  ro: "Rumano",
+  th: "Tailandés",
+  fa: "Persa",
+  uk: "Ucraniano",
+  vi: "Vietnamita",
+  id: "Indonesio",
+  tl: "Tagalo",
+};
+
+function languageLabel(code) {
+  if (!code) return "";
+  return LANGUAGE_NAMES[code.toLowerCase()] || code.toUpperCase();
+}
+
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Archivo:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap');`;
 
 function Sprockets() {
@@ -208,9 +250,9 @@ function CineEloApp() {
   }, [filterText]);
   const [confirmReset, setConfirmReset] = useState(false);
   const [duelDirector, setDuelDirector] = useState("");
-  const [directorQuery, setDirectorQuery] = useState("");
-  const [directorDropdownOpen, setDirectorDropdownOpen] = useState(false);
   const [duelGenre, setDuelGenre] = useState("");
+  const [duelCountry, setDuelCountry] = useState("");
+  const [duelLanguage, setDuelLanguage] = useState("");
   const [onlyUndueled, setOnlyUndueled] = useState(false);
   const [winnerStaysMode, setWinnerStaysMode] = useState(false);
   const pendingChampionRef = useRef(null);
@@ -221,6 +263,7 @@ function CineEloApp() {
   const [tournamentFilterGenre, setTournamentFilterGenre] = useState("");
   const [tournamentFilterDecade, setTournamentFilterDecade] = useState("all");
   const [tournamentFilterCountry, setTournamentFilterCountry] = useState("");
+  const [tournamentFilterLanguage, setTournamentFilterLanguage] = useState("");
   const [duelRankMin, setDuelRankMin] = useState(1);
   const [duelRankMax, setDuelRankMax] = useState(0); // 0 = sin tope
   const [duelYearMin, setDuelYearMin] = useState(null);
@@ -330,13 +373,19 @@ function CineEloApp() {
             .includes(tournamentFilterCountry)
       );
     }
+    if (tournamentFilterLanguage) {
+      pool = pool.filter((m) => languageLabel(m.originalLanguage) === tournamentFilterLanguage);
+    }
     const entrants = pool.sort((a, b) => b.elo - a.elo).slice(0, size);
+    const hasFilter =
+      tournamentFilterGenre ||
+      tournamentFilterCountry ||
+      tournamentFilterLanguage ||
+      tournamentFilterDecade !== "all";
     if (entrants.length < size) {
       setError(
         `Necesitás al menos ${size} películas vistas${
-          tournamentFilterGenre || tournamentFilterCountry || tournamentFilterDecade !== "all"
-            ? " que cumplan el filtro elegido"
-            : ""
+          hasFilter ? " que cumplan el filtro elegido" : ""
         } para armar este torneo.`
       );
       return;
@@ -955,14 +1004,6 @@ function CineEloApp() {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [movies]);
 
-  const directorSuggestions = useMemo(() => {
-    const q = directorQuery.trim().toLowerCase();
-    const base = q
-      ? directorsList.filter((d) => d.toLowerCase().includes(q))
-      : directorsList;
-    return base.slice(0, 8);
-  }, [directorsList, directorQuery]);
-
   // cargar historial de posiciones al entrar a la pestaña Evolución:
   // preferimos traerlo del Sheet (historial completo, sin tope de 15 cortes),
   // y si falla (sin conexión, script viejo, etc.) usamos el local como respaldo.
@@ -1123,6 +1164,15 @@ function CineEloApp() {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [movies]);
 
+  const languagesList = useMemo(() => {
+    if (!movies) return [];
+    const set = new Set();
+    movies.forEach((m) => {
+      if (m.originalLanguage) set.add(languageLabel(m.originalLanguage));
+    });
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [movies]);
+
   const filteredRanking = useMemo(() => {
     let list = ranking;
     if (rankFilterDirector) {
@@ -1188,6 +1238,19 @@ function CineEloApp() {
             .includes(duelGenre)
       );
     }
+    if (duelCountry) {
+      pool = pool.filter(
+        (m) =>
+          m.country &&
+          m.country
+            .split(",")
+            .map((c) => c.trim())
+            .includes(duelCountry)
+      );
+    }
+    if (duelLanguage) {
+      pool = pool.filter((m) => languageLabel(m.originalLanguage) === duelLanguage);
+    }
     if (onlyUndueled) {
       pool = pool.filter((m) => m.comparisons === 0);
     }
@@ -1201,6 +1264,8 @@ function CineEloApp() {
     duelYearMax,
     decadeBounds,
     duelDirector,
+    duelCountry,
+    duelLanguage,
     onlyUndueled,
     duelGenre,
   ]);
@@ -1529,6 +1594,8 @@ function CineEloApp() {
   const hasActiveFilters =
     duelDirector ||
     duelGenre ||
+    duelCountry ||
+    duelLanguage ||
     onlyUndueled ||
     duelRankMin > 1 ||
     (duelRankMax > 0 && movies && duelRankMax < movies.length) ||
@@ -1669,18 +1736,18 @@ function CineEloApp() {
 
                 {showDirectorDuel && (
                   <div className="filters-panel">
-                    <DirectorPicker
+                    <SearchablePicker
                       label="Director A"
-                      directorsList={directorsList}
+                      options={directorsList}
                       value={directorDuelA}
                       onChange={(d) => {
                         setDirectorDuelA(d);
                         setPair(null);
                       }}
                     />
-                    <DirectorPicker
+                    <SearchablePicker
                       label="Director B"
-                      directorsList={directorsList}
+                      options={directorsList}
                       value={directorDuelB}
                       onChange={(d) => {
                         setDirectorDuelB(d);
@@ -1711,92 +1778,45 @@ function CineEloApp() {
 
                 {showFilters && !directorDuelActive && (
                   <div className="filters-panel">
-                    <label className="filter-label">
-                      Director
-                      <div className="autocomplete">
-                        <input
-                          className="filter-select"
-                          type="text"
-                          placeholder="Escribí para buscar…"
-                          value={directorQuery}
-                          onFocus={() => setDirectorDropdownOpen(true)}
-                          onChange={(e) => {
-                            setDirectorQuery(e.target.value);
-                            setDirectorDropdownOpen(true);
-                            if (e.target.value.trim() === "") {
-                              setDuelDirector("");
-                              setPair(null);
-                            }
-                          }}
-                          onBlur={() =>
-                            setTimeout(() => setDirectorDropdownOpen(false), 150)
-                          }
-                        />
-                        {duelDirector && (
-                          <button
-                            type="button"
-                            className="autocomplete-clear"
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              setDuelDirector("");
-                              setDirectorQuery("");
-                              setPair(null);
-                            }}
-                            aria-label="Limpiar director"
-                          >
-                            ×
-                          </button>
-                        )}
-                        {directorDropdownOpen && directorSuggestions.length > 0 && (
-                          <div className="autocomplete-list">
-                            {directorSuggestions.map((d) => (
-                              <button
-                                type="button"
-                                key={d}
-                                className="autocomplete-option"
-                                onMouseDown={(e) => {
-                                  e.preventDefault();
-                                  setDuelDirector(d);
-                                  setDirectorQuery(d);
-                                  setDirectorDropdownOpen(false);
-                                  setPair(null);
-                                }}
-                              >
-                                {d}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        {directorDropdownOpen &&
-                          directorQuery.trim() &&
-                          directorSuggestions.length === 0 && (
-                            <div className="autocomplete-list">
-                              <span className="autocomplete-empty">
-                                Sin resultados
-                              </span>
-                            </div>
-                          )}
-                      </div>
-                    </label>
+                    <SearchablePicker
+                      label="Director"
+                      options={directorsList}
+                      value={duelDirector}
+                      onChange={(d) => {
+                        setDuelDirector(d);
+                        setPair(null);
+                      }}
+                    />
 
-                    <label className="filter-label">
-                      Género
-                      <select
-                        className="filter-select"
-                        value={duelGenre}
-                        onChange={(e) => {
-                          setDuelGenre(e.target.value);
-                          setPair(null);
-                        }}
-                      >
-                        <option value="">Todos</option>
-                        {genresList.map((g) => (
-                          <option key={g} value={g}>
-                            {g}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <SearchablePicker
+                      label="Género"
+                      options={genresList}
+                      value={duelGenre}
+                      onChange={(g) => {
+                        setDuelGenre(g);
+                        setPair(null);
+                      }}
+                    />
+
+                    <SearchablePicker
+                      label="País"
+                      options={countriesList}
+                      value={duelCountry}
+                      onChange={(c) => {
+                        setDuelCountry(c);
+                        setPair(null);
+                      }}
+                    />
+
+                    <SearchablePicker
+                      label="Idioma original"
+                      options={languagesList}
+                      value={duelLanguage}
+                      onChange={(l) => {
+                        setDuelLanguage(l);
+                        setPair(null);
+                      }}
+                    />
 
                     <label className="filter-label">
                       Rango del ranking
@@ -1929,8 +1949,9 @@ function CineEloApp() {
                         className="skip"
                         onClick={() => {
                           setDuelDirector("");
-                          setDirectorQuery("");
                           setDuelGenre("");
+                          setDuelCountry("");
+                          setDuelLanguage("");
                           setOnlyUndueled(false);
                           setDuelRankRange(1, 0);
                           setDuelYearRange(decadeBounds[0], decadeBounds[1]);
@@ -2304,21 +2325,12 @@ function CineEloApp() {
                   className="filters-panel"
                   style={{ marginTop: "16px", justifyContent: "center" }}
                 >
-                  <label className="filter-label">
-                    Género
-                    <select
-                      className="filter-select"
-                      value={tournamentFilterGenre}
-                      onChange={(e) => setTournamentFilterGenre(e.target.value)}
-                    >
-                      <option value="">Todos</option>
-                      {genresList.map((g) => (
-                        <option key={g} value={g}>
-                          {g}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <SearchablePicker
+                    label="Género"
+                    options={genresList}
+                    value={tournamentFilterGenre}
+                    onChange={setTournamentFilterGenre}
+                  />
 
                   <label className="filter-label">
                     Década
@@ -2336,24 +2348,23 @@ function CineEloApp() {
                     </select>
                   </label>
 
-                  <label className="filter-label">
-                    País
-                    <select
-                      className="filter-select"
-                      value={tournamentFilterCountry}
-                      onChange={(e) => setTournamentFilterCountry(e.target.value)}
-                    >
-                      <option value="">Todos</option>
-                      {countriesList.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <SearchablePicker
+                    label="País"
+                    options={countriesList}
+                    value={tournamentFilterCountry}
+                    onChange={setTournamentFilterCountry}
+                  />
+
+                  <SearchablePicker
+                    label="Idioma original"
+                    options={languagesList}
+                    value={tournamentFilterLanguage}
+                    onChange={setTournamentFilterLanguage}
+                  />
 
                   {(tournamentFilterGenre ||
                     tournamentFilterCountry ||
+                    tournamentFilterLanguage ||
                     tournamentFilterDecade !== "all") && (
                     <button
                       className="skip"
@@ -2361,6 +2372,7 @@ function CineEloApp() {
                         setTournamentFilterGenre("");
                         setTournamentFilterDecade("all");
                         setTournamentFilterCountry("");
+                        setTournamentFilterLanguage("");
                       }}
                     >
                       limpiar filtros
@@ -2755,17 +2767,23 @@ function DualRangeSlider({ min, max, valueMin, valueMax, step, onChange }) {
   );
 }
 
-function DirectorPicker({ label, directorsList, value, onChange, placeholder }) {
+// Combobox genérico: escribís para filtrar una lista larga (directores,
+// géneros, países, idiomas...) en vez de scrollear un <select> gigante.
+function SearchablePicker({ label, options, value, onChange, placeholder }) {
   const [query, setQuery] = useState(value || "");
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    setQuery(value || "");
+  }, [value]);
 
   const suggestions = useMemo(() => {
     const q = query.trim().toLowerCase();
     const base = q
-      ? directorsList.filter((d) => d.toLowerCase().includes(q))
-      : directorsList;
+      ? options.filter((d) => d.toLowerCase().includes(q))
+      : options;
     return base.slice(0, 8);
-  }, [directorsList, query]);
+  }, [options, query]);
 
   return (
     <label className="filter-label">
