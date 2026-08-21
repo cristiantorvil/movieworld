@@ -568,17 +568,19 @@ function CineEloApp() {
     const withDiff = candidates
       .map((m) => ({ m, diff: Math.abs(m.elo - anchorElo) }))
       .sort((a, b) => a.diff - b.diff);
-    const windowSize = Math.max(12, Math.ceil(candidates.length * 0.03));
-    const nearby = withDiff.slice(0, windowSize).map((x) => x.m);
-    // dentro de la ventana cercana, priorizar los que tienen menos duelos
-    const weights = nearby.map((m) => 1 / (1 + m.comparisons));
+    const windowSize = Math.max(8, Math.ceil(candidates.length * 0.02));
+    const nearby = withDiff.slice(0, windowSize);
+    // Dentro de la ventana, pesar por qué tan cerca está en elo — NO por
+    // cuántos duelos tiene. Si se pesara por duelos acá, "0 duelos" vuelve
+    // a ganarle a la cercanía real, que es exactamente lo que queríamos evitar.
+    const weights = nearby.map((x) => 1 / (1 + x.diff));
     const total = weights.reduce((a, b) => a + b, 0);
     let r = Math.random() * total;
     for (let i = 0; i < nearby.length; i++) {
       r -= weights[i];
-      if (r <= 0) return nearby[i];
+      if (r <= 0) return nearby[i].m;
     }
-    return nearby[nearby.length - 1];
+    return nearby[nearby.length - 1].m;
   };
 
   const pickContenders = useCallback((list, size, keepId) => {
