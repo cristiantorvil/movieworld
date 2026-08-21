@@ -4,8 +4,17 @@ const STORAGE_KEY = "cine-elo-movies";
 const SYNC_URL_KEY = "cine-elo-sync-url";
 const DEFAULT_SYNC_URL =
   "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
-const K_FACTOR = 8;
 const START_ELO = 1200;
+
+// K dinámico: mientras menos duelos lleva una película, más se mueve su elo
+// por cada resultado nuevo (todavía estamos "descubriendo" dónde va) — y
+// una vez asentada, cada duelo pesa menos. Mismo criterio que usan las
+// federaciones de ajedrez con jugadores nuevos vs. establecidos.
+function getKFactor(comparisons) {
+  if (comparisons < 10) return 32;
+  if (comparisons < 30) return 20;
+  return 12;
+}
 const SNAPSHOT_INTERVAL = 25; // guardar posiciones cada N duelos
 const MAX_SNAPSHOTS = 15; // tope de cortes guardados en el historial
 const SNAPSHOT_TOP_N = 500; // solo se guarda el top 500 en cada corte
@@ -148,6 +157,9 @@ function CineEloApp() {
   const [directorDuelA, setDirectorDuelA] = useState("");
   const [directorDuelB, setDirectorDuelB] = useState("");
   const [tournament, setTournament] = useState(null); // null = sin torneo activo
+  const [tournamentFilterGenre, setTournamentFilterGenre] = useState("");
+  const [tournamentFilterDecade, setTournamentFilterDecade] = useState("all");
+  const [tournamentFilterCountry, setTournamentFilterCountry] = useState("");
   const [duelRankMin, setDuelRankMin] = useState(1);
   const [duelRankMax, setDuelRankMax] = useState(0); // 0 = sin tope
   const [duelYearMin, setDuelYearMin] = useState(null);
@@ -232,12 +244,40 @@ function CineEloApp() {
 
   const startTournament = (size) => {
     if (!movies) return;
-    const entrants = [...movies]
-      .filter((m) => Number(m.rating) !== 0)
-      .sort((a, b) => b.elo - a.elo)
-      .slice(0, size);
+    let pool = [...movies].filter((m) => Number(m.rating) !== 0);
+    if (tournamentFilterGenre) {
+      pool = pool.filter(
+        (m) =>
+          m.genre &&
+          m.genre
+            .split(",")
+            .map((g) => g.trim())
+            .includes(tournamentFilterGenre)
+      );
+    }
+    if (tournamentFilterDecade !== "all") {
+      const d = Number(tournamentFilterDecade);
+      pool = pool.filter((m) => m.year && Math.floor(m.year / 10) * 10 === d);
+    }
+    if (tournamentFilterCountry) {
+      pool = pool.filter(
+        (m) =>
+          m.country &&
+          m.country
+            .split(",")
+            .map((c) => c.trim())
+            .includes(tournamentFilterCountry)
+      );
+    }
+    const entrants = pool.sort((a, b) => b.elo - a.elo).slice(0, size);
     if (entrants.length < size) {
-      setError(`Necesitás al menos ${size} películas vistas para armar este torneo.`);
+      setError(
+        `Necesitás al menos ${size} películas vistas${
+          tournamentFilterGenre || tournamentFilterCountry || tournamentFilterDecade !== "all"
+            ? " que cumplan el filtro elegido"
+            : ""
+        } para armar este torneo.`
+      );
       return;
     }
     setError("");
@@ -262,8 +302,8 @@ function CineEloApp() {
 
     const expWinner = expectedScore(winnerMovie.elo, loserMovie.elo);
     const expLoser = expectedScore(loserMovie.elo, winnerMovie.elo);
-    const winnerDelta = Math.round(K_FACTOR * (1 - expWinner));
-    const loserDelta = Math.round(K_FACTOR * (0 - expLoser));
+    const winnerDelta = Math.round(getKFactor(winnerMovie.comparisons) * (1 - expWinner));
+    const loserDelta = Math.round(getKFactor(loserMovie.comparisons) * (0 - expLoser));
 
     const next = movies.map((m) => {
       if (m.id === winnerId) {
@@ -362,6 +402,16 @@ function CineEloApp() {
         updatedCount++;
         return {
           ...m,
+          director: existing.director || m.director,
+          genre: existing.genre || m.genre,
+          poster: existing.poster || m.poster,
+          tmdbId: existing.tmdbId || m.tmdbId,
+          country: existing.country || m.country,
+          originalLanguage: existing.originalLanguage || m.originalLanguage,
+          runtime: existing.runtime || m.runtime,
+          overview: existing.overview || m.overview,
+          collection: existing.collection || m.collection,
+          productionCompanies: existing.productionCompanies || m.productionCompanies,
           rating: existing.rating != null ? existing.rating : m.rating,
           plays: existing.plays != null ? existing.plays : m.plays,
           elo: existing.elo,
@@ -381,6 +431,12 @@ function CineEloApp() {
           genre: sm.genre || "",
           poster: sm.poster || "",
           tmdbId: sm.tmdbId || "",
+          country: sm.country || "",
+          originalLanguage: sm.originalLanguage || "",
+          runtime: sm.runtime || null,
+          overview: sm.overview || "",
+          collection: sm.collection || "",
+          productionCompanies: sm.productionCompanies || "",
           rating: sm.rating,
           plays: sm.plays,
           elo:
@@ -543,6 +599,12 @@ function CineEloApp() {
           director: m.director || "",
           genre: m.genre || "",
           poster: m.poster || "",
+          country: m.country || "",
+          originalLanguage: m.originalLanguage || "",
+          runtime: m.runtime || "",
+          overview: m.overview || "",
+          collection: m.collection || "",
+          productionCompanies: m.productionCompanies || "",
           elo: m.elo,
           games: m.comparisons,
           wins: m.wins,
@@ -638,10 +700,19 @@ function CineEloApp() {
               id: uid(),
               title,
               year,
-              director: director || "",
-              genre: genre || "",
-              poster: poster || "",
-              tmdbId: tmdbId || "",
+              // Preferimos la metadata del Sheet sobre la del catálogo baked-in:
+              // correcciones de director/género/poster hechas ahí deben verse
+              // sin depender de un reset completo del progreso local.
+              director: (existing && existing.director) || director || "",
+              genre: (existing && existing.genre) || genre || "",
+              poster: (existing && existing.poster) || poster || "",
+              tmdbId: (existing && existing.tmdbId) || tmdbId || "",
+              country: (existing && existing.country) || "",
+              originalLanguage: (existing && existing.originalLanguage) || "",
+              runtime: (existing && existing.runtime) || null,
+              overview: (existing && existing.overview) || "",
+              collection: (existing && existing.collection) || "",
+              productionCompanies: (existing && existing.productionCompanies) || "",
               rating: existing && existing.rating != null ? existing.rating : rating,
               plays: existing && existing.plays != null ? existing.plays : plays,
               elo:
@@ -667,6 +738,12 @@ function CineEloApp() {
               genre: sm.genre || "",
               poster: sm.poster || "",
               tmdbId: sm.tmdbId || "",
+              country: sm.country || "",
+              originalLanguage: sm.originalLanguage || "",
+              runtime: sm.runtime || null,
+              overview: sm.overview || "",
+              collection: sm.collection || "",
+              productionCompanies: sm.productionCompanies || "",
               rating: sm.rating,
               plays: sm.plays,
               elo:
@@ -1006,6 +1083,21 @@ function CineEloApp() {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [movies]);
 
+  const countriesList = useMemo(() => {
+    if (!movies) return [];
+    const set = new Set();
+    movies.forEach((m) => {
+      if (m.country) {
+        m.country
+          .split(",")
+          .map((c) => c.trim())
+          .filter(Boolean)
+          .forEach((c) => set.add(c));
+      }
+    });
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [movies]);
+
   const filteredRanking = useMemo(() => {
     let list = ranking;
     if (rankFilterDirector) {
@@ -1128,6 +1220,12 @@ function CineEloApp() {
     let genre = "";
     let poster = "";
     let year = null;
+    let country = "";
+    let originalLanguage = "";
+    let runtime = null;
+    let overview = "";
+    let collection = "";
+    let productionCompanies = "";
 
     if (syncUrl) {
       setTmdbLookupBusy(true);
@@ -1151,6 +1249,12 @@ function CineEloApp() {
             genre = detailsData.genre || "";
             poster = detailsData.poster || "";
             year = detailsData.year || null;
+            country = detailsData.country || "";
+            originalLanguage = detailsData.originalLanguage || "";
+            runtime = detailsData.runtime || null;
+            overview = detailsData.overview || "";
+            collection = detailsData.collection || "";
+            productionCompanies = detailsData.productionCompanies || "";
           }
         }
       } catch (err) {
@@ -1167,6 +1271,12 @@ function CineEloApp() {
       genre,
       poster,
       year,
+      country,
+      originalLanguage,
+      runtime,
+      overview,
+      collection,
+      productionCompanies,
       elo: START_ELO,
       comparisons: 0,
       wins: 0,
@@ -1203,14 +1313,16 @@ function CineEloApp() {
     // Elo multi-rival: el ganador se mide contra CADA rival mostrado, como
     // si fueran comparaciones 1 a 1 independientes, y se suman los deltas.
     let winnerEloRunning = winner.elo;
+    let winnerComparisonsRunning = winner.comparisons;
     let totalWinnerDelta = 0;
     const loserResults = losers.map((loser) => {
       const expWinner = expectedScore(winnerEloRunning, loser.elo);
       const expLoser = expectedScore(loser.elo, winnerEloRunning);
-      const winnerDeltaVs = Math.round(K_FACTOR * (1 - expWinner));
-      const loserDelta = Math.round(K_FACTOR * (0 - expLoser));
+      const winnerDeltaVs = Math.round(getKFactor(winnerComparisonsRunning) * (1 - expWinner));
+      const loserDelta = Math.round(getKFactor(loser.comparisons) * (0 - expLoser));
       totalWinnerDelta += winnerDeltaVs;
       winnerEloRunning += winnerDeltaVs;
+      winnerComparisonsRunning += 1;
       return {
         id: loser.id,
         title: loser.title,
@@ -2158,9 +2270,79 @@ function CineEloApp() {
               <div className="empty">
                 <p className="empty-title">Armá un torneo</p>
                 <p className="empty-body">
-                  Elegí cuántas películas entran (las mejores por elo actual)
-                  y arrancamos un cuadro de eliminación directa.
+                  Elegí cuántas películas entran (las mejores por elo actual,
+                  opcionalmente filtradas) y arrancamos un cuadro de
+                  eliminación directa.
                 </p>
+
+                <div
+                  className="filters-panel"
+                  style={{ marginTop: "16px", justifyContent: "center" }}
+                >
+                  <label className="filter-label">
+                    Género
+                    <select
+                      className="filter-select"
+                      value={tournamentFilterGenre}
+                      onChange={(e) => setTournamentFilterGenre(e.target.value)}
+                    >
+                      <option value="">Todos</option>
+                      {genresList.map((g) => (
+                        <option key={g} value={g}>
+                          {g}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="filter-label">
+                    Década
+                    <select
+                      className="filter-select"
+                      value={tournamentFilterDecade}
+                      onChange={(e) => setTournamentFilterDecade(e.target.value)}
+                    >
+                      <option value="all">Todas las décadas</option>
+                      {decadeOptions.map((d) => (
+                        <option key={d} value={d}>
+                          {d}s
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="filter-label">
+                    País
+                    <select
+                      className="filter-select"
+                      value={tournamentFilterCountry}
+                      onChange={(e) => setTournamentFilterCountry(e.target.value)}
+                    >
+                      <option value="">Todos</option>
+                      {countriesList.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  {(tournamentFilterGenre ||
+                    tournamentFilterCountry ||
+                    tournamentFilterDecade !== "all") && (
+                    <button
+                      className="skip"
+                      onClick={() => {
+                        setTournamentFilterGenre("");
+                        setTournamentFilterDecade("all");
+                        setTournamentFilterCountry("");
+                      }}
+                    >
+                      limpiar filtros
+                    </button>
+                  )}
+                </div>
+
                 <div
                   className="filter-range-presets"
                   style={{ justifyContent: "center", marginTop: "16px" }}
