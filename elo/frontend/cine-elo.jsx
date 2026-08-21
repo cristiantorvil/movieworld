@@ -556,6 +556,31 @@ function CineEloApp() {
     return candidates[candidates.length - 1];
   };
 
+  // Para "ganador se mantiene": elegir rival solo entre los de elo más
+  // parecido al campeón. Si se usara weightedPick a secas, el peso por
+  // "pocos duelos" (que casi todas las pelis comparten al ppio) hace que
+  // la MASA total de candidatos lejanos en elo gane por cantidad, aunque
+  // cada rival cercano pese más individualmente — el campeón terminaba
+  // peleando contra cualquier cosa sin duelos, sin importar el nivel.
+  const pickNearbyChallenger = (list, excludeIds, anchorElo) => {
+    const candidates = list.filter((m) => !excludeIds.includes(m.id));
+    if (candidates.length === 0) return null;
+    const withDiff = candidates
+      .map((m) => ({ m, diff: Math.abs(m.elo - anchorElo) }))
+      .sort((a, b) => a.diff - b.diff);
+    const windowSize = Math.max(12, Math.ceil(candidates.length * 0.03));
+    const nearby = withDiff.slice(0, windowSize).map((x) => x.m);
+    // dentro de la ventana cercana, priorizar los que tienen menos duelos
+    const weights = nearby.map((m) => 1 / (1 + m.comparisons));
+    const total = weights.reduce((a, b) => a + b, 0);
+    let r = Math.random() * total;
+    for (let i = 0; i < nearby.length; i++) {
+      r -= weights[i];
+      if (r <= 0) return nearby[i];
+    }
+    return nearby[nearby.length - 1];
+  };
+
   const pickContenders = useCallback((list, size, keepId) => {
     if (!list || list.length < 2) {
       setPair(null);
@@ -567,11 +592,9 @@ function CineEloApp() {
     while (chosen.length < n) {
       const anchorElo =
         chosen.reduce((s, m) => s + m.elo, 0) / chosen.length;
-      const next = weightedPick(
-        list,
-        chosen.map((m) => m.id),
-        anchorElo
-      );
+      const next = champion
+        ? pickNearbyChallenger(list, chosen.map((m) => m.id), anchorElo)
+        : weightedPick(list, chosen.map((m) => m.id), anchorElo);
       if (!next) break;
       chosen.push(next);
     }
