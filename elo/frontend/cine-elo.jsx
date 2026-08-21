@@ -67,6 +67,10 @@ function CineEloApp() {
   const [onlyUndueled, setOnlyUndueled] = useState(false);
   const [winnerStaysMode, setWinnerStaysMode] = useState(false);
   const pendingChampionRef = useRef(null);
+  const [showDirectorDuel, setShowDirectorDuel] = useState(false);
+  const [directorDuelA, setDirectorDuelA] = useState("");
+  const [directorDuelB, setDirectorDuelB] = useState("");
+  const [tournament, setTournament] = useState(null); // null = sin torneo activo
   const [duelRankMin, setDuelRankMin] = useState(1);
   const [duelRankMax, setDuelRankMax] = useState(0); // 0 = sin tope
   const [duelYearMin, setDuelYearMin] = useState(null);
@@ -608,6 +612,32 @@ function CineEloApp() {
     setPair(chosen);
   }, []);
 
+  const directorDuelActive = Boolean(directorDuelA && directorDuelB);
+
+  const pickDirectorDuelPair = useCallback(() => {
+    if (!movies) {
+      setPair(null);
+      return;
+    }
+    const poolA = movies.filter(
+      (m) => m.director === directorDuelA && Number(m.rating) !== 0
+    );
+    const poolB = movies.filter(
+      (m) => m.director === directorDuelB && Number(m.rating) !== 0
+    );
+    if (poolA.length === 0 || poolB.length === 0) {
+      setPair(null);
+      return;
+    }
+    const a = weightedPick(poolA, [], null);
+    const b = weightedPick(poolB, [], null);
+    if (!a || !b) {
+      setPair(null);
+      return;
+    }
+    setPair(Math.random() < 0.5 ? [a, b] : [b, a]);
+  }, [movies, directorDuelA, directorDuelB]);
+
   const ranking = useMemo(() => {
     if (!movies) return [];
     return [...movies].sort((a, b) => b.elo - a.elo);
@@ -895,6 +925,10 @@ function CineEloApp() {
   ]);
 
   useEffect(() => {
+    if (directorDuelActive) {
+      if (!pair) pickDirectorDuelPair();
+      return;
+    }
     if (duelPool && duelPool.length >= 2 && !pair) {
       const keepId = pendingChampionRef.current;
       pendingChampionRef.current = null;
@@ -903,7 +937,14 @@ function CineEloApp() {
     if (duelPool && duelPool.length < 2) {
       setPair(null);
     }
-  }, [duelPool, pair, pickContenders, duelSize]);
+  }, [
+    duelPool,
+    pair,
+    pickContenders,
+    duelSize,
+    directorDuelActive,
+    pickDirectorDuelPair,
+  ]);
 
   const [newTmdbId, setNewTmdbId] = useState("");
   const [tmdbLookupBusy, setTmdbLookupBusy] = useState(false);
@@ -1300,6 +1341,16 @@ function CineEloApp() {
                     👑 Ganador se mantiene{winnerStaysMode ? " · ON" : ""}
                   </button>
                   <button
+                    className={
+                      "quick-toggle" + (showDirectorDuel ? " active" : "")
+                    }
+                    onClick={() => setShowDirectorDuel((v) => !v)}
+                    title="Duelear solo entre las pelis de dos directores"
+                  >
+                    ⚔️ Duelo de directores
+                    {directorDuelActive ? " · ON" : ""}
+                  </button>
+                  <button
                     className="undo-toggle"
                     onClick={undoLastDuel}
                     disabled={!lastAction}
@@ -1309,7 +1360,49 @@ function CineEloApp() {
                   </button>
                 </div>
 
-                {showFilters && (
+                {showDirectorDuel && (
+                  <div className="filters-panel">
+                    <DirectorPicker
+                      label="Director A"
+                      directorsList={directorsList}
+                      value={directorDuelA}
+                      onChange={(d) => {
+                        setDirectorDuelA(d);
+                        setPair(null);
+                      }}
+                    />
+                    <DirectorPicker
+                      label="Director B"
+                      directorsList={directorsList}
+                      value={directorDuelB}
+                      onChange={(d) => {
+                        setDirectorDuelB(d);
+                        setPair(null);
+                      }}
+                    />
+                    {directorDuelA &&
+                      directorDuelB &&
+                      directorDuelA === directorDuelB && (
+                        <p className="form-error">
+                          Elegí dos directores distintos.
+                        </p>
+                      )}
+                    {(directorDuelA || directorDuelB) && (
+                      <button
+                        className="skip"
+                        onClick={() => {
+                          setDirectorDuelA("");
+                          setDirectorDuelB("");
+                          setPair(null);
+                        }}
+                      >
+                        limpiar duelo de directores
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {showFilters && !directorDuelActive && (
                   <div className="filters-panel">
                     <label className="filter-label">
                       Director
@@ -1609,13 +1702,21 @@ function CineEloApp() {
                     </div>
                     <button
                       className="skip"
-                      onClick={() => pickContenders(duelPool, duelSize)}
+                      onClick={() =>
+                        directorDuelActive
+                          ? pickDirectorDuelPair()
+                          : pickContenders(duelPool, duelSize)
+                      }
                     >
                       saltear este duelo →
                     </button>
                     <p className="counter">
-                      {totalComparisons} comparaciones · {duelPool.length}{" "}
-                      {hasActiveFilters ? "en este filtro" : "películas"}
+                      {totalComparisons} comparaciones ·{" "}
+                      {directorDuelActive
+                        ? `${directorDuelA} vs ${directorDuelB}`
+                        : `${duelPool.length} ${
+                            hasActiveFilters ? "en este filtro" : "películas"
+                          }`}
                     </p>
                   </div>
                 ) : (
@@ -2120,6 +2221,78 @@ function DualRangeSlider({ min, max, valueMin, valueMax, step, onChange }) {
         }}
       />
     </div>
+  );
+}
+
+function DirectorPicker({ label, directorsList, value, onChange, placeholder }) {
+  const [query, setQuery] = useState(value || "");
+  const [open, setOpen] = useState(false);
+
+  const suggestions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const base = q
+      ? directorsList.filter((d) => d.toLowerCase().includes(q))
+      : directorsList;
+    return base.slice(0, 8);
+  }, [directorsList, query]);
+
+  return (
+    <label className="filter-label">
+      {label}
+      <div className="autocomplete">
+        <input
+          className="filter-select"
+          type="text"
+          placeholder={placeholder || "Escribí para buscar…"}
+          value={query}
+          onFocus={() => setOpen(true)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setOpen(true);
+            if (e.target.value.trim() === "") onChange("");
+          }}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+        />
+        {value && (
+          <button
+            type="button"
+            className="autocomplete-clear"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onChange("");
+              setQuery("");
+            }}
+            aria-label="Limpiar"
+          >
+            ×
+          </button>
+        )}
+        {open && suggestions.length > 0 && (
+          <div className="autocomplete-list">
+            {suggestions.map((d) => (
+              <button
+                type="button"
+                key={d}
+                className="autocomplete-option"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onChange(d);
+                  setQuery(d);
+                  setOpen(false);
+                }}
+              >
+                {d}
+              </button>
+            ))}
+          </div>
+        )}
+        {open && query.trim() && suggestions.length === 0 && (
+          <div className="autocomplete-list">
+            <span className="autocomplete-empty">Sin resultados</span>
+          </div>
+        )}
+      </div>
+    </label>
   );
 }
 
