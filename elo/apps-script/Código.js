@@ -240,7 +240,7 @@ function doGet(e) {
     return handleDebugSheet(e.parameter.name || '');
   }
   if (e && e.parameter && e.parameter.action === 'backfillStart') {
-    return handleBackfillStart();
+    return handleBackfillStart(e.parameter.force === 'true');
   }
   if (e && e.parameter && e.parameter.action === 'backfillStatus') {
     return handleBackfillStatus();
@@ -249,7 +249,7 @@ function doGet(e) {
     return handleBackfillStop();
   }
   if (e && e.parameter && e.parameter.action === 'backfillRunOnce') {
-    return handleBackfillRunOnce();
+    return handleBackfillRunOnce(e.parameter.force === 'true');
   }
   return ContentService.createTextOutput(
     JSON.stringify({ ok: true, msg: "Cine Elo webhook activo" })
@@ -260,11 +260,16 @@ function doGet(e) {
 // detenerBackfillTmdb, pero accesibles por URL (desde el celu, sin pasar
 // por el editor de Apps Script). backfillStart corre el primer lote antes
 // de responder, así que la respuesta puede tardar un rato.
-function handleBackfillStart() {
+function handleBackfillStart(force) {
   try {
+    if (force) {
+      var props = PropertiesService.getScriptProperties();
+      props.setProperty(BACKFILL_ROW_PROP, '2');
+      props.setProperty(BACKFILL_FORCE_PROP, 'true');
+    }
     iniciarBackfillTmdb(false);
     return ContentService.createTextOutput(
-      JSON.stringify({ ok: true, progreso: _backfillProgreso_() })
+      JSON.stringify({ ok: true, force: !!force, progreso: _backfillProgreso_() })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(
@@ -301,8 +306,13 @@ function handleBackfillStop() {
 // Diagnóstico: corre backfillTmdbBatch_ una vez, sincrónico, y devuelve el
 // error completo (con stack) si explota — para ver qué está pasando cuando
 // el trigger falla en silencio y no queda otra forma de ver el log.
-function handleBackfillRunOnce() {
+function handleBackfillRunOnce(force) {
   try {
+    if (force) {
+      var props = PropertiesService.getScriptProperties();
+      props.setProperty(BACKFILL_ROW_PROP, '2');
+      props.setProperty(BACKFILL_FORCE_PROP, 'true');
+    }
     backfillTmdbBatch_();
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, progreso: _backfillProgreso_() })
@@ -364,6 +374,10 @@ function agregarColumnasMovies_() {
 // progreso queda guardado, así que "iniciarBackfillTmdb" lo retoma después).
 
 var BACKFILL_ROW_PROP = 'BACKFILL_TMDB_ROW';
+// Cuando está en 'true', el backfill vuelve a pisar TODAS las filas con id
+// (no solo las que tienen algún campo vacío) — se usa para re-traducir el
+// catálogo entero de español a inglés sin tener que borrar nada a mano.
+var BACKFILL_FORCE_PROP = 'BACKFILL_TMDB_FORCE';
 var BACKFILL_BATCH_SECONDS = 240; // margen bajo el límite de 6 min
 var BACKFILL_SLEEP_MS = 150; // pausa entre tandas (no entre llamadas sueltas)
 var BACKFILL_CHUNK_ROWS = 1000; // tope de filas leídas/escritas por lote
@@ -390,6 +404,17 @@ function iniciarBackfillTmdb(correrPrimerLoteYa) {
 function detenerBackfillTmdb() {
   _borrarTriggerBackfill_();
   Logger.log('Backfill pausado. El progreso queda guardado para retomar con iniciarBackfillTmdb.');
+}
+
+// Re-traduce TODO el catálogo (país/idioma/duración/sinopsis/saga/
+// productoras) de español a inglés — pisa lo que ya estaba, no solo lo
+// vacío. Es lo mismo que iniciarBackfillTmdb pero arrancando de cero y en
+// modo "force". También accesible por URL: ?action=backfillStart&force=true
+function reiniciarBackfillEnIngles() {
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty(BACKFILL_ROW_PROP, '2');
+  props.setProperty(BACKFILL_FORCE_PROP, 'true');
+  iniciarBackfillTmdb();
 }
 
 // Corré esta en cualquier momento (no toca nada, solo lee) para ver cuánto
@@ -456,6 +481,7 @@ function backfillTmdbBatch_() {
   }
 
   var apiKey = getTmdbApiKey_();
+  var force = props.getProperty(BACKFILL_FORCE_PROP) === 'true';
   var totalProcesadas = 0;
   var totalSaltadas = 0;
   var chunks = 0;
@@ -474,6 +500,7 @@ function backfillTmdbBatch_() {
       // reporte "completo" correctamente, y de paso permite que si más
       // adelante agregás películas nuevas (lastRow crece), la próxima
       // corrida las detecte y siga solo con esas.
+      if (force) props.deleteProperty(BACKFILL_FORCE_PROP);
       Logger.log(
         'Backfill completo. Total esta corrida: ' + totalProcesadas +
         ' actualizadas, ' + totalSaltadas + ' saltadas, en ' + chunks + ' chunk(s).'
@@ -481,7 +508,7 @@ function backfillTmdbBatch_() {
       return;
     }
 
-    var resultado = _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadline);
+    var resultado = _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadline, force);
     totalProcesadas += resultado.procesadas;
     totalSaltadas += resultado.saltadas;
     chunks++;
@@ -499,7 +526,7 @@ function backfillTmdbBatch_() {
   );
 }
 
-function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadline) {
+function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadline, force) {
   var chunkSize = Math.min(lastRow - startRow + 1, BACKFILL_CHUNK_ROWS);
   var range = sheet.getRange(startRow, 1, chunkSize, lastCol);
   var values = range.getValues();
@@ -508,13 +535,14 @@ function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadli
   var cortoPorTiempo = false;
 
   // Separamos las filas que realmente necesitan llamar a TMDB (tienen id y
-  // les falta algo) del resto, para pedirlas en tandas en paralelo con
-  // fetchAll en vez de una por una — mucho más rápido que ir de a una.
+  // les falta algo, o cualquiera con id si force==true) del resto, para
+  // pedirlas en tandas en paralelo con fetchAll en vez de una por una —
+  // mucho más rápido que ir de a una.
   var pendientes = [];
   for (var k = 0; k < values.length; k++) {
     var r = values[k];
     var yaCompleto = r[cols.country] && r[cols.runtime] && r[cols.overview];
-    if (r[cols.id] && !yaCompleto) pendientes.push(k);
+    if (r[cols.id] && (force || !yaCompleto)) pendientes.push(k);
   }
   var saltadas = values.length - pendientes.length;
 
@@ -528,7 +556,7 @@ function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadli
     var requests = grupo.map(function (idx) {
       return {
         url: 'https://api.themoviedb.org/3/movie/' + encodeURIComponent(values[idx][cols.id]) +
-          '?api_key=' + encodeURIComponent(apiKey) + '&language=es-ES',
+          '?api_key=' + encodeURIComponent(apiKey) + '&language=en-US',
         muteHttpExceptions: true,
       };
     });
@@ -553,12 +581,12 @@ function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadli
             .join(', ');
           var collection = d.belongs_to_collection ? d.belongs_to_collection.name : '';
 
-          if (!row[cols.country] && country) row[cols.country] = country;
-          if (!row[cols.lang] && d.original_language) row[cols.lang] = d.original_language;
-          if (!row[cols.runtime] && d.runtime) row[cols.runtime] = d.runtime;
-          if (!row[cols.overview] && d.overview) row[cols.overview] = d.overview;
-          if (!row[cols.collection] && collection) row[cols.collection] = collection;
-          if (!row[cols.companies] && companies) row[cols.companies] = companies;
+          if (country && (force || !row[cols.country])) row[cols.country] = country;
+          if (d.original_language && (force || !row[cols.lang])) row[cols.lang] = d.original_language;
+          if (d.runtime && (force || !row[cols.runtime])) row[cols.runtime] = d.runtime;
+          if (d.overview && (force || !row[cols.overview])) row[cols.overview] = d.overview;
+          if (collection && (force || !row[cols.collection])) row[cols.collection] = collection;
+          if (companies && (force || !row[cols.companies])) row[cols.companies] = companies;
         }
         procesadas++;
       } catch (e2) {
@@ -604,7 +632,7 @@ function handleTmdbSearch(query) {
     }
     var url = 'https://api.themoviedb.org/3/search/movie?api_key=' +
       encodeURIComponent(apiKey) + '&query=' + encodeURIComponent(query) +
-      '&language=es-ES&include_adult=false';
+      '&language=en-US&include_adult=false';
     var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
     var json = JSON.parse(resp.getContentText());
     var results = (json.results || []).slice(0, 6).map(function (m) {
@@ -634,7 +662,7 @@ function handleTmdbDetails(tmdbId) {
       ).setMimeType(ContentService.MimeType.JSON);
     }
     var detailsUrl = 'https://api.themoviedb.org/3/movie/' + encodeURIComponent(tmdbId) +
-      '?api_key=' + encodeURIComponent(apiKey) + '&language=es-ES';
+      '?api_key=' + encodeURIComponent(apiKey) + '&language=en-US';
     var creditsUrl = 'https://api.themoviedb.org/3/movie/' + encodeURIComponent(tmdbId) +
       '/credits?api_key=' + encodeURIComponent(apiKey);
 
