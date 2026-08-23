@@ -294,6 +294,11 @@
   var SYNC_URL = "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
   var TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w200";
   var START_ELO = 1200;
+  var META_FIELD_KEYS = [
+    "director", "genre", "poster", "country", "originalLanguage",
+    "runtime", "overview", "collection", "productionCompanies",
+    "voteAverage", "voteCount", "cast", "tagline", "backdrop", "imdbId",
+  ];
 
   var searchInput = document.getElementById("search");
   var resultsEl = document.getElementById("results");
@@ -392,16 +397,10 @@
           tmdbId: tmdbId,
           title: data.title || searchInput.value.trim(),
           year: data.year || "",
-          director: data.director || "",
-          genre: data.genre || "",
-          poster: data.poster || "",
-          country: data.country || "",
-          originalLanguage: data.originalLanguage || "",
-          runtime: data.runtime || "",
-          overview: data.overview || "",
-          collection: data.collection || "",
-          productionCompanies: data.productionCompanies || "",
         };
+        META_FIELD_KEYS.forEach(function (k) {
+          current[k] = data[k] || "";
+        });
         showSelected();
       })
       .catch(function () {
@@ -410,20 +409,10 @@
   }
 
   function selectManual(title) {
-    current = {
-      tmdbId: "",
-      title: title,
-      year: "",
-      director: "",
-      genre: "",
-      poster: "",
-      country: "",
-      originalLanguage: "",
-      runtime: "",
-      overview: "",
-      collection: "",
-      productionCompanies: "",
-    };
+    current = { tmdbId: "", title: title, year: "" };
+    META_FIELD_KEYS.forEach(function (k) {
+      current[k] = "";
+    });
     showSelected();
   }
 
@@ -460,21 +449,15 @@
       title: current.title,
       tmdbId: current.tmdbId,
       year: current.year,
-      director: current.director,
-      genre: current.genre,
-      poster: current.poster,
-      country: current.country,
-      originalLanguage: current.originalLanguage,
-      runtime: current.runtime,
-      overview: current.overview,
-      collection: current.collection,
-      productionCompanies: current.productionCompanies,
       elo: computeInitialElo(ratingVal, playsVal || 1),
       games: 0,
       wins: 0,
       losses: 0,
       ties: 0,
     };
+    META_FIELD_KEYS.forEach(function (k) {
+      payload[k] = current[k];
+    });
 
     saveBtn.disabled = true;
     statusEl.textContent = "Guardando…";

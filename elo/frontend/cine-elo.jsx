@@ -121,6 +121,28 @@ function computeInitialElo(rating, plays) {
 // de TMDB), y agrega las que estén en el Sheet pero no localmente. Se usa
 // tanto al abrir la app (para no quedar pegado con datos viejos de otro
 // dispositivo/navegador) como en el botón manual "restaurar desde el Sheet".
+// Campos de metadata de TMDB que viajan igual en todos lados (pull, push,
+// merge, alta de película nueva). "numeric: true" son los que deben
+// quedar en null (no "") cuando no hay dato, para no romper comparaciones.
+const META_FIELDS = [
+  { key: "director" },
+  { key: "genre" },
+  { key: "poster" },
+  { key: "tmdbId" },
+  { key: "country" },
+  { key: "originalLanguage" },
+  { key: "runtime", numeric: true },
+  { key: "overview" },
+  { key: "collection" },
+  { key: "productionCompanies" },
+  { key: "voteAverage", numeric: true },
+  { key: "voteCount", numeric: true },
+  { key: "cast" },
+  { key: "tagline" },
+  { key: "backdrop" },
+  { key: "imdbId" },
+];
+
 function mergeSheetIntoMovies(localMovies, sheetMovies) {
   const sheetMap = new Map(sheetMovies.map((m) => [m.title, m]));
   const localTitles = new Set(localMovies.map((m) => m.title));
@@ -130,49 +152,35 @@ function mergeSheetIntoMovies(localMovies, sheetMovies) {
     const existing = sheetMap.get(m.title);
     if (!existing || existing.elo == null) return m;
     updatedCount++;
-    return {
-      ...m,
-      director: existing.director || m.director,
-      genre: existing.genre || m.genre,
-      poster: existing.poster || m.poster,
-      tmdbId: existing.tmdbId || m.tmdbId,
-      country: existing.country || m.country,
-      originalLanguage: existing.originalLanguage || m.originalLanguage,
-      runtime: existing.runtime || m.runtime,
-      overview: existing.overview || m.overview,
-      collection: existing.collection || m.collection,
-      productionCompanies: existing.productionCompanies || m.productionCompanies,
-      rating: existing.rating != null ? existing.rating : m.rating,
-      plays: existing.plays != null ? existing.plays : m.plays,
-      elo: existing.elo,
-      comparisons: existing.games || 0,
-      wins: existing.wins || 0,
-    };
+    const merged = { ...m };
+    META_FIELDS.forEach(({ key }) => {
+      merged[key] = existing[key] || m[key];
+    });
+    merged.rating = existing.rating != null ? existing.rating : m.rating;
+    merged.plays = existing.plays != null ? existing.plays : m.plays;
+    merged.elo = existing.elo;
+    merged.comparisons = existing.games || 0;
+    merged.wins = existing.wins || 0;
+    return merged;
   });
 
   const newOnes = [];
   sheetMovies.forEach((sm) => {
     if (!sm.title || localTitles.has(sm.title)) return;
-    newOnes.push({
+    const movie = {
       id: uid(),
       title: sm.title,
       year: sm.year || undefined,
-      director: sm.director || "",
-      genre: sm.genre || "",
-      poster: sm.poster || "",
-      tmdbId: sm.tmdbId || "",
-      country: sm.country || "",
-      originalLanguage: sm.originalLanguage || "",
-      runtime: sm.runtime || null,
-      overview: sm.overview || "",
-      collection: sm.collection || "",
-      productionCompanies: sm.productionCompanies || "",
       rating: sm.rating,
       plays: sm.plays,
       elo: sm.elo != null ? sm.elo : computeInitialElo(sm.rating, sm.plays),
       comparisons: sm.games || 0,
       wins: sm.wins || 0,
+    };
+    META_FIELDS.forEach(({ key, numeric }) => {
+      movie[key] = sm[key] || (numeric ? null : "");
     });
+    newOnes.push(movie);
   });
 
   return { merged: [...next, ...newOnes], updatedCount, newCount: newOnes.length };
@@ -648,25 +656,21 @@ function CineEloApp() {
       if (!syncUrl) return;
       setSyncStatus("syncing");
       try {
-        const payload = items.map((m) => ({
-          title: m.title,
-          tmdbId: m.tmdbId || "",
-          year: m.year || "",
-          director: m.director || "",
-          genre: m.genre || "",
-          poster: m.poster || "",
-          country: m.country || "",
-          originalLanguage: m.originalLanguage || "",
-          runtime: m.runtime || "",
-          overview: m.overview || "",
-          collection: m.collection || "",
-          productionCompanies: m.productionCompanies || "",
-          elo: m.elo,
-          games: m.comparisons,
-          wins: m.wins,
-          losses: m.comparisons - m.wins,
-          ties: 0,
-        }));
+        const payload = items.map((m) => {
+          const item = {
+            title: m.title,
+            year: m.year || "",
+            elo: m.elo,
+            games: m.comparisons,
+            wins: m.wins,
+            losses: m.comparisons - m.wins,
+            ties: 0,
+          };
+          META_FIELDS.forEach(({ key }) => {
+            item[key] = m[key] || "";
+          });
+          return item;
+        });
         await fetch(syncUrl, {
           method: "POST",
           headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -770,23 +774,13 @@ function CineEloApp() {
 
           const seeded = SEED_MOVIES.map(([title, year, rating, plays, director, genre, poster, tmdbId]) => {
             const existing = sheetProgress.get(title);
-            return {
+            // El catálogo baked-in (SEED_MOVIES) solo trae estos 4 campos —
+            // el resto de META_FIELDS no tiene fallback ahí, solo en el Sheet.
+            const seedFallback = { director, genre, poster, tmdbId };
+            const movie = {
               id: uid(),
               title,
               year,
-              // Preferimos la metadata del Sheet sobre la del catálogo baked-in:
-              // correcciones de director/género/poster hechas ahí deben verse
-              // sin depender de un reset completo del progreso local.
-              director: (existing && existing.director) || director || "",
-              genre: (existing && existing.genre) || genre || "",
-              poster: (existing && existing.poster) || poster || "",
-              tmdbId: (existing && existing.tmdbId) || tmdbId || "",
-              country: (existing && existing.country) || "",
-              originalLanguage: (existing && existing.originalLanguage) || "",
-              runtime: (existing && existing.runtime) || null,
-              overview: (existing && existing.overview) || "",
-              collection: (existing && existing.collection) || "",
-              productionCompanies: (existing && existing.productionCompanies) || "",
               rating: existing && existing.rating != null ? existing.rating : rating,
               plays: existing && existing.plays != null ? existing.plays : plays,
               elo:
@@ -796,6 +790,13 @@ function CineEloApp() {
               comparisons: existing ? existing.games || 0 : 0,
               wins: existing ? existing.wins || 0 : 0,
             };
+            // Preferimos la metadata del Sheet sobre la del catálogo baked-in:
+            // correcciones hechas ahí deben verse sin depender de un reset
+            // completo del progreso local.
+            META_FIELDS.forEach(({ key, numeric }) => {
+              movie[key] = (existing && existing[key]) || seedFallback[key] || (numeric ? null : "");
+            });
+            return movie;
           });
 
           // Películas que existen en el Sheet pero no en el catálogo base
@@ -804,20 +805,10 @@ function CineEloApp() {
           const extras = [];
           sheetProgress.forEach((sm, title) => {
             if (seedTitles.has(title)) return;
-            extras.push({
+            const movie = {
               id: uid(),
               title,
               year: sm.year || undefined,
-              director: sm.director || "",
-              genre: sm.genre || "",
-              poster: sm.poster || "",
-              tmdbId: sm.tmdbId || "",
-              country: sm.country || "",
-              originalLanguage: sm.originalLanguage || "",
-              runtime: sm.runtime || null,
-              overview: sm.overview || "",
-              collection: sm.collection || "",
-              productionCompanies: sm.productionCompanies || "",
               rating: sm.rating,
               plays: sm.plays,
               elo:
@@ -826,7 +817,11 @@ function CineEloApp() {
                   : computeInitialElo(sm.rating, sm.plays),
               comparisons: sm.games || 0,
               wins: sm.wins || 0,
+            };
+            META_FIELDS.forEach(({ key, numeric }) => {
+              movie[key] = sm[key] || (numeric ? null : "");
             });
+            extras.push(movie);
           });
 
           setMovies([...seeded, ...extras]);
@@ -1306,16 +1301,8 @@ function CineEloApp() {
     setError("");
 
     let tmdbId = newTmdbId.trim();
-    let director = "";
-    let genre = "";
-    let poster = "";
     let year = null;
-    let country = "";
-    let originalLanguage = "";
-    let runtime = null;
-    let overview = "";
-    let collection = "";
-    let productionCompanies = "";
+    const meta = {};
 
     if (syncUrl) {
       setTmdbLookupBusy(true);
@@ -1335,16 +1322,10 @@ function CineEloApp() {
           );
           const detailsData = await detailsRes.json();
           if (detailsData.ok) {
-            director = detailsData.director || "";
-            genre = detailsData.genre || "";
-            poster = detailsData.poster || "";
             year = detailsData.year || null;
-            country = detailsData.country || "";
-            originalLanguage = detailsData.originalLanguage || "";
-            runtime = detailsData.runtime || null;
-            overview = detailsData.overview || "";
-            collection = detailsData.collection || "";
-            productionCompanies = detailsData.productionCompanies || "";
+            META_FIELDS.forEach(({ key, numeric }) => {
+              meta[key] = detailsData[key] || (numeric ? null : "");
+            });
           }
         }
       } catch (err) {
@@ -1356,17 +1337,9 @@ function CineEloApp() {
     const newMovie = {
       id: uid(),
       title,
-      tmdbId,
-      director,
-      genre,
-      poster,
+      ...meta,
+      tmdbId: tmdbId || "",
       year,
-      country,
-      originalLanguage,
-      runtime,
-      overview,
-      collection,
-      productionCompanies,
       elo: START_ELO,
       comparisons: 0,
       wins: 0,

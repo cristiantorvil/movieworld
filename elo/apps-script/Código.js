@@ -18,22 +18,34 @@ function doPost(e) {
     var header = values[0];
 
     var titleCol = header.indexOf('movie');
-    var idCol = header.indexOf('id');
-    var yearCol = header.indexOf('year');
-    var directorCol = header.indexOf('director');
-    var genreCol = header.indexOf('genre');
-    var posterCol = header.indexOf('poster_path');
     var eloCol = header.indexOf('elo_rating');
     var gamesCol = header.indexOf('elo_games');
     var winCol = header.indexOf('elo_win');
     var lossCol = header.indexOf('elo_loss');
     var tieCol = header.indexOf('elo_tie');
-    var countryCol = header.indexOf('country');
-    var langCol = header.indexOf('original_language');
-    var runtimeCol = header.indexOf('runtime');
-    var overviewCol = header.indexOf('overview');
-    var collectionCol = header.indexOf('collection');
-    var companiesCol = header.indexOf('production_companies');
+
+    // Campos que solo se completan si la celda está vacía (no pisan
+    // curación manual hecha directo en la Sheet). elo/games/wins/losses/
+    // ties son distintos: esos SIEMPRE se actualizan, van aparte abajo.
+    var fillFields = [
+      { col: header.indexOf('id'), key: 'tmdbId' },
+      { col: header.indexOf('year'), key: 'year' },
+      { col: header.indexOf('director'), key: 'director' },
+      { col: header.indexOf('genre'), key: 'genre' },
+      { col: header.indexOf('poster_path'), key: 'poster' },
+      { col: header.indexOf('country'), key: 'country' },
+      { col: header.indexOf('original_language'), key: 'originalLanguage' },
+      { col: header.indexOf('runtime'), key: 'runtime' },
+      { col: header.indexOf('overview'), key: 'overview' },
+      { col: header.indexOf('collection'), key: 'collection' },
+      { col: header.indexOf('production_companies'), key: 'productionCompanies' },
+      { col: header.indexOf('vote_average'), key: 'voteAverage' },
+      { col: header.indexOf('vote_count'), key: 'voteCount' },
+      { col: header.indexOf('cast'), key: 'cast' },
+      { col: header.indexOf('tagline'), key: 'tagline' },
+      { col: header.indexOf('backdrop_path'), key: 'backdrop' },
+      { col: header.indexOf('imdb_id'), key: 'imdbId' },
+    ].filter(function (f) { return f.col > -1; });
 
     var titleToRow = {};
     for (var i = 1; i < values.length; i++) {
@@ -49,22 +61,14 @@ function doPost(e) {
       if (!rowIndex) {
         var newRow = new Array(header.length).fill('');
         newRow[titleCol] = item.title;
-        if (idCol > -1 && item.tmdbId) newRow[idCol] = item.tmdbId;
-        if (yearCol > -1 && item.year) newRow[yearCol] = item.year;
-        if (directorCol > -1 && item.director) newRow[directorCol] = item.director;
-        if (genreCol > -1 && item.genre) newRow[genreCol] = item.genre;
-        if (posterCol > -1 && item.poster) newRow[posterCol] = item.poster;
+        fillFields.forEach(function (f) {
+          if (item[f.key]) newRow[f.col] = item[f.key];
+        });
         if (eloCol > -1) newRow[eloCol] = item.elo;
         if (gamesCol > -1) newRow[gamesCol] = item.games;
         if (winCol > -1) newRow[winCol] = item.wins;
         if (lossCol > -1) newRow[lossCol] = item.losses;
         if (tieCol > -1) newRow[tieCol] = item.ties || 0;
-        if (countryCol > -1 && item.country) newRow[countryCol] = item.country;
-        if (langCol > -1 && item.originalLanguage) newRow[langCol] = item.originalLanguage;
-        if (runtimeCol > -1 && item.runtime) newRow[runtimeCol] = item.runtime;
-        if (overviewCol > -1 && item.overview) newRow[overviewCol] = item.overview;
-        if (collectionCol > -1 && item.collection) newRow[collectionCol] = item.collection;
-        if (companiesCol > -1 && item.productionCompanies) newRow[companiesCol] = item.productionCompanies;
 
         sheet.appendRow(newRow);
         titleToRow[item.title] = sheet.getLastRow();
@@ -72,50 +76,11 @@ function doPost(e) {
         return;
       }
 
-      if (idCol > -1 && item.tmdbId) {
-        var currentId = sheet.getRange(rowIndex, idCol + 1).getValue();
-        if (!currentId) sheet.getRange(rowIndex, idCol + 1).setValue(item.tmdbId);
-      }
-      if (yearCol > -1 && item.year) {
-        var currentYear = sheet.getRange(rowIndex, yearCol + 1).getValue();
-        if (!currentYear) sheet.getRange(rowIndex, yearCol + 1).setValue(item.year);
-      }
-      if (directorCol > -1 && item.director) {
-        var currentDirector = sheet.getRange(rowIndex, directorCol + 1).getValue();
-        if (!currentDirector) sheet.getRange(rowIndex, directorCol + 1).setValue(item.director);
-      }
-      if (genreCol > -1 && item.genre) {
-        var currentGenre = sheet.getRange(rowIndex, genreCol + 1).getValue();
-        if (!currentGenre) sheet.getRange(rowIndex, genreCol + 1).setValue(item.genre);
-      }
-      if (posterCol > -1 && item.poster) {
-        var currentPoster = sheet.getRange(rowIndex, posterCol + 1).getValue();
-        if (!currentPoster) sheet.getRange(rowIndex, posterCol + 1).setValue(item.poster);
-      }
-      if (countryCol > -1 && item.country) {
-        var currentCountry = sheet.getRange(rowIndex, countryCol + 1).getValue();
-        if (!currentCountry) sheet.getRange(rowIndex, countryCol + 1).setValue(item.country);
-      }
-      if (langCol > -1 && item.originalLanguage) {
-        var currentLang = sheet.getRange(rowIndex, langCol + 1).getValue();
-        if (!currentLang) sheet.getRange(rowIndex, langCol + 1).setValue(item.originalLanguage);
-      }
-      if (runtimeCol > -1 && item.runtime) {
-        var currentRuntime = sheet.getRange(rowIndex, runtimeCol + 1).getValue();
-        if (!currentRuntime) sheet.getRange(rowIndex, runtimeCol + 1).setValue(item.runtime);
-      }
-      if (overviewCol > -1 && item.overview) {
-        var currentOverview = sheet.getRange(rowIndex, overviewCol + 1).getValue();
-        if (!currentOverview) sheet.getRange(rowIndex, overviewCol + 1).setValue(item.overview);
-      }
-      if (collectionCol > -1 && item.collection) {
-        var currentCollection = sheet.getRange(rowIndex, collectionCol + 1).getValue();
-        if (!currentCollection) sheet.getRange(rowIndex, collectionCol + 1).setValue(item.collection);
-      }
-      if (companiesCol > -1 && item.productionCompanies) {
-        var currentCompanies = sheet.getRange(rowIndex, companiesCol + 1).getValue();
-        if (!currentCompanies) sheet.getRange(rowIndex, companiesCol + 1).setValue(item.productionCompanies);
-      }
+      fillFields.forEach(function (f) {
+        if (!item[f.key]) return;
+        var cell = sheet.getRange(rowIndex, f.col + 1);
+        if (!cell.getValue()) cell.setValue(item[f.key]);
+      });
       if (eloCol > -1) sheet.getRange(rowIndex, eloCol + 1).setValue(item.elo);
       if (gamesCol > -1) sheet.getRange(rowIndex, gamesCol + 1).setValue(item.games);
       if (winCol > -1) sheet.getRange(rowIndex, winCol + 1).setValue(item.wins);
@@ -239,6 +204,18 @@ function doGet(e) {
   if (e && e.parameter && e.parameter.action === 'debugSheet') {
     return handleDebugSheet(e.parameter.name || '');
   }
+  if (e && e.parameter && e.parameter.action === 'addColumns') {
+    try {
+      agregarColumnasMovies_();
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: true })
+      ).setMimeType(ContentService.MimeType.JSON);
+    } catch (err) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: String(err) })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+  }
   if (e && e.parameter && e.parameter.action === 'backfillStart') {
     return handleBackfillStart(e.parameter.force === 'true');
   }
@@ -313,9 +290,9 @@ function handleBackfillRunOnce(force) {
       props.setProperty(BACKFILL_ROW_PROP, '2');
       props.setProperty(BACKFILL_FORCE_PROP, 'true');
     }
-    backfillTmdbBatch_();
+    var resultado = backfillTmdbBatch_();
     return ContentService.createTextOutput(
-      JSON.stringify({ ok: true, progreso: _backfillProgreso_() })
+      JSON.stringify({ ok: true, progreso: _backfillProgreso_(), debug: resultado ? resultado.debug : null })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(
@@ -350,6 +327,12 @@ function agregarColumnasMovies_() {
     'overview',
     'collection',
     'production_companies',
+    'vote_average',
+    'vote_count',
+    'cast',
+    'tagline',
+    'backdrop_path',
+    'imdb_id',
   ];
   var aAgregar = nuevas.filter(function (n) {
     return header.indexOf(n) === -1;
@@ -472,6 +455,12 @@ function backfillTmdbBatch_() {
     overview: header.indexOf('overview'),
     collection: header.indexOf('collection'),
     companies: header.indexOf('production_companies'),
+    voteAverage: header.indexOf('vote_average'),
+    voteCount: header.indexOf('vote_count'),
+    cast: header.indexOf('cast'),
+    tagline: header.indexOf('tagline'),
+    backdrop: header.indexOf('backdrop_path'),
+    imdbId: header.indexOf('imdb_id'),
   };
   var faltaColumna = Object.keys(cols).some(function (k) { return cols[k] === -1; });
   if (faltaColumna) {
@@ -490,6 +479,7 @@ function backfillTmdbBatch_() {
   // quede presupuesto de tiempo en esta ejecución — con fetchAll cada
   // chunk suele ser rápido, así que en una sola corrida podemos avanzar
   // bastante más que un solo chunk.
+  var allDebug = [];
   while (Date.now() < deadline) {
     var lastRow = sheet.getLastRow();
     var startRow = Number(props.getProperty(BACKFILL_ROW_PROP) || '2');
@@ -505,13 +495,14 @@ function backfillTmdbBatch_() {
         'Backfill completo. Total esta corrida: ' + totalProcesadas +
         ' actualizadas, ' + totalSaltadas + ' saltadas, en ' + chunks + ' chunk(s).'
       );
-      return;
+      return { totalProcesadas: totalProcesadas, totalSaltadas: totalSaltadas, chunks: chunks, debug: allDebug };
     }
 
     var resultado = _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadline, force);
     totalProcesadas += resultado.procesadas;
     totalSaltadas += resultado.saltadas;
     chunks++;
+    allDebug = allDebug.concat(resultado.debug);
     props.setProperty(BACKFILL_ROW_PROP, String(resultado.nextRow));
 
     if (resultado.cortoPorTiempo) break;
@@ -524,6 +515,7 @@ function backfillTmdbBatch_() {
     ' saltadas (sin id o ya completas), en ' + chunks + ' chunk(s). ' +
     'Sigue en fila ' + startRowFinal + ' de ' + lastRowFinal + '.'
   );
+  return { totalProcesadas: totalProcesadas, totalSaltadas: totalSaltadas, chunks: chunks, debug: allDebug };
 }
 
 function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadline, force) {
@@ -541,10 +533,14 @@ function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadli
   var pendientes = [];
   for (var k = 0; k < values.length; k++) {
     var r = values[k];
-    var yaCompleto = r[cols.country] && r[cols.runtime] && r[cols.overview];
+    // imdbId como "gate" de la tanda de campos más nueva (rating de TMDB,
+    // reparto, tagline, backdrop, imdb_id): si falta, reprocesamos la fila
+    // aunque el resto (país/duración/sinopsis) ya estuviera completo.
+    var yaCompleto = r[cols.country] && r[cols.runtime] && r[cols.overview] && r[cols.imdbId];
     if (r[cols.id] && (force || !yaCompleto)) pendientes.push(k);
   }
   var saltadas = values.length - pendientes.length;
+  var debug = [];
 
   for (var g = 0; g < pendientes.length; g += BACKFILL_GROUP_SIZE) {
     if (Date.now() > deadline) {
@@ -553,25 +549,43 @@ function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadli
       break;
     }
     var grupo = pendientes.slice(g, g + BACKFILL_GROUP_SIZE);
-    var requests = grupo.map(function (idx) {
-      return {
-        url: 'https://api.themoviedb.org/3/movie/' + encodeURIComponent(values[idx][cols.id]) +
+    // Dos pedidos por película (detalle + créditos, para el reparto) —
+    // van intercalados en el mismo fetchAll para que sigan siendo paralelos.
+    var requests = [];
+    grupo.forEach(function (idx) {
+      var tmdbId = encodeURIComponent(values[idx][cols.id]);
+      requests.push({
+        url: 'https://api.themoviedb.org/3/movie/' + tmdbId +
           '?api_key=' + encodeURIComponent(apiKey) + '&language=en-US',
         muteHttpExceptions: true,
-      };
+      });
+      requests.push({
+        url: 'https://api.themoviedb.org/3/movie/' + tmdbId +
+          '/credits?api_key=' + encodeURIComponent(apiKey),
+        muteHttpExceptions: true,
+      });
     });
 
+    var tFetch = Date.now();
     var responses;
     try {
       responses = UrlFetchApp.fetchAll(requests);
     } catch (e) {
       responses = [];
     }
+    debug.push({
+      grupo: g,
+      pelis: grupo.length,
+      requests: requests.length,
+      ms: Date.now() - tFetch,
+      responses: responses.length,
+    });
 
     for (var r2 = 0; r2 < grupo.length; r2++) {
       var row = values[grupo[r2]];
       try {
-        var resp = responses[r2];
+        var resp = responses[r2 * 2];
+        var creditsResp = responses[r2 * 2 + 1];
         if (resp && resp.getResponseCode() === 200) {
           var d = JSON.parse(resp.getContentText());
           var country = (d.production_countries || []).map(function (c) { return c.name; }).join(', ');
@@ -580,6 +594,14 @@ function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadli
             .map(function (c) { return c.name; })
             .join(', ');
           var collection = d.belongs_to_collection ? d.belongs_to_collection.name : '';
+          var cast = '';
+          if (creditsResp && creditsResp.getResponseCode() === 200) {
+            var creditsData = JSON.parse(creditsResp.getContentText());
+            cast = (creditsData.cast || [])
+              .slice(0, 5)
+              .map(function (c) { return c.name; })
+              .join(', ');
+          }
 
           if (country && (force || !row[cols.country])) row[cols.country] = country;
           if (d.original_language && (force || !row[cols.lang])) row[cols.lang] = d.original_language;
@@ -587,6 +609,12 @@ function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadli
           if (d.overview && (force || !row[cols.overview])) row[cols.overview] = d.overview;
           if (collection && (force || !row[cols.collection])) row[cols.collection] = collection;
           if (companies && (force || !row[cols.companies])) row[cols.companies] = companies;
+          if (d.vote_average && (force || !row[cols.voteAverage])) row[cols.voteAverage] = d.vote_average;
+          if (d.vote_count && (force || !row[cols.voteCount])) row[cols.voteCount] = d.vote_count;
+          if (cast && (force || !row[cols.cast])) row[cols.cast] = cast;
+          if (d.tagline && (force || !row[cols.tagline])) row[cols.tagline] = d.tagline;
+          if (d.backdrop_path && (force || !row[cols.backdrop])) row[cols.backdrop] = d.backdrop_path;
+          if (d.imdb_id && (force || !row[cols.imdbId])) row[cols.imdbId] = d.imdb_id;
         }
         procesadas++;
       } catch (e2) {
@@ -602,6 +630,7 @@ function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadli
     procesadas: procesadas,
     saltadas: saltadas,
     cortoPorTiempo: cortoPorTiempo,
+    debug: debug,
   };
 }
 
@@ -684,6 +713,10 @@ function handleTmdbDetails(tmdbId) {
     var collection = details.belongs_to_collection
       ? details.belongs_to_collection.name
       : '';
+    var cast = (credits.cast || [])
+      .slice(0, 5)
+      .map(function (c) { return c.name; })
+      .join(', ');
 
     return ContentService.createTextOutput(
       JSON.stringify({
@@ -699,6 +732,12 @@ function handleTmdbDetails(tmdbId) {
         overview: details.overview || '',
         collection: collection,
         productionCompanies: companies,
+        voteAverage: details.vote_average || '',
+        voteCount: details.vote_count || '',
+        cast: cast,
+        tagline: details.tagline || '',
+        backdrop: details.backdrop_path || '',
+        imdbId: details.imdb_id || '',
       })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
@@ -768,47 +807,60 @@ function handlePull() {
 
     var titleCol = header.indexOf('movie');
     var yearCol = header.indexOf('year');
-    var directorCol = header.indexOf('director');
-    var genreCol = header.indexOf('genre');
     var ratingCol = header.indexOf('rating');
     var diaryCol = header.indexOf('diary_count');
     var idCol = header.indexOf('id');
-    var posterCol = header.indexOf('poster_path');
     var eloCol = header.indexOf('elo_rating');
     var gamesCol = header.indexOf('elo_games');
     var winCol = header.indexOf('elo_win');
     var lossCol = header.indexOf('elo_loss');
-    var countryCol = header.indexOf('country');
-    var langCol = header.indexOf('original_language');
-    var runtimeCol = header.indexOf('runtime');
-    var overviewCol = header.indexOf('overview');
-    var collectionCol = header.indexOf('collection');
-    var companiesCol = header.indexOf('production_companies');
+
+    // Campos de texto simple: mismo nombre de columna en la Sheet, misma
+    // key en el JSON de salida. Siempre viajan como string ('' si la
+    // columna no existe o la celda está vacía).
+    var textFields = [
+      { col: header.indexOf('director'), key: 'director' },
+      { col: header.indexOf('genre'), key: 'genre' },
+      { col: header.indexOf('poster_path'), key: 'poster' },
+      { col: header.indexOf('country'), key: 'country' },
+      { col: header.indexOf('original_language'), key: 'originalLanguage' },
+      { col: header.indexOf('overview'), key: 'overview' },
+      { col: header.indexOf('collection'), key: 'collection' },
+      { col: header.indexOf('production_companies'), key: 'productionCompanies' },
+      { col: header.indexOf('cast'), key: 'cast' },
+      { col: header.indexOf('tagline'), key: 'tagline' },
+      { col: header.indexOf('backdrop_path'), key: 'backdrop' },
+      { col: header.indexOf('imdb_id'), key: 'imdbId' },
+    ];
+    // Campos numéricos: null si no hay columna o celda vacía, en vez de ''.
+    var numFields = [
+      { col: header.indexOf('runtime'), key: 'runtime' },
+      { col: header.indexOf('vote_average'), key: 'voteAverage' },
+      { col: header.indexOf('vote_count'), key: 'voteCount' },
+    ];
 
     var result = [];
     for (var i = 1; i < values.length; i++) {
       var row = values[i];
       if (!row[titleCol]) continue;
-      result.push({
+      var movie = {
         title: String(row[titleCol]),
         year: yearCol > -1 ? row[yearCol] : null,
-        director: directorCol > -1 ? String(row[directorCol] || '') : '',
-        genre: genreCol > -1 ? String(row[genreCol] || '') : '',
         rating: ratingCol > -1 ? row[ratingCol] : null,
         plays: diaryCol > -1 ? row[diaryCol] : null,
         tmdbId: idCol > -1 ? row[idCol] : '',
-        poster: posterCol > -1 ? row[posterCol] : '',
         elo: eloCol > -1 ? row[eloCol] : null,
         games: gamesCol > -1 ? row[gamesCol] : 0,
         wins: winCol > -1 ? row[winCol] : 0,
         losses: lossCol > -1 ? row[lossCol] : 0,
-        country: countryCol > -1 ? String(row[countryCol] || '') : '',
-        originalLanguage: langCol > -1 ? String(row[langCol] || '') : '',
-        runtime: runtimeCol > -1 ? row[runtimeCol] : null,
-        overview: overviewCol > -1 ? String(row[overviewCol] || '') : '',
-        collection: collectionCol > -1 ? String(row[collectionCol] || '') : '',
-        productionCompanies: companiesCol > -1 ? String(row[companiesCol] || '') : '',
+      };
+      textFields.forEach(function (f) {
+        movie[f.key] = f.col > -1 ? String(row[f.col] || '') : '';
       });
+      numFields.forEach(function (f) {
+        movie[f.key] = f.col > -1 ? row[f.col] : null;
+      });
+      result.push(movie);
     }
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, movies: result })
