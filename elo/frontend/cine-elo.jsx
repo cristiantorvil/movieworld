@@ -2935,6 +2935,19 @@ function DuelResult({ result, onNext }) {
         <div className={"result-card " + placeClass(r.place)} key={r.id}>
           <span className="result-badge">{placeLabel(r.place)}</span>
           <span className="result-title">{r.title}</span>
+          <span className="result-rank-row">
+            #{r.oldRank} → #{r.newRank}
+            {r.newRank < r.oldRank && (
+              <span className="result-rank-change up">
+                ↑ subió {r.oldRank - r.newRank}
+              </span>
+            )}
+            {r.newRank > r.oldRank && (
+              <span className="result-rank-change down">
+                ↓ bajó {r.newRank - r.oldRank}
+              </span>
+            )}
+          </span>
           <span className="result-elo-row">
             <span className="result-elo-old">{r.oldElo}</span>
             <span className="result-arrow">→</span>
@@ -2948,19 +2961,6 @@ function DuelResult({ result, onNext }) {
               {r.delta >= 0 ? "+" : ""}
               {r.delta}
             </span>
-          </span>
-          <span className="result-rank-row">
-            #{r.oldRank} → #{r.newRank}
-            {r.newRank < r.oldRank && (
-              <span className="result-rank-change up">
-                ↑ subió {r.oldRank - r.newRank}
-              </span>
-            )}
-            {r.newRank > r.oldRank && (
-              <span className="result-rank-change down">
-                ↓ bajó {r.newRank - r.oldRank}
-              </span>
-            )}
           </span>
         </div>
       ))}
