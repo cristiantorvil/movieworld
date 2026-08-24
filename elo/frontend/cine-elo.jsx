@@ -958,6 +958,15 @@ function CineEloApp() {
     return [...movies].sort((a, b) => b.elo - a.elo);
   }, [movies]);
 
+  // Solo pelis vistas (rating != 0) — las de watchlist quedan con el elo
+  // inicial congelado para siempre (nunca entran a un duelo), así que se
+  // amontonan al final de "ranking" y arruinan "Peores N" si se usa esa
+  // lista completa para calcular el rango.
+  const ratedRanking = useMemo(
+    () => ranking.filter((m) => Number(m.rating) !== 0),
+    [ranking]
+  );
+
   const yearBounds = useMemo(() => {
     if (!movies) return [1900, new Date().getFullYear()];
     const years = movies
@@ -1204,11 +1213,13 @@ function CineEloApp() {
     let pool = movies.filter((m) => Number(m.rating) !== 0);
 
     const effectiveMax =
-      duelRankMax > 0 ? Math.min(duelRankMax, movies.length) : movies.length;
+      duelRankMax > 0
+        ? Math.min(duelRankMax, ratedRanking.length)
+        : ratedRanking.length;
     const effectiveMin = Math.max(1, Math.min(duelRankMin, effectiveMax));
-    if (effectiveMin > 1 || effectiveMax < movies.length) {
+    if (effectiveMin > 1 || effectiveMax < ratedRanking.length) {
       const rangeIds = new Set(
-        ranking.slice(effectiveMin - 1, effectiveMax).map((m) => m.id)
+        ratedRanking.slice(effectiveMin - 1, effectiveMax).map((m) => m.id)
       );
       pool = pool.filter((m) => rangeIds.has(m.id));
     }
@@ -1257,7 +1268,7 @@ function CineEloApp() {
     return pool;
   }, [
     movies,
-    ranking,
+    ratedRanking,
     duelRankMin,
     duelRankMax,
     duelYearMin,
@@ -1598,7 +1609,7 @@ function CineEloApp() {
     duelLanguage ||
     onlyUndueled ||
     duelRankMin > 1 ||
-    (duelRankMax > 0 && movies && duelRankMax < movies.length) ||
+    (duelRankMax > 0 && duelRankMax < ratedRanking.length) ||
     (duelYearMin != null && duelYearMin > decadeBounds[0]) ||
     (duelYearMax != null && duelYearMax < decadeBounds[1]);
 
@@ -1820,20 +1831,23 @@ function CineEloApp() {
 
                     <label className="filter-label">
                       Rango del ranking
+                      <span className="filter-range-hint">
+                        (solo entre las vistas — {ratedRanking.length} pelis)
+                      </span>
                       <span className="filter-range-value">
                         #{duelRankMin} —{" "}
-                        {duelRankMax > 0 ? `#${duelRankMax}` : `#${movies.length}`}
+                        {duelRankMax > 0 ? `#${duelRankMax}` : `#${ratedRanking.length}`}
                       </span>
                       <DualRangeSlider
                         min={1}
-                        max={movies.length}
-                        step={Math.max(1, Math.round(movies.length / 200))}
+                        max={ratedRanking.length}
+                        step={Math.max(1, Math.round(ratedRanking.length / 200))}
                         valueMin={duelRankMin}
-                        valueMax={duelRankMax > 0 ? duelRankMax : movies.length}
+                        valueMax={duelRankMax > 0 ? duelRankMax : ratedRanking.length}
                         onChange={(newMin, newMax) =>
                           setDuelRankRange(
                             newMin,
-                            newMax >= movies.length ? 0 : newMax
+                            newMax >= ratedRanking.length ? 0 : newMax
                           )
                         }
                       />
@@ -1857,14 +1871,14 @@ function CineEloApp() {
                             key={"bottom" + n}
                             className={
                               "preset-btn" +
-                              (duelRankMin === Math.max(1, movies.length - n + 1) &&
-                              (duelRankMax === 0 || duelRankMax === movies.length)
+                              (duelRankMin === Math.max(1, ratedRanking.length - n + 1) &&
+                              (duelRankMax === 0 || duelRankMax === ratedRanking.length)
                                 ? " active"
                                 : "")
                             }
                             onClick={() =>
                               setDuelRankRange(
-                                Math.max(1, movies.length - n + 1),
+                                Math.max(1, ratedRanking.length - n + 1),
                                 0
                               )
                             }
@@ -3421,6 +3435,15 @@ function StyleSheet() {
       .filter-range-value {
         color: #F2C14E;
         font-weight: 700;
+      }
+      .filter-range-hint {
+        display: block;
+        color: #55575F;
+        font-size: 10px;
+        font-family: 'Space Mono', monospace;
+        text-transform: none;
+        letter-spacing: normal;
+        margin-top: 2px;
       }
       .dual-range {
         position: relative;
