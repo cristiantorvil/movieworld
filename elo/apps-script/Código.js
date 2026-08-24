@@ -10,6 +10,10 @@ function doPost(e) {
       return handleCreateSheet(data);
     }
 
+    if (data && data.type === 'deleteMovie') {
+      return handleDeleteMovie(data.title);
+    }
+
     var items = Array.isArray(data) ? data : [data];
 
     var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -149,6 +153,34 @@ function handleCreateSheet(data) {
 
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, sheet: name, rows: rows.length })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function handleDeleteMovie(title) {
+  try {
+    if (!title) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'Falta el título a borrar.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var values = sheet.getDataRange().getValues();
+    var titleCol = values[0].indexOf('movie');
+    for (var i = 1; i < values.length; i++) {
+      if (String(values[i][titleCol]) === title) {
+        sheet.deleteRow(i + 1);
+        return ContentService.createTextOutput(
+          JSON.stringify({ ok: true, deleted: title })
+        ).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: 'No se encontró "' + title + '" en la Sheet.' })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(

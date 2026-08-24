@@ -1357,10 +1357,21 @@ function CineEloApp() {
   };
 
   const removeMovie = (id) => {
+    const movie = movies.find((m) => m.id === id);
     const next = movies.filter((m) => m.id !== id);
     setMovies(next);
     if (pair && pair.some((p) => p.id === id)) {
       setPair(null);
+    }
+    if (syncUrl && movie) {
+      fetch(syncUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ type: "deleteMovie", title: movie.title }),
+      }).catch(() => {
+        // si falla el borrado remoto, sigue borrada localmente; el próximo
+        // pull la vuelve a traer del Sheet, pero eso ya lo verías reflejado.
+      });
     }
   };
 
