@@ -3738,9 +3738,10 @@ function StyleSheet() {
       .result-elo-row {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
         font-family: 'Space Mono', monospace;
-        font-size: 14px;
+        font-size: 11px;
+        color: #8A8D98;
       }
       .result-elo-old {
         color: #8A8D98;
@@ -3750,12 +3751,13 @@ function StyleSheet() {
       }
       .result-elo-new {
         font-weight: 700;
+        color: #8A8D98;
       }
       .result-delta {
         font-weight: 700;
-        padding: 2px 8px;
+        padding: 1px 6px;
         border-radius: 999px;
-        font-size: 12px;
+        font-size: 10px;
       }
       .result-delta-up {
         color: #14151A;
@@ -3767,14 +3769,15 @@ function StyleSheet() {
       }
       .result-rank-row {
         font-family: 'Space Mono', monospace;
-        font-size: 12px;
-        color: #8A8D98;
+        font-size: 26px;
+        font-weight: 700;
+        color: #EDEAE3;
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
       }
       .result-rank-change {
-        font-size: 11px;
+        font-size: 13px;
         font-weight: 700;
       }
       .result-rank-change.up {
