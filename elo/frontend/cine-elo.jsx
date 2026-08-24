@@ -266,6 +266,7 @@ function CineEloApp() {
   const [duelLanguage, setDuelLanguage] = useState("");
   const [onlyUndueled, setOnlyUndueled] = useState(false);
   const [winnerStaysMode, setWinnerStaysMode] = useState(false);
+  const [loserStaysMode, setLoserStaysMode] = useState(false);
   const pendingChampionRef = useRef(null);
   const [showDirectorDuel, setShowDirectorDuel] = useState(false);
   const [directorDuelA, setDirectorDuelA] = useState("");
@@ -317,12 +318,22 @@ function CineEloApp() {
     window.storage.set("cine-elo-quick-mode", String(next), false).catch(() => {});
   };
 
-  // cargar preferencia de "ganador se mantiene"
+  // cargar preferencia de "ganador se mantiene" / "perdedor se mantiene"
+  // (son excluyentes: activar una apaga la otra, no tiene sentido "mantener"
+  // dos películas distintas a la vez).
   useEffect(() => {
     (async () => {
       try {
         const res = await window.storage.get("cine-elo-winner-stays", false);
         if (res && res.value) setWinnerStaysMode(res.value === "true");
+      } catch (e) {
+        // default false
+      }
+    })();
+    (async () => {
+      try {
+        const res = await window.storage.get("cine-elo-loser-stays", false);
+        if (res && res.value) setLoserStaysMode(res.value === "true");
       } catch (e) {
         // default false
       }
@@ -333,6 +344,20 @@ function CineEloApp() {
     const next = !winnerStaysMode;
     setWinnerStaysMode(next);
     window.storage.set("cine-elo-winner-stays", String(next), false).catch(() => {});
+    if (next && loserStaysMode) {
+      setLoserStaysMode(false);
+      window.storage.set("cine-elo-loser-stays", "false", false).catch(() => {});
+    }
+  };
+
+  const toggleLoserStays = () => {
+    const next = !loserStaysMode;
+    setLoserStaysMode(next);
+    window.storage.set("cine-elo-loser-stays", String(next), false).catch(() => {});
+    if (next && winnerStaysMode) {
+      setWinnerStaysMode(false);
+      window.storage.set("cine-elo-winner-stays", "false", false).catch(() => {});
+    }
   };
 
   // cargar torneo en curso, si había uno
@@ -881,12 +906,13 @@ function CineEloApp() {
     return candidates[candidates.length - 1];
   };
 
-  // Para "ganador se mantiene": elegir rival solo entre los de elo más
-  // parecido al campeón. Si se usara weightedPick a secas, el peso por
-  // "pocos duelos" (que casi todas las pelis comparten al ppio) hace que
-  // la MASA total de candidatos lejanos en elo gane por cantidad, aunque
-  // cada rival cercano pese más individualmente — el campeón terminaba
-  // peleando contra cualquier cosa sin duelos, sin importar el nivel.
+  // Para "ganador se mantiene" / "perdedor se mantiene": elegir rival solo
+  // entre los de elo más parecido a la película que se mantiene. Si se
+  // usara weightedPick a secas, el peso por "pocos duelos" (que casi todas
+  // las pelis comparten al ppio) hace que la MASA total de candidatos
+  // lejanos en elo gane por cantidad, aunque cada rival cercano pese más
+  // individualmente — terminaba peleando contra cualquier cosa sin duelos,
+  // sin importar el nivel.
   const pickNearbyChallenger = (list, excludeIds, anchorElo) => {
     const candidates = list.filter((m) => !excludeIds.includes(m.id));
     if (candidates.length === 0) return null;
@@ -1419,10 +1445,16 @@ function CineEloApp() {
       .filter(Boolean);
     if (ordered.length < 2) return;
     const winner = ordered[0];
+    const loser = ordered[ordered.length - 1];
 
-    // Si "ganador se mantiene" está activo, el próximo duelo arranca con
-    // este mismo ganador en vez de armarse desde cero.
-    pendingChampionRef.current = winnerStaysMode ? winner.id : null;
+    // Si "ganador se mantiene" o "perdedor se mantiene" está activo, el
+    // próximo duelo arranca con esa misma película en vez de armarse desde
+    // cero (son excluyentes entre sí, ver toggleWinnerStays/toggleLoserStays).
+    pendingChampionRef.current = winnerStaysMode
+      ? winner.id
+      : loserStaysMode
+      ? loser.id
+      : null;
 
     // Guardamos el estado previo para poder deshacer este duelo.
     const prevMovies = movies;
@@ -1732,6 +1764,15 @@ function CineEloApp() {
                     title="El ganador se queda a enfrentar rivales nuevos"
                   >
                     👑 Ganador se mantiene{winnerStaysMode ? " · ON" : ""}
+                  </button>
+                  <button
+                    className={
+                      "quick-toggle" + (loserStaysMode ? " active" : "")
+                    }
+                    onClick={toggleLoserStays}
+                    title="El perdedor se queda a enfrentar rivales nuevos"
+                  >
+                    💀 Perdedor se mantiene{loserStaysMode ? " · ON" : ""}
                   </button>
                   <button
                     className={
