@@ -1537,7 +1537,7 @@ function CineEloApp() {
   };
 
   // Auto-avanzar al siguiente duelo: 1s por cada rival enfrentado
-  // (duelo de 2 → 1s, de 3 → 2s, de 4 → 3s)
+  // (duelo de N → N-1 segundos, así que uno de 10 tarda 9s antes de saltar)
   useEffect(() => {
     if (!result) return;
     const durationMs = (result.ranking.length - 1) * 1000;
@@ -1907,7 +1907,7 @@ function CineEloApp() {
                     <label className="filter-label">
                       Tamaño del duelo
                       <div className="filter-range-presets">
-                        {[2, 3, 4].map((n) => (
+                        {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
                           <button
                             key={n}
                             className={
