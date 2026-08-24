@@ -246,6 +246,9 @@ function CineEloApp() {
   const [tab, setTab] = useState("comparar");
   const [newTitle, setNewTitle] = useState("");
   const [pair, setPair] = useState(null);
+  // Orden en que se fue clickeando en un duelo de 3/4: mejor a peor,
+  // en progreso hasta que solo queda una (que sale última automáticamente).
+  const [rankingPicks, setRankingPicks] = useState([]);
   const [result, setResult] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [error, setError] = useState("");
@@ -920,6 +923,7 @@ function CineEloApp() {
       [chosen[i], chosen[j]] = [chosen[j], chosen[i]];
     }
     setPair(chosen);
+    setRankingPicks([]);
   }, []);
 
   const directorDuelActive = Boolean(directorDuelA && directorDuelB);
@@ -946,6 +950,7 @@ function CineEloApp() {
       return;
     }
     setPair(Math.random() < 0.5 ? [a, b] : [b, a]);
+    setRankingPicks([]);
   }, [movies, directorDuelA, directorDuelB]);
 
   const ranking = useMemo(() => {
@@ -1359,11 +1364,31 @@ function CineEloApp() {
     }
   };
 
-  const choose = (winnerId) => {
+  // Click durante un duelo: en uno de 2, resuelve directo (la otra queda
+  // última sola). En uno de 3/4, cada click agrega a la fila de "mejor a
+  // peor" hasta que solo falta una, que se completa sola sin necesitar click.
+  const chooseRank = (movieId) => {
     if (!pair || result) return;
-    const winner = pair.find((m) => m.id === winnerId);
-    const losers = pair.filter((m) => m.id !== winnerId);
-    if (!winner) return;
+    if (rankingPicks.includes(movieId)) return;
+    const nextPicks = [...rankingPicks, movieId];
+    if (nextPicks.length >= pair.length - 1) {
+      const lastId = pair.map((m) => m.id).find((id) => !nextPicks.includes(id));
+      resolveDuel(lastId ? [...nextPicks, lastId] : nextPicks);
+    } else {
+      setRankingPicks(nextPicks);
+    }
+  };
+
+  // orderedIds: de mejor a peor. Resuelve cada par (i mejor que j) como una
+  // comparación 1 a 1 independiente — un duelo de 4 son 6 pares — y suma
+  // los deltas de elo de cada película sobre todos los pares en que participó.
+  const resolveDuel = (orderedIds) => {
+    if (!pair) return;
+    const ordered = orderedIds
+      .map((id) => pair.find((m) => m.id === id))
+      .filter(Boolean);
+    if (ordered.length < 2) return;
+    const winner = ordered[0];
 
     // Si "ganador se mantiene" está activo, el próximo duelo arranca con
     // este mismo ganador en vez de armarse desde cero.
@@ -1371,50 +1396,44 @@ function CineEloApp() {
 
     // Guardamos el estado previo para poder deshacer este duelo.
     const prevMovies = movies;
-    const affectedIds = pair.map((m) => m.id);
+    const affectedIds = ordered.map((m) => m.id);
 
-    // Elo multi-rival: el ganador se mide contra CADA rival mostrado, como
-    // si fueran comparaciones 1 a 1 independientes, y se suman los deltas.
-    let winnerEloRunning = winner.elo;
-    let winnerComparisonsRunning = winner.comparisons;
-    let totalWinnerDelta = 0;
-    const loserResults = losers.map((loser) => {
-      const expWinner = expectedScore(winnerEloRunning, loser.elo);
-      const expLoser = expectedScore(loser.elo, winnerEloRunning);
-      const winnerDeltaVs = Math.round(getKFactor(winnerComparisonsRunning) * (1 - expWinner));
-      const loserDelta = Math.round(getKFactor(loser.comparisons) * (0 - expLoser));
-      totalWinnerDelta += winnerDeltaVs;
-      winnerEloRunning += winnerDeltaVs;
-      winnerComparisonsRunning += 1;
-      return {
-        id: loser.id,
-        title: loser.title,
-        oldElo: loser.elo,
-        newElo: loser.elo + loserDelta,
-        delta: loserDelta,
-      };
-    });
+    const eloRunning = new Map(ordered.map((m) => [m.id, m.elo]));
+    const comparisonsRunning = new Map(ordered.map((m) => [m.id, m.comparisons]));
+    const totalDelta = new Map(ordered.map((m) => [m.id, 0]));
+    const winsAdded = new Map(ordered.map((m) => [m.id, 0]));
+    const gamesAdded = new Map(ordered.map((m) => [m.id, 0]));
 
-    const newWinnerElo = winner.elo + totalWinnerDelta;
-    const loserEloMap = new Map(loserResults.map((r) => [r.id, r.newElo]));
+    for (let i = 0; i < ordered.length; i++) {
+      for (let j = i + 1; j < ordered.length; j++) {
+        const a = ordered[i]; // le gana a b en este par
+        const b = ordered[j];
+        const eloA = eloRunning.get(a.id);
+        const eloB = eloRunning.get(b.id);
+        const expA = expectedScore(eloA, eloB);
+        const expB = expectedScore(eloB, eloA);
+        const deltaA = Math.round(getKFactor(comparisonsRunning.get(a.id)) * (1 - expA));
+        const deltaB = Math.round(getKFactor(comparisonsRunning.get(b.id)) * (0 - expB));
+        eloRunning.set(a.id, eloA + deltaA);
+        eloRunning.set(b.id, eloB + deltaB);
+        comparisonsRunning.set(a.id, comparisonsRunning.get(a.id) + 1);
+        comparisonsRunning.set(b.id, comparisonsRunning.get(b.id) + 1);
+        totalDelta.set(a.id, totalDelta.get(a.id) + deltaA);
+        totalDelta.set(b.id, totalDelta.get(b.id) + deltaB);
+        winsAdded.set(a.id, winsAdded.get(a.id) + 1);
+        gamesAdded.set(a.id, gamesAdded.get(a.id) + 1);
+        gamesAdded.set(b.id, gamesAdded.get(b.id) + 1);
+      }
+    }
 
     const next = movies.map((m) => {
-      if (m.id === winner.id) {
-        return {
-          ...m,
-          elo: newWinnerElo,
-          comparisons: m.comparisons + losers.length,
-          wins: m.wins + losers.length,
-        };
-      }
-      if (loserEloMap.has(m.id)) {
-        return {
-          ...m,
-          elo: loserEloMap.get(m.id),
-          comparisons: m.comparisons + 1,
-        };
-      }
-      return m;
+      if (!totalDelta.has(m.id)) return m;
+      return {
+        ...m,
+        elo: m.elo + totalDelta.get(m.id),
+        comparisons: m.comparisons + gamesAdded.get(m.id),
+        wins: m.wins + winsAdded.get(m.id),
+      };
     });
 
     setMovies(next);
@@ -1436,30 +1455,26 @@ function CineEloApp() {
     if (quickMode) {
       // Modo rápido: sin pantalla de resultado, directo al siguiente duelo
       setPair(null);
+      setRankingPicks([]);
       return;
     }
 
     // Posición en el ranking antes y después del duelo
     const oldSorted = [...movies].sort((x, y) => y.elo - x.elo);
     const newSorted = [...next].sort((x, y) => y.elo - x.elo);
-    const oldWinnerRank = oldSorted.findIndex((m) => m.id === winner.id) + 1;
-    const newWinnerRank = newSorted.findIndex((m) => m.id === winner.id) + 1;
-    const losersForResult = loserResults.map((r) => ({
-      ...r,
-      oldRank: oldSorted.findIndex((m) => m.id === r.id) + 1,
-      newRank: newSorted.findIndex((m) => m.id === r.id) + 1,
+
+    const ranking = ordered.map((m, idx) => ({
+      id: m.id,
+      title: m.title,
+      place: idx + 1,
+      oldElo: m.elo,
+      newElo: m.elo + totalDelta.get(m.id),
+      delta: totalDelta.get(m.id),
+      oldRank: oldSorted.findIndex((x) => x.id === m.id) + 1,
+      newRank: newSorted.findIndex((x) => x.id === m.id) + 1,
     }));
 
-    setResult({
-      winnerId: winner.id,
-      winnerTitle: winner.title,
-      oldWinnerElo: winner.elo,
-      newWinnerElo,
-      winnerDelta: totalWinnerDelta,
-      oldWinnerRank,
-      newWinnerRank,
-      losers: losersForResult,
-    });
+    setResult({ ranking });
   };
 
   const undoLastDuel = () => {
@@ -1471,6 +1486,7 @@ function CineEloApp() {
     syncToSheet(revertItems);
     setLastAction(null);
     setResult(null);
+    setRankingPicks([]);
     const newDuelCount = Math.max(0, duelCount - 1);
     setDuelCount(newDuelCount);
     window.storage
@@ -1524,7 +1540,7 @@ function CineEloApp() {
   // (duelo de 2 → 1s, de 3 → 2s, de 4 → 3s)
   useEffect(() => {
     if (!result) return;
-    const durationMs = result.losers.length * 1000;
+    const durationMs = (result.ranking.length - 1) * 1000;
     const timer = setTimeout(() => {
       nextDuel();
     }, durationMs);
@@ -1950,20 +1966,35 @@ function CineEloApp() {
                   <DuelResult result={result} onNext={nextDuel} />
                 ) : pair ? (
                   <div className="duel">
-                    <p className="duel-caption">¿cuál es mejor?</p>
+                    <p className="duel-caption">
+                      {rankingPicks.length === 0
+                        ? "¿cuál es mejor?"
+                        : "de las que quedan, ¿cuál es la mejor?"}
+                    </p>
                     <div
                       className={
                         "duel-cards duel-cards-" + pair.length
                       }
                     >
-                      {pair.map((m, i) => (
+                      {pair.map((m, i) => {
+                        const pickIndex = rankingPicks.indexOf(m.id);
+                        const picked = pickIndex !== -1;
+                        return (
                         <React.Fragment key={m.id}>
                           <button
-                            className="movie-card"
-                            onClick={() => choose(m.id)}
+                            className={
+                              "movie-card" + (picked ? " movie-card-picked" : "")
+                            }
+                            onClick={() => chooseRank(m.id)}
+                            disabled={picked}
                           >
                             <div className="poster-wrap">
                               <MoviePoster path={m.poster} title={m.title} />
+                              {picked && (
+                                <span className="pick-order-badge">
+                                  {pickIndex + 1}º
+                                </span>
+                              )}
                             </div>
                             <div className="movie-card-body">
                               <span className="rank-badge">
@@ -1999,7 +2030,8 @@ function CineEloApp() {
                             </div>
                           )}
                         </React.Fragment>
-                      ))}
+                        );
+                      })}
                     </div>
                     <button
                       className="skip"
@@ -2846,53 +2878,54 @@ function MoviePoster({ path, title }) {
 }
 
 function DuelResult({ result, onNext }) {
-  const {
-    winnerTitle,
-    oldWinnerElo,
-    newWinnerElo,
-    winnerDelta,
-    oldWinnerRank,
-    newWinnerRank,
-    losers,
-  } = result;
+  const { ranking } = result;
+  const n = ranking.length;
+  const rivals = n - 1; // cuántos rivales entraron en este duelo, para escalar el hint
+  const winnerDelta = ranking[0].delta;
+
+  const placeLabel = (place) => {
+    if (place === 1) return "ganó";
+    if (place === n) return "perdió";
+    return `${place}º lugar`;
+  };
+  const placeClass = (place) => {
+    if (place === 1) return "result-winner";
+    if (place === n) return "result-loser";
+    return "result-middle";
+  };
 
   return (
     <div className="duel-result">
       <p className="duel-caption">resultado</p>
-      <div className="result-card result-winner">
-        <span className="result-badge">ganó</span>
-        <span className="result-title">{winnerTitle}</span>
-        <span className="result-elo-row">
-          <span className="result-elo-old">{oldWinnerElo}</span>
-          <span className="result-arrow">→</span>
-          <span className="result-elo-new">{newWinnerElo}</span>
-          <span className="result-delta result-delta-up">+{winnerDelta}</span>
-        </span>
-        <span className="result-rank-row">
-          #{oldWinnerRank} → #{newWinnerRank}
-          {newWinnerRank < oldWinnerRank && (
-            <span className="result-rank-change up">
-              ↑ subió {oldWinnerRank - newWinnerRank}
-            </span>
-          )}
-        </span>
-      </div>
 
-      {losers.map((l) => (
-        <div className="result-card result-loser" key={l.id}>
-          <span className="result-badge">perdió</span>
-          <span className="result-title">{l.title}</span>
+      {ranking.map((r) => (
+        <div className={"result-card " + placeClass(r.place)} key={r.id}>
+          <span className="result-badge">{placeLabel(r.place)}</span>
+          <span className="result-title">{r.title}</span>
           <span className="result-elo-row">
-            <span className="result-elo-old">{l.oldElo}</span>
+            <span className="result-elo-old">{r.oldElo}</span>
             <span className="result-arrow">→</span>
-            <span className="result-elo-new">{l.newElo}</span>
-            <span className="result-delta result-delta-down">{l.delta}</span>
+            <span className="result-elo-new">{r.newElo}</span>
+            <span
+              className={
+                "result-delta " +
+                (r.delta >= 0 ? "result-delta-up" : "result-delta-down")
+              }
+            >
+              {r.delta >= 0 ? "+" : ""}
+              {r.delta}
+            </span>
           </span>
           <span className="result-rank-row">
-            #{l.oldRank} → #{l.newRank}
-            {l.newRank > l.oldRank && (
+            #{r.oldRank} → #{r.newRank}
+            {r.newRank < r.oldRank && (
+              <span className="result-rank-change up">
+                ↑ subió {r.oldRank - r.newRank}
+              </span>
+            )}
+            {r.newRank > r.oldRank && (
               <span className="result-rank-change down">
-                ↓ bajó {l.newRank - l.oldRank}
+                ↓ bajó {r.newRank - r.oldRank}
               </span>
             )}
           </span>
@@ -2900,9 +2933,9 @@ function DuelResult({ result, onNext }) {
       ))}
 
       <p className="result-hint">
-        {Math.abs(winnerDelta) <= 2 * losers.length
+        {Math.abs(winnerDelta) <= 2 * rivals
           ? "Ya era favorita (mejor puntuada): por eso sumó poco."
-          : Math.abs(winnerDelta) >= 6 * losers.length
+          : Math.abs(winnerDelta) >= 6 * rivals
           ? "Le ganó a rivales bastante más arriba: por eso sumó tanto."
           : "Diferencia moderada de nivel entre las opciones."}
       </p>
@@ -2910,7 +2943,7 @@ function DuelResult({ result, onNext }) {
       <div className="auto-advance-bar">
         <div
           className="auto-advance-fill"
-          style={{ animationDuration: `${losers.length}s` }}
+          style={{ animationDuration: `${rivals}s` }}
         />
       </div>
     </div>
@@ -3487,6 +3520,26 @@ function StyleSheet() {
       .movie-card:active {
         transform: scale(0.97);
       }
+      .movie-card-picked {
+        opacity: 0.45;
+        cursor: default;
+        border-color: rgba(242,193,78,0.4);
+      }
+      .movie-card-picked:active {
+        transform: none;
+      }
+      .pick-order-badge {
+        position: absolute;
+        top: 6px;
+        left: 6px;
+        background: #F2C14E;
+        color: #14151A;
+        font-family: 'Space Mono', monospace;
+        font-weight: 700;
+        font-size: 12px;
+        padding: 2px 7px;
+        border-radius: 999px;
+      }
       .poster-wrap {
         position: relative;
         flex-shrink: 0;
@@ -3620,6 +3673,9 @@ function StyleSheet() {
       }
       .result-loser {
         opacity: 0.7;
+      }
+      .result-middle {
+        opacity: 0.85;
       }
       .result-badge {
         font-family: 'Space Mono', monospace;
