@@ -739,24 +739,32 @@ function CineEloApp() {
             };
           });
 
-          // Sincronizamos con el Sheet ya al abrir, no solo cuando tocás
-          // "restaurar desde el Sheet" a mano — si no, un dispositivo/
-          // navegador que ya tenía algo guardado localmente se queda pegado
-          // con esos valores viejos para siempre, aunque el Sheet (la fuente
-          // real) haya cambiado desde otro lado.
-          try {
-            const pullRes = await fetch(`${DEFAULT_SYNC_URL}?action=pull`);
-            const pullData = await pullRes.json();
-            if (pullData && pullData.ok && Array.isArray(pullData.movies)) {
-              const { merged } = mergeSheetIntoMovies(migrated, pullData.movies);
-              setMovies(merged);
-            } else {
-              setMovies(migrated);
-            }
-          } catch (e) {
-            // sin conexión: seguimos con lo que había en local, como antes.
-            setMovies(migrated);
-          }
+          // Mostramos lo local YA — no bloqueamos la pantalla de carga
+          // esperando al Sheet (con ~5300 pelis el pull completo pesa varios
+          // MB y puede tardar más de 10s; antes se esperaba sin timeout y la
+          // app se quedaba en "cargando" para siempre si esa espera colgaba).
+          setMovies(migrated);
+
+          // Sincronizamos con el Sheet en segundo plano, sin bloquear nada —
+          // si no, un dispositivo/navegador que ya tenía algo guardado
+          // localmente se queda pegado con esos valores viejos para siempre,
+          // aunque el Sheet (la fuente real) haya cambiado desde otro lado.
+          fetch(`${DEFAULT_SYNC_URL}?action=pull`)
+            .then((r) => r.json())
+            .then((pullData) => {
+              if (pullData && pullData.ok && Array.isArray(pullData.movies)) {
+                setMovies((current) => {
+                  const { merged } = mergeSheetIntoMovies(
+                    current || migrated,
+                    pullData.movies
+                  );
+                  return merged;
+                });
+              }
+            })
+            .catch(() => {
+              // sin conexión o el pull tardó/falló: seguimos con lo local.
+            });
         } else {
           // Navegador sin progreso local: antes de arrancar de cero, intentamos
           // traer el progreso real desde el Sheet, para no pisarlo con valores

@@ -850,17 +850,19 @@ function handlePull() {
     // Campos de texto simple: mismo nombre de columna en la Sheet, misma
     // key en el JSON de salida. Siempre viajan como string ('' si la
     // columna no existe o la celda está vacía).
+    //
+    // A propósito NO viajan acá: overview, cast, tagline, production_companies.
+    // Son texto largo (con ~5300 pelis, el pull completo pasó de pesar unos
+    // pocos cientos de KB a 4.6 MB y tardar ~13s solo por esto) y hoy nada
+    // en la app los muestra — quedan en la Sheet igual, solo no se bajan acá.
+    // Si en algún momento se usan en la UI, agregarlos de nuevo a esta lista.
     var textFields = [
       { col: header.indexOf('director'), key: 'director' },
       { col: header.indexOf('genre'), key: 'genre' },
       { col: header.indexOf('poster_path'), key: 'poster' },
       { col: header.indexOf('country'), key: 'country' },
       { col: header.indexOf('original_language'), key: 'originalLanguage' },
-      { col: header.indexOf('overview'), key: 'overview' },
       { col: header.indexOf('collection'), key: 'collection' },
-      { col: header.indexOf('production_companies'), key: 'productionCompanies' },
-      { col: header.indexOf('cast'), key: 'cast' },
-      { col: header.indexOf('tagline'), key: 'tagline' },
       { col: header.indexOf('backdrop_path'), key: 'backdrop' },
       { col: header.indexOf('imdb_id'), key: 'imdbId' },
     ];
