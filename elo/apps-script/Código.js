@@ -248,6 +248,36 @@ function doGet(e) {
       ).setMimeType(ContentService.MimeType.JSON);
     }
   }
+  if (e && e.parameter && e.parameter.action === 'undoRoofSexMistake') {
+    try {
+      var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+      var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      var eloCol = header.indexOf('elo_rating');
+      // Fila 3368 = la "Roof Sex" real y distinta del duplicado corrupto
+      // ("\nRoof Sex" en la 5340), pisada sin querer por fixBrokenElo por
+      // matchear las dos filas solo por id de TMDB. Su elo real era 1198.
+      sheet.getRange(3368, eloCol + 1).setValue(1198);
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: true, restaurado: 'fila 3368 (Roof Sex) a elo 1198' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    } catch (err) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: String(err) })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+  }
+  if (e && e.parameter && e.parameter.action === 'fixBrokenElo') {
+    try {
+      var resultado = arreglarEloRotos_();
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: true, arregladas: resultado })
+      ).setMimeType(ContentService.MimeType.JSON);
+    } catch (err) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: String(err) })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+  }
   if (e && e.parameter && e.parameter.action === 'backfillStart') {
     return handleBackfillStart(e.parameter.force === 'true');
   }
@@ -259,6 +289,18 @@ function doGet(e) {
   }
   if (e && e.parameter && e.parameter.action === 'backfillRunOnce') {
     return handleBackfillRunOnce(e.parameter.force === 'true');
+  }
+  if (e && e.parameter && e.parameter.action === 'auditStart') {
+    return handleAuditStart();
+  }
+  if (e && e.parameter && e.parameter.action === 'auditStatus') {
+    return handleAuditStatus();
+  }
+  if (e && e.parameter && e.parameter.action === 'auditStop') {
+    return handleAuditStop();
+  }
+  if (e && e.parameter && e.parameter.action === 'auditRunOnce') {
+    return handleAuditRunOnce();
   }
   return ContentService.createTextOutput(
     JSON.stringify({ ok: true, msg: "Cine Elo webhook activo" })
@@ -337,6 +379,61 @@ function handleBackfillRunOnce(force) {
   }
 }
 
+function handleAuditStart() {
+  try {
+    iniciarAuditoriaTmdb(false);
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, progreso: _auditoriaProgreso_() })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function handleAuditStatus() {
+  try {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, progreso: _auditoriaProgreso_() })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function handleAuditStop() {
+  try {
+    detenerAuditoriaTmdb();
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, progreso: _auditoriaProgreso_() })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function handleAuditRunOnce() {
+  try {
+    auditarTmdbBatch_();
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, progreso: _auditoriaProgreso_() })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({
+        ok: false,
+        error: String(err),
+        stack: err && err.stack ? String(err.stack) : null,
+      })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
 function compartirHojaPublica() {
   var id = SpreadsheetApp.getActiveSpreadsheet().getId();
   DriveApp.getFileById(id).setSharing(
@@ -377,6 +474,65 @@ function agregarColumnasMovies_() {
     .getRange(1, header.length + 1, 1, aAgregar.length)
     .setValues([aAgregar]);
   Logger.log('Agregadas: ' + aAgregar.join(', '));
+}
+
+// Utilidad puntual (no de uso general): 5 películas quedaron con elo roto
+// (vacío, "NaN", o un número absurdamente bajo tipo 31/32) — probablemente
+// de un duelo de 4 viejo que se corrompió (4 de las 5 comparten exactamente
+// 3 duelos jugados). No hay forma de reconstruir el elo "correcto" real sin
+// el historial de rivales de esos duelos, así que las reseteamos al mismo
+// valor inicial que le daría la app a una peli recién agregada con ese
+// rating/veces vista — no se toca games/wins/losses, que sí se ven bien.
+// 210548 (Roof Sex) sacado de esta lista a propósito: hay DOS filas con ese
+// mismo id de TMDB (una legítima, otra un duplicado con el título corrupto
+// "\nRoof Sex") y matchear solo por id pisó la fila legítima por error la
+// primera vez — ver undoRoofSexMistake. Ya quedaron las dos arregladas a
+// mano, no hace falta que este loop las vuelva a tocar.
+var BROKEN_ELO_IDS = ['308', '844', '1271', '14161']; // Broken Flowers, 2046, 300, 2012
+
+function _computeInitialElo_(rating, plays) {
+  var r = typeof rating === 'number' ? rating : 2.5;
+  var p = typeof plays === 'number' ? plays : 1;
+  var ratingBonus = (r - 2.5) * 100;
+  var playsBonus = Math.min(p - 1, 10) * 10;
+  return Math.round(1200 + ratingBonus + playsBonus);
+}
+
+function arreglarEloRotos_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+  var values = sheet.getDataRange().getValues();
+  var header = values[0];
+  var idCol = header.indexOf('id');
+  var titleCol = header.indexOf('movie');
+  var ratingCol = header.indexOf('rating');
+  var diaryCol = header.indexOf('diary_count');
+  var eloCol = header.indexOf('elo_rating');
+
+  var arregladas = [];
+  for (var i = 1; i < values.length; i++) {
+    var row = values[i];
+    var idStr = String(row[idCol]);
+    if (BROKEN_ELO_IDS.indexOf(idStr) === -1) continue;
+
+    var ratingRaw = row[ratingCol];
+    var rating =
+      typeof ratingRaw === 'number'
+        ? ratingRaw
+        : parseFloat(String(ratingRaw).replace(',', '.'));
+    var plays = Number(row[diaryCol]) || 1;
+    var nuevoElo = _computeInitialElo_(rating, plays);
+    var eloAnterior = row[eloCol];
+
+    sheet.getRange(i + 1, eloCol + 1).setValue(nuevoElo);
+    arregladas.push({
+      movie: row[titleCol],
+      id: idStr,
+      eloAnterior: String(eloAnterior),
+      eloNuevo: nuevoElo,
+    });
+  }
+  Logger.log('Arregladas: ' + JSON.stringify(arregladas));
+  return arregladas;
 }
 
 // ── Backfill de metadata de TMDB para las películas ya cargadas ──
@@ -663,6 +819,292 @@ function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadli
     saltadas: saltadas,
     cortoPorTiempo: cortoPorTiempo,
     debug: debug,
+  };
+}
+
+// ── Auditoría: título/director/poster guardados vs. lo que dice TMDB hoy ──
+// Solo LEE y anota en una pestaña nueva (AUDIT_TMDB) — no toca MOVIES para
+// nada. Misma infraestructura de lotes/trigger que el backfill.
+//
+// Para arrancar: correr "iniciarAuditoriaTmdb" una vez (o
+// ?action=auditStart / auditRunOnce por URL, mismo patrón que el backfill).
+
+var AUDIT_ROW_PROP = 'AUDIT_TMDB_ROW';
+var AUDIT_SHEET_NAME = 'AUDIT_TMDB';
+
+function iniciarAuditoriaTmdb(correrPrimerLoteYa) {
+  _borrarTriggerAuditoria_();
+  ScriptApp.newTrigger('auditarTmdbBatch_').timeBased().everyMinutes(5).create();
+  var props = PropertiesService.getScriptProperties();
+  if (!props.getProperty(AUDIT_ROW_PROP)) {
+    props.setProperty(AUDIT_ROW_PROP, '2'); // fila 1 = encabezado
+    _prepararHojaAuditoria_();
+  }
+  if (correrPrimerLoteYa !== false) {
+    Logger.log('Auditoría arrancada. Corriendo el primer lote ahora mismo...');
+    auditarTmdbBatch_();
+  } else {
+    Logger.log('Auditoría arrancada. El trigger va a correr el primer lote en breve.');
+  }
+}
+
+function detenerAuditoriaTmdb() {
+  _borrarTriggerAuditoria_();
+  Logger.log('Auditoría pausada. El progreso queda guardado para retomar con iniciarAuditoriaTmdb.');
+}
+
+function progresoAuditoriaTmdb() {
+  var p = _auditoriaProgreso_();
+  Logger.log(
+    'Progreso: ' + p.hechas + ' / ' + p.total + ' filas (' + p.pct + '%). ' +
+    'Inconsistencias encontradas hasta ahora: ' + p.encontradas + '.' +
+    (p.completo ? ' COMPLETO.' : p.hayTrigger ? ' Trigger activo, sigue solo.' : ' Sin trigger activo — corré iniciarAuditoriaTmdb para retomar.')
+  );
+}
+
+function _auditoriaProgreso_() {
+  var props = PropertiesService.getScriptProperties();
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+  var lastRow = sheet.getLastRow();
+  var startRow = Number(props.getProperty(AUDIT_ROW_PROP) || '2');
+  var total = Math.max(lastRow - 1, 0);
+  var hechas = Math.max(Math.min(startRow - 2, total), 0);
+  var pct = total > 0 ? Math.round((hechas / total) * 100) : 100;
+  var hayTrigger = ScriptApp.getProjectTriggers().some(function (t) {
+    return t.getHandlerFunction() === 'auditarTmdbBatch_';
+  });
+  var auditSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AUDIT_SHEET_NAME);
+  var encontradas = auditSheet ? Math.max(auditSheet.getLastRow() - 1, 0) : 0;
+  return {
+    hechas: hechas,
+    total: total,
+    pct: pct,
+    hayTrigger: hayTrigger,
+    completo: startRow > lastRow,
+    encontradas: encontradas,
+  };
+}
+
+function _borrarTriggerAuditoria_() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'auditarTmdbBatch_') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+}
+
+function _prepararHojaAuditoria_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(AUDIT_SHEET_NAME);
+  if (sheet) ss.deleteSheet(sheet);
+  sheet = ss.insertSheet(AUDIT_SHEET_NAME);
+  sheet.appendRow([
+    'movie', 'year', 'tmdb_id', 'tmdb_title', 'coincide_titulo',
+    'director_sheet', 'director_tmdb', 'coincide_director',
+    'poster_sheet', 'poster_tmdb', 'coincide_poster',
+    'tipo_inconsistencia', 'link_tmdb',
+  ]);
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, 13).setFontWeight('bold');
+}
+
+function _normTitle_(t) {
+  return String(t || '')
+    .toLowerCase()
+    .replace(/\(\d{4}\)/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function _normDirector_(d) {
+  return String(d || '')
+    .split(',')
+    .map(function (s) { return s.trim().toLowerCase(); })
+    .filter(Boolean)
+    .sort()
+    .join('|');
+}
+
+function auditarTmdbBatch_() {
+  var start = Date.now();
+  var deadline = start + BACKFILL_BATCH_SECONDS * 1000;
+  var props = PropertiesService.getScriptProperties();
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+  var lastCol = sheet.getLastColumn();
+  var header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var cols = {
+    title: header.indexOf('movie'),
+    year: header.indexOf('year'),
+    id: header.indexOf('id'),
+    director: header.indexOf('director'),
+    poster: header.indexOf('poster_path'),
+  };
+  var faltaColumna = Object.keys(cols).some(function (k) { return cols[k] === -1; });
+  if (faltaColumna) {
+    Logger.log('Faltan columnas base en MOVIES (movie/year/id/director/poster_path).');
+    _borrarTriggerAuditoria_();
+    return;
+  }
+
+  var auditSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AUDIT_SHEET_NAME);
+  if (!auditSheet) {
+    _prepararHojaAuditoria_();
+    auditSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AUDIT_SHEET_NAME);
+  }
+
+  var apiKey = getTmdbApiKey_();
+  var totalChecked = 0;
+  var totalFound = 0;
+  var chunks = 0;
+
+  while (Date.now() < deadline) {
+    var lastRow = sheet.getLastRow();
+    var startRow = Number(props.getProperty(AUDIT_ROW_PROP) || '2');
+    if (startRow > lastRow) {
+      _borrarTriggerAuditoria_();
+      Logger.log(
+        'Auditoría completa. Revisadas: ' + totalChecked +
+        ', con inconsistencias: ' + totalFound + ', en ' + chunks + ' chunk(s).'
+      );
+      return;
+    }
+
+    var resultado = _auditarChunk_(sheet, auditSheet, startRow, lastRow, lastCol, cols, apiKey, deadline);
+    totalChecked += resultado.checked;
+    totalFound += resultado.found;
+    chunks++;
+    props.setProperty(AUDIT_ROW_PROP, String(resultado.nextRow));
+
+    if (resultado.cortoPorTiempo) break;
+  }
+
+  var startRowFinal = Number(props.getProperty(AUDIT_ROW_PROP) || '2');
+  var lastRowFinal = sheet.getLastRow();
+  Logger.log(
+    'Lote: ' + totalChecked + ' revisadas, ' + totalFound +
+    ' con inconsistencias, en ' + chunks + ' chunk(s). ' +
+    'Sigue en fila ' + startRowFinal + ' de ' + lastRowFinal + '.'
+  );
+}
+
+function _auditarChunk_(sheet, auditSheet, startRow, lastRow, lastCol, cols, apiKey, deadline) {
+  var chunkSize = Math.min(lastRow - startRow + 1, BACKFILL_CHUNK_ROWS);
+  var values = sheet.getRange(startRow, 1, chunkSize, lastCol).getValues();
+  var checked = 0;
+  var found = 0;
+  var i = values.length;
+  var cortoPorTiempo = false;
+
+  var pendientes = [];
+  for (var k = 0; k < values.length; k++) {
+    if (values[k][cols.id]) pendientes.push(k);
+  }
+
+  var hallazgos = [];
+
+  for (var g = 0; g < pendientes.length; g += BACKFILL_GROUP_SIZE) {
+    if (Date.now() > deadline) {
+      i = pendientes[g];
+      cortoPorTiempo = true;
+      break;
+    }
+    var grupo = pendientes.slice(g, g + BACKFILL_GROUP_SIZE);
+    var requests = [];
+    grupo.forEach(function (idx) {
+      var tmdbId = encodeURIComponent(values[idx][cols.id]);
+      requests.push({
+        url: 'https://api.themoviedb.org/3/movie/' + tmdbId +
+          '?api_key=' + encodeURIComponent(apiKey) + '&language=en-US',
+        muteHttpExceptions: true,
+      });
+      requests.push({
+        url: 'https://api.themoviedb.org/3/movie/' + tmdbId +
+          '/credits?api_key=' + encodeURIComponent(apiKey),
+        muteHttpExceptions: true,
+      });
+    });
+
+    var responses;
+    try {
+      responses = UrlFetchApp.fetchAll(requests);
+    } catch (e) {
+      responses = [];
+    }
+
+    for (var r2 = 0; r2 < grupo.length; r2++) {
+      var row = values[grupo[r2]];
+      checked++;
+      try {
+        var resp = responses[r2 * 2];
+        var creditsResp = responses[r2 * 2 + 1];
+        if (!resp || resp.getResponseCode() !== 200) continue;
+        var d = JSON.parse(resp.getContentText());
+
+        var tmdbDirector = '';
+        if (creditsResp && creditsResp.getResponseCode() === 200) {
+          var creditsData = JSON.parse(creditsResp.getContentText());
+          tmdbDirector = (creditsData.crew || [])
+            .filter(function (c) { return c.job === 'Director'; })
+            .map(function (c) { return c.name; })
+            .join(', ');
+        }
+
+        var sheetTitle = row[cols.title];
+        var sheetDirector = row[cols.director];
+        var sheetPoster = row[cols.poster];
+
+        var titleMatch = _normTitle_(sheetTitle) === _normTitle_(d.title);
+        var directorMatch = _normDirector_(sheetDirector) === _normDirector_(tmdbDirector);
+        // El poster "por defecto" de TMDB cambia con el tiempo (votos de la
+        // comunidad) aunque el id esté perfecto — comparar sin la barra
+        // inicial (formatos viejos la guardaban sin ella) y NO usarlo solo
+        // para decidir si la fila es una inconsistencia real, para no
+        // llenar el reporte de falsos positivos. Se guarda igual, como dato.
+        var posterMatch =
+          String(sheetPoster || '').replace(/^\//, '') ===
+          String(d.poster_path || '').replace(/^\//, '');
+
+        if (!titleMatch || !directorMatch) {
+          found++;
+          var tipos = [];
+          if (!titleMatch) tipos.push('título');
+          if (!directorMatch) tipos.push('director');
+          if (!posterMatch) tipos.push('poster (informativo)');
+          hallazgos.push([
+            sheetTitle,
+            row[cols.year],
+            values[grupo[r2]][cols.id],
+            d.title || '',
+            titleMatch ? 'sí' : 'NO',
+            sheetDirector,
+            tmdbDirector,
+            directorMatch ? 'sí' : 'NO',
+            sheetPoster,
+            d.poster_path || '',
+            posterMatch ? 'sí' : 'NO',
+            tipos.join(' + '),
+            'https://www.themoviedb.org/movie/' + values[grupo[r2]][cols.id],
+          ]);
+        }
+      } catch (e2) {
+        // seguimos con la próxima
+      }
+    }
+    Utilities.sleep(BACKFILL_SLEEP_MS);
+  }
+
+  if (hallazgos.length > 0) {
+    var startAppend = auditSheet.getLastRow() + 1;
+    auditSheet
+      .getRange(startAppend, 1, hallazgos.length, hallazgos[0].length)
+      .setValues(hallazgos);
+  }
+
+  return {
+    nextRow: startRow + i,
+    checked: checked,
+    found: found,
+    cortoPorTiempo: cortoPorTiempo,
   };
 }
 
