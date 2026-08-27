@@ -276,6 +276,8 @@ function CineEloApp() {
   const [showDirectorDuel, setShowDirectorDuel] = useState(false);
   const [directorDuelA, setDirectorDuelA] = useState("");
   const [directorDuelB, setDirectorDuelB] = useState("");
+  const [extremesMode, setExtremesMode] = useState(false);
+  const [extremesQueue, setExtremesQueue] = useState([]);
   const [tournament, setTournament] = useState(null); // null = sin torneo activo
   const [tournamentFilterGenre, setTournamentFilterGenre] = useState("");
   const [tournamentFilterDecade, setTournamentFilterDecade] = useState("all");
@@ -286,6 +288,7 @@ function CineEloApp() {
   const [duelYearMin, setDuelYearMin] = useState(null);
   const [duelYearMax, setDuelYearMax] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
+  const [showModes, setShowModes] = useState(false);
   const [rankFilterDirector, setRankFilterDirector] = useState("");
   const [rankFilterGenre, setRankFilterGenre] = useState("");
   const [rankFilterDecade, setRankFilterDecade] = useState("all");
@@ -1320,7 +1323,60 @@ function CineEloApp() {
     duelGenre,
   ]);
 
+  // "Extremos por rating": una tanda de una sola pasada — un duelo por cada
+  // rating (0.5 a 5) con al menos 2 pelis elegibles (respeta los filtros de
+  // duelPool), enfrentando la de mayor Elo contra la de menor Elo de ese
+  // rating. Se arma toda la cola de una — no se recalcula duelo a duelo.
+  const toggleExtremesMode = useCallback(() => {
+    if (extremesMode) {
+      setExtremesMode(false);
+      setExtremesQueue([]);
+      setPair(null);
+      return;
+    }
+    const byRating = new Map();
+    duelPool.forEach((m) => {
+      const r = Number(m.rating);
+      if (!byRating.has(r)) byRating.set(r, []);
+      byRating.get(r).push(m);
+    });
+    const queue = [];
+    byRating.forEach((list) => {
+      if (list.length < 2) return;
+      let maxM = list[0];
+      let minM = list[0];
+      list.forEach((m) => {
+        if (m.elo > maxM.elo) maxM = m;
+        if (m.elo < minM.elo) minM = m;
+      });
+      if (maxM.id === minM.id) {
+        const other = list.find((m) => m.id !== maxM.id);
+        if (!other) return;
+        minM = other;
+      }
+      queue.push(Math.random() < 0.5 ? [maxM, minM] : [minM, maxM]);
+    });
+    if (queue.length === 0) return;
+    setShowDirectorDuel(false);
+    setDirectorDuelA("");
+    setDirectorDuelB("");
+    setExtremesQueue(queue.slice(1));
+    setPair(queue[0]);
+    setRankingPicks([]);
+    setExtremesMode(true);
+  }, [extremesMode, duelPool]);
+
   useEffect(() => {
+    if (extremesMode) {
+      if (pair) return;
+      if (extremesQueue.length > 0) {
+        setPair(extremesQueue[0]);
+        setExtremesQueue((q) => q.slice(1));
+      } else {
+        setExtremesMode(false);
+      }
+      return;
+    }
     if (directorDuelActive) {
       if (!pair) pickDirectorDuelPair();
       return;
@@ -1340,6 +1396,8 @@ function CineEloApp() {
     duelSize,
     directorDuelActive,
     pickDirectorDuelPair,
+    extremesMode,
+    extremesQueue,
   ]);
 
   const [newTmdbId, setNewTmdbId] = useState("");
@@ -1658,6 +1716,14 @@ function CineEloApp() {
     (duelYearMin != null && duelYearMin > decadeBounds[0]) ||
     (duelYearMax != null && duelYearMax < decadeBounds[1]);
 
+  const hasActiveModes =
+    quickMode ||
+    winnerStaysMode ||
+    loserStaysMode ||
+    directorDuelActive ||
+    extremesMode ||
+    duelSize !== 2;
+
   const setDuelRankRange = (min, max) => {
     setDuelRankMin(min);
     setDuelRankMax(max);
@@ -1746,48 +1812,21 @@ function CineEloApp() {
                 <div className="top-controls">
                   <button
                     className={
+                      "filters-toggle" + (hasActiveModes ? " active" : "")
+                    }
+                    onClick={() => setShowModes((v) => !v)}
+                  >
+                    Modos de duelo{hasActiveModes ? " · activos" : ""}{" "}
+                    {showModes ? "▲" : "▼"}
+                  </button>
+                  <button
+                    className={
                       "filters-toggle" + (hasActiveFilters ? " active" : "")
                     }
                     onClick={() => setShowFilters((v) => !v)}
                   >
                     Filtros{hasActiveFilters ? " · activos" : ""}{" "}
                     {showFilters ? "▲" : "▼"}
-                  </button>
-                  <button
-                    className={
-                      "quick-toggle" + (quickMode ? " active" : "")
-                    }
-                    onClick={toggleQuickMode}
-                  >
-                    ⚡ Modo rápido{quickMode ? " · ON" : ""}
-                  </button>
-                  <button
-                    className={
-                      "quick-toggle" + (winnerStaysMode ? " active" : "")
-                    }
-                    onClick={toggleWinnerStays}
-                    title="El ganador se queda a enfrentar rivales nuevos"
-                  >
-                    👑 Ganador se mantiene{winnerStaysMode ? " · ON" : ""}
-                  </button>
-                  <button
-                    className={
-                      "quick-toggle" + (loserStaysMode ? " active" : "")
-                    }
-                    onClick={toggleLoserStays}
-                    title="El perdedor se queda a enfrentar rivales nuevos"
-                  >
-                    💀 Perdedor se mantiene{loserStaysMode ? " · ON" : ""}
-                  </button>
-                  <button
-                    className={
-                      "quick-toggle" + (showDirectorDuel ? " active" : "")
-                    }
-                    onClick={() => setShowDirectorDuel((v) => !v)}
-                    title="Duelear solo entre las pelis de dos directores"
-                  >
-                    ⚔️ Duelo de directores
-                    {directorDuelActive ? " · ON" : ""}
                   </button>
                   <button
                     className="undo-toggle"
@@ -1799,44 +1838,113 @@ function CineEloApp() {
                   </button>
                 </div>
 
-                {showDirectorDuel && (
+                {showModes && (
                   <div className="filters-panel">
-                    <SearchablePicker
-                      label="Director A"
-                      options={directorsList}
-                      value={directorDuelA}
-                      onChange={(d) => {
-                        setDirectorDuelA(d);
-                        setPair(null);
-                      }}
-                    />
-                    <SearchablePicker
-                      label="Director B"
-                      options={directorsList}
-                      value={directorDuelB}
-                      onChange={(d) => {
-                        setDirectorDuelB(d);
-                        setPair(null);
-                      }}
-                    />
-                    {directorDuelA &&
-                      directorDuelB &&
-                      directorDuelA === directorDuelB && (
-                        <p className="form-error">
-                          Elegí dos directores distintos.
-                        </p>
-                      )}
-                    {(directorDuelA || directorDuelB) && (
+                    <div className="filter-range-presets">
                       <button
-                        className="skip"
-                        onClick={() => {
-                          setDirectorDuelA("");
-                          setDirectorDuelB("");
-                          setPair(null);
-                        }}
+                        className={
+                          "quick-toggle" + (quickMode ? " active" : "")
+                        }
+                        onClick={toggleQuickMode}
                       >
-                        limpiar duelo de directores
+                        ⚡ Modo rápido{quickMode ? " · ON" : ""}
                       </button>
+                      <button
+                        className={
+                          "quick-toggle" + (winnerStaysMode ? " active" : "")
+                        }
+                        onClick={toggleWinnerStays}
+                        title="El ganador se queda a enfrentar rivales nuevos"
+                      >
+                        👑 Ganador se mantiene{winnerStaysMode ? " · ON" : ""}
+                      </button>
+                      <button
+                        className={
+                          "quick-toggle" + (loserStaysMode ? " active" : "")
+                        }
+                        onClick={toggleLoserStays}
+                        title="El perdedor se queda a enfrentar rivales nuevos"
+                      >
+                        💀 Perdedor se mantiene{loserStaysMode ? " · ON" : ""}
+                      </button>
+                      <button
+                        className={
+                          "quick-toggle" + (showDirectorDuel ? " active" : "")
+                        }
+                        onClick={() => setShowDirectorDuel((v) => !v)}
+                        title="Duelear solo entre las pelis de dos directores"
+                      >
+                        ⚔️ Duelo de directores
+                        {directorDuelActive ? " · ON" : ""}
+                      </button>
+                      <button
+                        className={
+                          "quick-toggle" + (extremesMode ? " active" : "")
+                        }
+                        onClick={toggleExtremesMode}
+                        title="Un duelo por cada nota: la de mayor Elo contra la de menor Elo"
+                      >
+                        🎯 Extremos por rating{extremesMode ? " · ON" : ""}
+                      </button>
+                    </div>
+
+                    <label className="filter-label">
+                      Tamaño del duelo
+                      <div className="filter-range-presets">
+                        {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                          <button
+                            key={n}
+                            className={
+                              "preset-btn" + (duelSize === n ? " active" : "")
+                            }
+                            onClick={() => changeDuelSize(n)}
+                          >
+                            {n} pelis
+                          </button>
+                        ))}
+                      </div>
+                    </label>
+
+                    {showDirectorDuel && (
+                      <>
+                        <SearchablePicker
+                          label="Director A"
+                          options={directorsList}
+                          value={directorDuelA}
+                          onChange={(d) => {
+                            setDirectorDuelA(d);
+                            setPair(null);
+                          }}
+                        />
+                        <SearchablePicker
+                          label="Director B"
+                          options={directorsList}
+                          value={directorDuelB}
+                          onChange={(d) => {
+                            setDirectorDuelB(d);
+                            setPair(null);
+                          }}
+                        />
+                        {directorDuelA &&
+                          directorDuelB &&
+                          directorDuelA === directorDuelB && (
+                            <p className="form-error">
+                              Elegí dos directores distintos.
+                            </p>
+                          )}
+                        {(directorDuelA || directorDuelB) && (
+                          <button
+                            className="skip"
+                            onClick={() => {
+                              setDirectorDuelA("");
+                              setDirectorDuelB("");
+                              setPair(null);
+                            }}
+                          >
+                              limpiar duelo de directores
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 )}
@@ -1981,23 +2089,6 @@ function CineEloApp() {
                           </option>
                         ))}
                       </select>
-                    </label>
-
-                    <label className="filter-label">
-                      Tamaño del duelo
-                      <div className="filter-range-presets">
-                        {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-                          <button
-                            key={n}
-                            className={
-                              "preset-btn" + (duelSize === n ? " active" : "")
-                            }
-                            onClick={() => changeDuelSize(n)}
-                          >
-                            {n} pelis
-                          </button>
-                        ))}
-                      </div>
                     </label>
 
                     <label className="filter-label filter-checkbox">

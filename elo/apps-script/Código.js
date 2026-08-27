@@ -236,6 +236,9 @@ function doGet(e) {
   if (e && e.parameter && e.parameter.action === 'fixTmdbMatch') {
     return handleFixTmdbMatch(e.parameter.title || '', e.parameter.newId || '');
   }
+  if (e && e.parameter && e.parameter.action === 'setField') {
+    return handleSetField(e.parameter.title || '', e.parameter.col || '', e.parameter.value || '');
+  }
   if (e && e.parameter && e.parameter.action === 'tmdbFindByImdb') {
     return handleTmdbFindByImdb(e.parameter.imdbId || '');
   }
@@ -1225,6 +1228,45 @@ function handleTmdbSearchWide(query, year) {
 // de TMDB con los datos frescos del id correcto. A diferencia del sync
 // normal (fillFields), acá SIEMPRE pisa, porque el dato guardado es el
 // que está mal.
+// Setter genérico de una sola celda por título exacto — para revertir a
+// mano un campo que un fix automático (fixTmdbMatch, etc.) pisó de más.
+function handleSetField(title, col, value) {
+  try {
+    if (!title || !col) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'Faltan title o col.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var values = sheet.getDataRange().getValues();
+    var header = values[0];
+    var titleCol = header.indexOf('movie');
+    var colIdx = header.indexOf(col);
+    if (colIdx === -1) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'No existe la columna "' + col + '".' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var rowIndex = -1;
+    for (var i = 1; i < values.length; i++) {
+      if (String(values[i][titleCol]) === title) { rowIndex = i; break; }
+    }
+    if (rowIndex === -1) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'No se encontró "' + title + '" en la Sheet.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    sheet.getRange(rowIndex + 1, colIdx + 1).setValue(value);
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, title: title, col: col, value: value })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
 function handleFixTmdbMatch(title, newId) {
   try {
     if (!title || !newId) {
