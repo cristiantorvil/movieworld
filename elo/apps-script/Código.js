@@ -15,6 +15,12 @@ function doPost(e) {
     }
 
     var items = Array.isArray(data) ? data : [data];
+    // Un resultado de duelo (allowCreate ausente) solo puede actualizar
+    // filas que ya existen — nunca crear una nueva. Evita que una peli
+    // borrada del Sheet pero todavía en el localStorage de alguien (pestaña
+    // vieja, cache sin refrescar) "resucite" sola al guardarse un duelo.
+    // Solo el alta explícita de una peli nueva manda allowCreate=1.
+    var allowCreate = e && e.parameter && e.parameter.allowCreate === '1';
 
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName('MOVIES');
@@ -58,11 +64,16 @@ function doPost(e) {
 
     var updated = [];
     var created = [];
+    var skipped = [];
 
     items.forEach(function (item) {
       var rowIndex = titleToRow[item.title];
 
       if (!rowIndex) {
+        if (!allowCreate) {
+          skipped.push(item.title);
+          return;
+        }
         var newRow = new Array(header.length).fill('');
         newRow[titleCol] = item.title;
         fillFields.forEach(function (f) {
@@ -94,7 +105,7 @@ function doPost(e) {
     });
 
     return ContentService.createTextOutput(
-      JSON.stringify({ ok: true, updated: updated, created: created })
+      JSON.stringify({ ok: true, updated: updated, created: created, skipped: skipped })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(

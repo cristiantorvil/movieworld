@@ -687,8 +687,15 @@ function CineEloApp() {
     }
   };
 
+  // allowCreate=false (default): un resultado de duelo solo puede
+  // ACTUALIZAR filas que ya existen en el Sheet — nunca crear una nueva.
+  // Si no lo fuera, una peli borrada del Sheet pero todavía presente en el
+  // localStorage de alguien (pestaña vieja sin este fix, cache no
+  // refrescado) podía "resucitar" sola en cuanto le tocaba un duelo. Solo
+  // el alta explícita de una película nueva (addMovie / bulkSyncAll) pasa
+  // allowCreate=true.
   const syncToSheet = useCallback(
-    async (items) => {
+    async (items, allowCreate = false) => {
       if (!syncUrl) return;
       setSyncStatus("syncing");
       try {
@@ -707,7 +714,10 @@ function CineEloApp() {
           });
           return item;
         });
-        await fetch(syncUrl, {
+        const url = allowCreate
+          ? `${syncUrl}?allowCreate=1`
+          : syncUrl;
+        await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "text/plain;charset=utf-8" },
           body: JSON.stringify(payload),
@@ -1468,7 +1478,7 @@ function CineEloApp() {
     setMovies(next);
     setNewTitle("");
     setNewTmdbId("");
-    syncToSheet([newMovie]);
+    syncToSheet([newMovie], true);
   };
 
   const removeMovie = (id) => {
