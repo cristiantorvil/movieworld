@@ -1906,7 +1906,7 @@ function CineEloApp() {
                         }
                       />
                       <div className="filter-range-presets">
-                        {[10, 100, 250, 500].map((n) => (
+                        {[10, 100, 250, 500, 1000].map((n) => (
                           <button
                             key={"top" + n}
                             className={
@@ -1920,7 +1920,7 @@ function CineEloApp() {
                             Top {n}
                           </button>
                         ))}
-                        {[10, 100, 250, 500].map((n) => (
+                        {[10, 100, 250, 500, 1000].map((n) => (
                           <button
                             key={"bottom" + n}
                             className={
