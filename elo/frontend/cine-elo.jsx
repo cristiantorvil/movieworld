@@ -148,21 +148,26 @@ function mergeSheetIntoMovies(localMovies, sheetMovies) {
   const localTitles = new Set(localMovies.map((m) => m.title));
   let updatedCount = 0;
 
-  const next = localMovies.map((m) => {
-    const existing = sheetMap.get(m.title);
-    if (!existing || existing.elo == null) return m;
-    updatedCount++;
-    const merged = { ...m };
-    META_FIELDS.forEach(({ key }) => {
-      merged[key] = existing[key] || m[key];
+  // El pull siempre trae el estado completo del Sheet, así que una peli
+  // local que ya no aparece ahí fue borrada directamente en el Sheet
+  // (fuera de la app) y hay que sacarla de la caché local también.
+  const next = localMovies
+    .filter((m) => sheetMap.has(m.title))
+    .map((m) => {
+      const existing = sheetMap.get(m.title);
+      if (existing.elo == null) return m;
+      updatedCount++;
+      const merged = { ...m };
+      META_FIELDS.forEach(({ key }) => {
+        merged[key] = existing[key] || m[key];
+      });
+      merged.rating = existing.rating != null ? existing.rating : m.rating;
+      merged.plays = existing.plays != null ? existing.plays : m.plays;
+      merged.elo = existing.elo;
+      merged.comparisons = existing.games || 0;
+      merged.wins = existing.wins || 0;
+      return merged;
     });
-    merged.rating = existing.rating != null ? existing.rating : m.rating;
-    merged.plays = existing.plays != null ? existing.plays : m.plays;
-    merged.elo = existing.elo;
-    merged.comparisons = existing.games || 0;
-    merged.wins = existing.wins || 0;
-    return merged;
-  });
 
   const newOnes = [];
   sheetMovies.forEach((sm) => {

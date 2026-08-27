@@ -230,6 +230,15 @@ function doGet(e) {
   if (e && e.parameter && e.parameter.action === 'tmdbSearch') {
     return handleTmdbSearch(e.parameter.query || '');
   }
+  if (e && e.parameter && e.parameter.action === 'tmdbSearchWide') {
+    return handleTmdbSearchWide(e.parameter.query || '', e.parameter.year || '');
+  }
+  if (e && e.parameter && e.parameter.action === 'fixTmdbMatch') {
+    return handleFixTmdbMatch(e.parameter.title || '', e.parameter.newId || '');
+  }
+  if (e && e.parameter && e.parameter.action === 'tmdbFindByImdb') {
+    return handleTmdbFindByImdb(e.parameter.imdbId || '');
+  }
   if (e && e.parameter && e.parameter.action === 'tmdbDetails') {
     return handleTmdbDetails(e.parameter.id || '');
   }
@@ -1148,6 +1157,202 @@ function handleTmdbSearch(query) {
     });
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, results: results })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Búsqueda ampliada para casos difíciles del audit: filtra por año y trae
+// el director de cada candidato (via fetchAll paralelo) para poder
+// desambiguar sin tener que pedir tmdbDetails uno por uno.
+function handleTmdbSearchWide(query, year) {
+  try {
+    var apiKey = getTmdbApiKey_();
+    if (!apiKey || !query) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: true, results: [] })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var url = 'https://api.themoviedb.org/3/search/movie?api_key=' +
+      encodeURIComponent(apiKey) + '&query=' + encodeURIComponent(query) +
+      '&language=en-US&include_adult=false';
+    if (year) {
+      url += '&primary_release_year=' + encodeURIComponent(year);
+    }
+    var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    var json = JSON.parse(resp.getContentText());
+    var base = (json.results || []).slice(0, 15);
+    var creditUrls = base.map(function (m) {
+      return 'https://api.themoviedb.org/3/movie/' + m.id + '/credits?api_key=' +
+        encodeURIComponent(apiKey) + '&language=en-US';
+    });
+    var creditResps = creditUrls.length
+      ? UrlFetchApp.fetchAll(creditUrls.map(function (u) {
+          return { url: u, muteHttpExceptions: true };
+        }))
+      : [];
+    var results = base.map(function (m, i) {
+      var director = '';
+      try {
+        var crew = JSON.parse(creditResps[i].getContentText()).crew || [];
+        director = crew.filter(function (c) { return c.job === 'Director'; })
+          .map(function (c) { return c.name; }).join(', ');
+      } catch (e2) {}
+      return {
+        tmdbId: m.id,
+        title: m.title,
+        year: m.release_date ? m.release_date.substring(0, 4) : '',
+        director: director,
+        popularity: m.popularity,
+        poster: m.poster_path || '',
+      };
+    });
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, results: results })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Corrige una fila cuyo id de TMDB guardado apunta a la película/serie
+// equivocada (detectado por el audit): re-pisa TODOS los campos derivados
+// de TMDB con los datos frescos del id correcto. A diferencia del sync
+// normal (fillFields), acá SIEMPRE pisa, porque el dato guardado es el
+// que está mal.
+function handleFixTmdbMatch(title, newId) {
+  try {
+    if (!title || !newId) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'Faltan title o newId.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var apiKey = getTmdbApiKey_();
+    if (!apiKey) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'Falta configurar TMDB_API_KEY en Script Properties.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var values = sheet.getDataRange().getValues();
+    var header = values[0];
+    var titleCol = header.indexOf('movie');
+    var rowIndex = -1;
+    for (var i = 1; i < values.length; i++) {
+      if (String(values[i][titleCol]) === title) { rowIndex = i; break; }
+    }
+    if (rowIndex === -1) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'No se encontró "' + title + '" en la Sheet.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var detUrl = 'https://api.themoviedb.org/3/movie/' + encodeURIComponent(newId) +
+      '?api_key=' + encodeURIComponent(apiKey) + '&language=en-US';
+    var credUrl = 'https://api.themoviedb.org/3/movie/' + encodeURIComponent(newId) +
+      '/credits?api_key=' + encodeURIComponent(apiKey) + '&language=en-US';
+    var responses = UrlFetchApp.fetchAll([
+      { url: detUrl, muteHttpExceptions: true },
+      { url: credUrl, muteHttpExceptions: true },
+    ]);
+    if (responses[0].getResponseCode() !== 200) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'TMDB details falló para id ' + newId })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var d = JSON.parse(responses[0].getContentText());
+    var crew = [];
+    try { crew = JSON.parse(responses[1].getContentText()).crew || []; } catch (e2) {}
+    var director = crew.filter(function (c) { return c.job === 'Director'; })
+      .map(function (c) { return c.name; }).join(', ');
+    var cast = [];
+    try { cast = JSON.parse(responses[1].getContentText()).cast || []; } catch (e3) {}
+    var castNames = cast.slice(0, 5).map(function (c) { return c.name; }).join(', ');
+
+    var fields = {
+      id: d.id,
+      year: d.release_date ? d.release_date.substring(0, 4) : '',
+      director: director,
+      genre: (d.genres || []).map(function (g) { return g.name; }).join(', '),
+      poster_path: d.poster_path || '',
+      country: (d.production_countries || []).map(function (c) { return c.name; }).join(', '),
+      original_language: d.original_language || '',
+      runtime: d.runtime || '',
+      overview: d.overview || '',
+      collection: d.belongs_to_collection ? d.belongs_to_collection.name : '',
+      production_companies: (d.production_companies || []).slice(0, 3).map(function (c) { return c.name; }).join(', '),
+      vote_average: d.vote_average || '',
+      vote_count: d.vote_count || '',
+      cast: castNames,
+      tagline: d.tagline || '',
+      backdrop_path: d.backdrop_path || '',
+      imdb_id: d.imdb_id || '',
+    };
+    var applied = {};
+    Object.keys(fields).forEach(function (col) {
+      var colIdx = header.indexOf(col);
+      if (colIdx === -1) return;
+      sheet.getRange(rowIndex + 1, colIdx + 1).setValue(fields[col]);
+      applied[col] = fields[col];
+    });
+
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, title: title, newTitle: d.title, applied: applied })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Casos del audit tan obscuros que ni la búsqueda por texto ni por año los
+// encuentran (shorts/documentales muy poco populares): resolvemos por
+// imdb_id, que sacamos de fuentes externas (letterboxd, imdb) a mano.
+function handleTmdbFindByImdb(imdbId) {
+  try {
+    var apiKey = getTmdbApiKey_();
+    if (!apiKey || !imdbId) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: true, results: [] })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var url = 'https://api.themoviedb.org/3/find/' + encodeURIComponent(imdbId) +
+      '?api_key=' + encodeURIComponent(apiKey) + '&external_source=imdb_id&language=en-US';
+    var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    var json = JSON.parse(resp.getContentText());
+    var movies = json.movie_results || [];
+    var creditUrls = movies.map(function (m) {
+      return 'https://api.themoviedb.org/3/movie/' + m.id + '/credits?api_key=' +
+        encodeURIComponent(apiKey) + '&language=en-US';
+    });
+    var creditResps = creditUrls.length
+      ? UrlFetchApp.fetchAll(creditUrls.map(function (u) {
+          return { url: u, muteHttpExceptions: true };
+        }))
+      : [];
+    var results = movies.map(function (m, i) {
+      var director = '';
+      try {
+        var crew = JSON.parse(creditResps[i].getContentText()).crew || [];
+        director = crew.filter(function (c) { return c.job === 'Director'; })
+          .map(function (c) { return c.name; }).join(', ');
+      } catch (e2) {}
+      return {
+        tmdbId: m.id,
+        title: m.title,
+        year: m.release_date ? m.release_date.substring(0, 4) : '',
+        director: director,
+        poster: m.poster_path || '',
+      };
+    });
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, results: results, tvResults: (json.tv_results || []).length })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(
