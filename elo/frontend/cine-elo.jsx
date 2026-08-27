@@ -277,7 +277,7 @@ function CineEloApp() {
   const [directorDuelA, setDirectorDuelA] = useState("");
   const [directorDuelB, setDirectorDuelB] = useState("");
   const [extremesMode, setExtremesMode] = useState(false);
-  const [extremesQueue, setExtremesQueue] = useState([]);
+  const [extremesRating, setExtremesRating] = useState("");
   const [tournament, setTournament] = useState(null); // null = sin torneo activo
   const [tournamentFilterGenre, setTournamentFilterGenre] = useState("");
   const [tournamentFilterDecade, setTournamentFilterDecade] = useState("all");
@@ -1323,58 +1323,64 @@ function CineEloApp() {
     duelGenre,
   ]);
 
-  // "Extremos por rating": una tanda de una sola pasada — un duelo por cada
-  // rating (0.5 a 5) con al menos 2 pelis elegibles (respeta los filtros de
-  // duelPool), enfrentando la de mayor Elo contra la de menor Elo de ese
-  // rating. Se arma toda la cola de una — no se recalcula duelo a duelo.
-  const toggleExtremesMode = useCallback(() => {
-    if (extremesMode) {
-      setExtremesMode(false);
-      setExtremesQueue([]);
+  // "Extremos por rating": modo continuo (como duelo de directores) fijado
+  // a un rating elegido — cada duelo enfrenta a alguna de las pelis mejor
+  // rankeadas por Elo dentro de ese rating contra alguna de las peores (no
+  // siempre la primera y la última: pesado al azar dentro de cada mitad,
+  // igual criterio que weightedPick para el resto de la app).
+  const extremesActive = extremesMode && extremesRating !== "";
+
+  const pickExtremesPair = useCallback(() => {
+    if (!extremesActive) {
       setPair(null);
       return;
     }
-    const byRating = new Map();
-    duelPool.forEach((m) => {
-      const r = Number(m.rating);
-      if (!byRating.has(r)) byRating.set(r, []);
-      byRating.get(r).push(m);
-    });
-    const queue = [];
-    byRating.forEach((list) => {
-      if (list.length < 2) return;
-      let maxM = list[0];
-      let minM = list[0];
-      list.forEach((m) => {
-        if (m.elo > maxM.elo) maxM = m;
-        if (m.elo < minM.elo) minM = m;
-      });
-      if (maxM.id === minM.id) {
-        const other = list.find((m) => m.id !== maxM.id);
-        if (!other) return;
-        minM = other;
-      }
-      queue.push(Math.random() < 0.5 ? [maxM, minM] : [minM, maxM]);
-    });
-    if (queue.length === 0) return;
-    setShowDirectorDuel(false);
-    setDirectorDuelA("");
-    setDirectorDuelB("");
-    setExtremesQueue(queue.slice(1));
-    setPair(queue[0]);
+    const group = duelPool.filter(
+      (m) => Number(m.rating) === Number(extremesRating)
+    );
+    if (group.length < 2) {
+      setPair(null);
+      return;
+    }
+    const sorted = [...group].sort((a, b) => b.elo - a.elo);
+    const half = Math.max(1, Math.ceil(sorted.length / 2));
+    const topHalf = sorted.slice(0, half);
+    const bottomHalf = sorted.slice(sorted.length - half);
+    const a = weightedPick(topHalf, [], null);
+    if (!a) {
+      setPair(null);
+      return;
+    }
+    const bottomCandidates = bottomHalf.filter((m) => m.id !== a.id);
+    const b = weightedPick(
+      bottomCandidates.length ? bottomCandidates : bottomHalf,
+      [a.id],
+      null
+    );
+    if (!b) {
+      setPair(null);
+      return;
+    }
+    setPair(Math.random() < 0.5 ? [a, b] : [b, a]);
     setRankingPicks([]);
-    setExtremesMode(true);
-  }, [extremesMode, duelPool]);
+  }, [extremesActive, duelPool, extremesRating]);
+
+  const toggleExtremesMode = useCallback(() => {
+    const next = !extremesMode;
+    setExtremesMode(next);
+    setPair(null);
+    if (next) {
+      setShowDirectorDuel(false);
+      setDirectorDuelA("");
+      setDirectorDuelB("");
+    } else {
+      setExtremesRating("");
+    }
+  }, [extremesMode]);
 
   useEffect(() => {
     if (extremesMode) {
-      if (pair) return;
-      if (extremesQueue.length > 0) {
-        setPair(extremesQueue[0]);
-        setExtremesQueue((q) => q.slice(1));
-      } else {
-        setExtremesMode(false);
-      }
+      if (extremesActive && !pair) pickExtremesPair();
       return;
     }
     if (directorDuelActive) {
@@ -1397,7 +1403,8 @@ function CineEloApp() {
     directorDuelActive,
     pickDirectorDuelPair,
     extremesMode,
-    extremesQueue,
+    extremesActive,
+    pickExtremesPair,
   ]);
 
   const [newTmdbId, setNewTmdbId] = useState("");
@@ -1871,7 +1878,13 @@ function CineEloApp() {
                         className={
                           "quick-toggle" + (showDirectorDuel ? " active" : "")
                         }
-                        onClick={() => setShowDirectorDuel((v) => !v)}
+                        onClick={() => {
+                          setShowDirectorDuel((v) => !v);
+                          if (!showDirectorDuel) {
+                            setExtremesMode(false);
+                            setExtremesRating("");
+                          }
+                        }}
                         title="Duelear solo entre las pelis de dos directores"
                       >
                         ⚔️ Duelo de directores
@@ -1882,11 +1895,43 @@ function CineEloApp() {
                           "quick-toggle" + (extremesMode ? " active" : "")
                         }
                         onClick={toggleExtremesMode}
-                        title="Un duelo por cada nota: la de mayor Elo contra la de menor Elo"
+                        title="Duelos infinitos entre las mejores y las peores en Elo de un rating fijo"
                       >
                         🎯 Extremos por rating{extremesMode ? " · ON" : ""}
                       </button>
                     </div>
+
+                    {extremesMode && (
+                      <label className="filter-label">
+                        Rating a duelear
+                        <div className="filter-range-presets">
+                          {[0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((r) => (
+                            <button
+                              key={r}
+                              className={
+                                "preset-btn" +
+                                (Number(extremesRating) === r ? " active" : "")
+                              }
+                              onClick={() => {
+                                setExtremesRating(r);
+                                setPair(null);
+                              }}
+                            >
+                              {r}
+                            </button>
+                          ))}
+                        </div>
+                        {extremesRating !== "" &&
+                          duelPool.filter(
+                            (m) => Number(m.rating) === Number(extremesRating)
+                          ).length < 2 && (
+                            <p className="form-error">
+                              Muy pocas pelis con ese rating (y estos
+                              filtros) para duelear.
+                            </p>
+                          )}
+                      </label>
+                    )}
 
                     <label className="filter-label">
                       Tamaño del duelo
