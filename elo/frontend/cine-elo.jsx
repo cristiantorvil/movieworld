@@ -1643,6 +1643,8 @@ function CineEloApp() {
     const ranking = ordered.map((m, idx) => ({
       id: m.id,
       title: m.title,
+      poster: m.poster,
+      rating: m.rating,
       place: idx + 1,
       oldElo: m.elo,
       newElo: m.elo + totalDelta.get(m.id),
@@ -2223,7 +2225,11 @@ function CineEloApp() {
                     </p>
                   </div>
                 ) : result ? (
-                  <DuelResult result={result} onNext={nextDuel} />
+                  <DuelResult
+                    result={result}
+                    onNext={nextDuel}
+                    projectedRating={projectedRating}
+                  />
                 ) : pair ? (
                   <div className="duel">
                     <p className="duel-caption">
@@ -2427,6 +2433,7 @@ function CineEloApp() {
                     ranking={filteredRanking}
                     filterText={debouncedFilterText}
                     globalRanking={ranking}
+                    projectedRating={projectedRating}
                   />
                 )}
               </>
@@ -3135,7 +3142,7 @@ function MoviePoster({ path, title }) {
   );
 }
 
-function DuelResult({ result, onNext }) {
+function DuelResult({ result, onNext, projectedRating }) {
   const { ranking } = result;
   const n = ranking.length;
   const rivals = n - 1; // cuántos rivales entraron en este duelo, para escalar el hint
@@ -3156,39 +3163,65 @@ function DuelResult({ result, onNext }) {
     <div className="duel-result">
       <p className="duel-caption">resultado</p>
 
-      {ranking.map((r) => (
-        <div className={"result-card " + placeClass(r.place)} key={r.id}>
-          <span className="result-badge">{placeLabel(r.place)}</span>
-          <span className="result-title">{r.title}</span>
-          <span className="result-rank-row">
-            #{r.oldRank} → #{r.newRank}
-            {r.newRank < r.oldRank && (
-              <span className="result-rank-change up">
-                ↑ subió {r.oldRank - r.newRank}
+      {ranking.map((r) => {
+        const proj = projectedRating ? projectedRating(r.newElo) : null;
+        return (
+          <div className={"result-card " + placeClass(r.place)} key={r.id}>
+            <div className="result-poster">
+              <MoviePoster path={r.poster} title={r.title} />
+            </div>
+            <div className="result-body">
+              <div className="result-heading">
+                <span className="result-badge">{placeLabel(r.place)}</span>
+                <span className="result-title">{r.title}</span>
+              </div>
+
+              <span className="result-rank-row">
+                #{r.oldRank} → #{r.newRank}
+                {r.newRank < r.oldRank && (
+                  <span className="result-rank-change up">
+                    ↑ {r.oldRank - r.newRank}
+                  </span>
+                )}
+                {r.newRank > r.oldRank && (
+                  <span className="result-rank-change down">
+                    ↓ {r.newRank - r.oldRank}
+                  </span>
+                )}
               </span>
-            )}
-            {r.newRank > r.oldRank && (
-              <span className="result-rank-change down">
-                ↓ bajó {r.newRank - r.oldRank}
-              </span>
-            )}
-          </span>
-          <span className="result-elo-row">
-            <span className="result-elo-old">{r.oldElo}</span>
-            <span className="result-arrow">→</span>
-            <span className="result-elo-new">{r.newElo}</span>
-            <span
-              className={
-                "result-delta " +
-                (r.delta >= 0 ? "result-delta-up" : "result-delta-down")
-              }
-            >
-              {r.delta >= 0 ? "+" : ""}
-              {r.delta}
-            </span>
-          </span>
-        </div>
-      ))}
+
+              <div className="result-stats-row">
+                <span className="result-elo-row">
+                  {r.oldElo}
+                  <span className="result-arrow">→</span>
+                  {r.newElo}
+                  <span
+                    className={
+                      "result-delta " +
+                      (r.delta >= 0 ? "result-delta-up" : "result-delta-down")
+                    }
+                  >
+                    {r.delta >= 0 ? "+" : ""}
+                    {r.delta}
+                  </span>
+                </span>
+                <span className="movie-card-ratings">
+                  {Number(r.rating) > 0 && (
+                    <span className="movie-card-rating movie-card-rating-gold">
+                      ★ {Number(r.rating) * 2}
+                    </span>
+                  )}
+                  {proj != null && (
+                    <span className="movie-card-rating movie-card-rating-silver">
+                      ★ {proj}
+                    </span>
+                  )}
+                </span>
+              </div>
+            </div>
+          </div>
+        );
+      })}
 
       <p className="result-hint">
         {Math.abs(winnerDelta) <= 2 * rivals
@@ -3340,7 +3373,7 @@ function MultiLineChart({ xAxis, series, lowerIsBetter }) {
   );
 }
 
-function RankingList({ ranking, filterText, globalRanking }) {
+function RankingList({ ranking, filterText, globalRanking, projectedRating }) {
   const source = globalRanking || ranking;
   const q = filterText.trim().toLowerCase();
   const filtered = q
@@ -3352,6 +3385,7 @@ function RankingList({ ranking, filterText, globalRanking }) {
       <ol className="ranking-list" start={q ? undefined : 1}>
         {visible.map((m) => {
           const idx = source.indexOf(m);
+          const proj = projectedRating ? projectedRating(m.elo) : null;
           return (
             <li key={m.id} className="rank-row">
               <span className="rank-num">{idx + 1}</span>
@@ -3366,6 +3400,18 @@ function RankingList({ ranking, filterText, globalRanking }) {
                 <span className="rank-meta">
                   {m.comparisons} comparaciones · {m.wins} ganadas
                   {m.plays ? ` · vista ${m.plays}x` : ""}
+                </span>
+                <span className="movie-card-ratings">
+                  {Number(m.rating) > 0 && (
+                    <span className="movie-card-rating movie-card-rating-gold">
+                      ★ {Number(m.rating) * 2}
+                    </span>
+                  )}
+                  {proj != null && (
+                    <span className="movie-card-rating movie-card-rating-silver">
+                      ★ {proj}
+                    </span>
+                  )}
                 </span>
               </div>
               <span className="rank-elo">{m.elo}</span>
@@ -3937,14 +3983,13 @@ function StyleSheet() {
       }
       .result-card {
         display: flex;
-        flex-direction: column;
         align-items: center;
-        gap: 6px;
-        padding: 18px;
+        gap: 14px;
+        padding: 14px;
         border-radius: 12px;
         border: 1px solid rgba(242,193,78,0.15);
         background: #1A1C24;
-        text-align: center;
+        text-align: left;
       }
       .result-winner {
         border-color: rgba(242,193,78,0.4);
@@ -3956,21 +4001,60 @@ function StyleSheet() {
       .result-middle {
         opacity: 0.85;
       }
+      .result-poster {
+        flex: 0 0 56px;
+        width: 56px;
+        height: 84px;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #14151A;
+      }
+      .result-poster .movie-poster,
+      .result-poster .poster-fallback {
+        width: 56px;
+        height: 84px;
+      }
+      .result-poster .poster-fallback-icon {
+        font-size: 18px;
+      }
+      .result-body {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+        flex: 1;
+      }
+      .result-heading {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+      }
       .result-badge {
         font-family: 'Space Mono', monospace;
         font-size: 10px;
-        letter-spacing: 0.15em;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: #8A8D98;
+        flex: 0 0 auto;
       }
       .result-winner .result-badge {
         color: #F2C14E;
       }
       .result-title {
         font-family: 'Bebas Neue', sans-serif;
-        font-size: 22px;
+        font-size: 18px;
         letter-spacing: 0.02em;
         line-height: 1.15;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .result-stats-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
       }
       .result-elo-row {
         display: flex;
@@ -3980,15 +4064,8 @@ function StyleSheet() {
         font-size: 11px;
         color: #8A8D98;
       }
-      .result-elo-old {
-        color: #8A8D98;
-      }
       .result-arrow {
         color: #55575F;
-      }
-      .result-elo-new {
-        font-weight: 700;
-        color: #8A8D98;
       }
       .result-delta {
         font-weight: 700;
@@ -4006,15 +4083,15 @@ function StyleSheet() {
       }
       .result-rank-row {
         font-family: 'Space Mono', monospace;
-        font-size: 26px;
+        font-size: 15px;
         font-weight: 700;
         color: #EDEAE3;
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 8px;
       }
       .result-rank-change {
-        font-size: 13px;
+        font-size: 11px;
         font-weight: 700;
       }
       .result-rank-change.up {
