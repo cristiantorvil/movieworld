@@ -1042,12 +1042,17 @@ function CineEloApp() {
 
   // Escala 1-10 (el doble de la escala real de 0.5-5) solo para mostrar —
   // el rating que se guarda sigue siendo 0.5-5 en todos lados.
+  //
+  // El centro de la proyección se fuerza a 2.75/5 (=5.5/10) en vez de usar
+  // el promedio real de tus ratings — el desvío (qué tan repartida está la
+  // campana) sigue siendo el real, solo se recentra dónde cae el promedio.
+  const PROJECTED_RATING_TARGET_MEAN = 2.75;
   const projectedRating = useCallback(
     (elo) => {
       if (!eloRatingStats) return null;
-      const { meanElo, stdElo, meanRating, stdRating } = eloRatingStats;
+      const { meanElo, stdElo, stdRating } = eloRatingStats;
       const z = (elo - meanElo) / stdElo;
-      const raw = (meanRating + z * stdRating) * 2;
+      const raw = (PROJECTED_RATING_TARGET_MEAN + z * stdRating) * 2;
       const clamped = Math.max(1, Math.min(10, raw));
       return Math.round(clamped * 10) / 10;
     },
