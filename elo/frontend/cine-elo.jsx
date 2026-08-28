@@ -3164,7 +3164,12 @@ function DuelResult({ result, onNext, projectedRating }) {
       <p className="duel-caption">resultado</p>
 
       {ranking.map((r) => {
-        const proj = projectedRating ? projectedRating(r.newElo) : null;
+        const oldProj = projectedRating ? projectedRating(r.oldElo) : null;
+        const newProj = projectedRating ? projectedRating(r.newElo) : null;
+        const projDelta =
+          oldProj != null && newProj != null
+            ? Math.round((newProj - oldProj) * 10) / 10
+            : null;
         return (
           <div className={"result-card " + placeClass(r.place)} key={r.id}>
             <div className="result-poster">
@@ -3205,19 +3210,31 @@ function DuelResult({ result, onNext, projectedRating }) {
                     {r.delta}
                   </span>
                 </span>
-                <span className="movie-card-ratings">
-                  {Number(r.rating) > 0 && (
-                    <span className="movie-card-rating movie-card-rating-gold">
-                      ★ {Number(r.rating) * 2}
-                    </span>
-                  )}
-                  {proj != null && (
-                    <span className="movie-card-rating movie-card-rating-silver">
-                      ★ {proj}
+                {Number(r.rating) > 0 && (
+                  <span className="movie-card-rating movie-card-rating-gold">
+                    ★ {Number(r.rating) * 2}
+                  </span>
+                )}
+              </div>
+
+              {newProj != null && (
+                <span className="result-rating-change-row">
+                  ★ {oldProj}
+                  <span className="result-arrow">→</span>
+                  ★ {newProj}
+                  {projDelta != null && projDelta !== 0 && (
+                    <span
+                      className={
+                        "result-delta " +
+                        (projDelta > 0 ? "result-delta-up" : "result-delta-down")
+                      }
+                    >
+                      {projDelta > 0 ? "+" : ""}
+                      {projDelta}
                     </span>
                   )}
                 </span>
-              </div>
+              )}
             </div>
           </div>
         );
@@ -4063,6 +4080,14 @@ function StyleSheet() {
         font-family: 'Space Mono', monospace;
         font-size: 11px;
         color: #8A8D98;
+      }
+      .result-rating-change-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-family: 'Space Mono', monospace;
+        font-size: 11px;
+        color: #B8BCC6;
       }
       .result-arrow {
         color: #55575F;
