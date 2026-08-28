@@ -470,7 +470,15 @@ function CineEloApp() {
     if (tournamentFilterLanguage) {
       pool = pool.filter((m) => languageLabel(m.originalLanguage) === tournamentFilterLanguage);
     }
-    const entrants = pool.sort((a, b) => b.elo - a.elo).slice(0, size);
+    // Al azar entre todo el pool filtrado, no las N mejores por Elo — así
+    // el torneo también puede sacar sorpresas en vez de ser siempre un
+    // choque predecible entre las de arriba del ranking.
+    const shuffled = [...pool];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    const entrants = shuffled.slice(0, size);
     const hasFilter =
       tournamentFilterGenre ||
       tournamentFilterCountry ||
@@ -1137,6 +1145,83 @@ function CineEloApp() {
     [eloRatingStats]
   );
 
+  // Estadísticas de la pestaña Resumen — todo derivado de datos que ya
+  // tenemos: rating real vs proyectado, duelos jugados, y (si hay) el
+  // historial de snapshots para el cambio de Elo entre el corte más viejo
+  // guardado y ahora.
+  const summaryStats = useMemo(() => {
+    if (!movies || ratedRanking.length === 0) return null;
+
+    const withDiff = ratedRanking
+      .map((m) => {
+        const gold = Number(m.rating) * 2;
+        const silver = projectedRating(m.elo);
+        if (silver == null) return null;
+        return { ...m, gold, silver, diff: gold - silver };
+      })
+      .filter(Boolean);
+    const eloLovesMore = [...withDiff]
+      .sort((a, b) => a.diff - b.diff)
+      .slice(0, 5);
+    const youLoveMore = [...withDiff]
+      .sort((a, b) => b.diff - a.diff)
+      .slice(0, 5);
+
+    const mostDueled = [...movies]
+      .filter((m) => m.comparisons > 0)
+      .sort((a, b) => b.comparisons - a.comparisons)
+      .slice(0, 5);
+
+    const withEnoughGames = movies
+      .filter((m) => m.comparisons >= 5)
+      .map((m) => ({ ...m, winRate: m.wins / m.comparisons }));
+    const bestStreak = [...withEnoughGames]
+      .sort((a, b) => b.winRate - a.winRate)
+      .slice(0, 5);
+    const worstStreak = [...withEnoughGames]
+      .sort((a, b) => a.winRate - b.winRate)
+      .slice(0, 5);
+
+    let eloGainers = [];
+    let eloLosers = [];
+    if (rankHistoryData && rankHistoryData.length >= 2) {
+      const sortedSnaps = [...rankHistoryData].sort((a, b) => a.t - b.t);
+      const oldest = sortedSnaps[0];
+      const newest = sortedSnaps[sortedSnaps.length - 1];
+      const oldEloById = new Map(oldest.ranks.map(([id, , elo]) => [id, elo]));
+      const movieById = new Map(movies.map((m) => [m.id, m]));
+      const deltas = newest.ranks
+        .map(([id, , elo]) => {
+          const oldElo = oldEloById.get(id);
+          const m = movieById.get(id);
+          if (oldElo == null || !m) return null;
+          return { ...m, eloDelta: elo - oldElo };
+        })
+        .filter((x) => x && x.eloDelta !== 0);
+      eloGainers = [...deltas]
+        .sort((a, b) => b.eloDelta - a.eloDelta)
+        .slice(0, 5);
+      eloLosers = [...deltas]
+        .sort((a, b) => a.eloDelta - b.eloDelta)
+        .slice(0, 5);
+    }
+
+    const avgElo =
+      ratedRanking.reduce((s, m) => s + m.elo, 0) / ratedRanking.length;
+
+    return {
+      eloLovesMore,
+      youLoveMore,
+      mostDueled,
+      bestStreak,
+      worstStreak,
+      eloGainers,
+      eloLosers,
+      totalRated: ratedRanking.length,
+      avgElo,
+    };
+  }, [movies, ratedRanking, projectedRating, rankHistoryData]);
+
   const yearBounds = useMemo(() => {
     if (!movies) return [1900, new Date().getFullYear()];
     const years = movies
@@ -1187,7 +1272,12 @@ function CineEloApp() {
   // preferimos traerlo del Sheet (historial completo, sin tope de 15 cortes),
   // y si falla (sin conexión, script viejo, etc.) usamos el local como respaldo.
   useEffect(() => {
-    if (tab !== "evolucion" || rankHistoryData !== null || !movies) return;
+    if (
+      (tab !== "evolucion" && tab !== "resumen") ||
+      rankHistoryData !== null ||
+      !movies
+    )
+      return;
     (async () => {
       try {
         if (syncUrl) {
@@ -1921,6 +2011,12 @@ function CineEloApp() {
           onClick={() => setTab("torneo")}
         >
           🏆 Torneo
+        </button>
+        <button
+          className={"tab" + (tab === "resumen" ? " active" : "")}
+          onClick={() => setTab("resumen")}
+        >
+          📊 Resumen
         </button>
         <button
           className={"tab" + (tab === "gestionar" ? " active" : "")}
@@ -2669,7 +2765,7 @@ function CineEloApp() {
               <div className="empty">
                 <p className="empty-title">Armá un torneo</p>
                 <p className="empty-body">
-                  Elegí cuántas películas entran (las mejores por elo actual,
+                  Elegí cuántas películas entran (al azar entre las vistas,
                   opcionalmente filtradas) y arrancamos un cuadro de
                   eliminación directa.
                 </p>
@@ -2874,6 +2970,116 @@ function CineEloApp() {
                   ))}
                 </div>
               </>
+            )}
+          </section>
+        )}
+
+        {tab === "resumen" && (
+          <section>
+            {!summaryStats ? (
+              <div className="empty">
+                <p className="empty-title">Todavía no hay nada que resumir.</p>
+                <p className="empty-body">
+                  Puntuá y dueleá algunas películas primero.
+                </p>
+              </div>
+            ) : (
+              <div className="summary-grid">
+                <div className="summary-card">
+                  <p className="summary-card-title">
+                    El Elo te subestima más
+                  </p>
+                  <p className="summary-card-sub">
+                    el Elo dice que las querés más de lo que las puntuaste
+                  </p>
+                  <SummaryList
+                    items={summaryStats.eloLovesMore}
+                    render={(m) => `★ ${m.gold} → ★ ${m.silver}`}
+                  />
+                </div>
+
+                <div className="summary-card">
+                  <p className="summary-card-title">Vos las querés más</p>
+                  <p className="summary-card-sub">
+                    les pusiste más nota de la que el Elo cree que merecen
+                  </p>
+                  <SummaryList
+                    items={summaryStats.youLoveMore}
+                    render={(m) => `★ ${m.gold} → ★ ${m.silver}`}
+                  />
+                </div>
+
+                {summaryStats.eloGainers.length > 0 && (
+                  <div className="summary-card">
+                    <p className="summary-card-title">Más subieron de Elo</p>
+                    <p className="summary-card-sub">desde el corte más viejo guardado</p>
+                    <SummaryList
+                      items={summaryStats.eloGainers}
+                      render={(m) => `+${m.eloDelta}`}
+                    />
+                  </div>
+                )}
+
+                {summaryStats.eloLosers.length > 0 && (
+                  <div className="summary-card">
+                    <p className="summary-card-title">Más bajaron de Elo</p>
+                    <p className="summary-card-sub">desde el corte más viejo guardado</p>
+                    <SummaryList
+                      items={summaryStats.eloLosers}
+                      render={(m) => `${m.eloDelta}`}
+                    />
+                  </div>
+                )}
+
+                <div className="summary-card">
+                  <p className="summary-card-title">Las más dueleadas</p>
+                  <p className="summary-card-sub">las que más veces entraron a un duelo</p>
+                  <SummaryList
+                    items={summaryStats.mostDueled}
+                    render={(m) => `${m.comparisons} duelos`}
+                  />
+                </div>
+
+                <div className="summary-card">
+                  <p className="summary-card-title">Mejor racha</p>
+                  <p className="summary-card-sub">mayor % de duelos ganados (mín. 5 duelos)</p>
+                  <SummaryList
+                    items={summaryStats.bestStreak}
+                    render={(m) => `${Math.round(m.winRate * 100)}%`}
+                  />
+                </div>
+
+                <div className="summary-card">
+                  <p className="summary-card-title">Peor racha</p>
+                  <p className="summary-card-sub">menor % de duelos ganados (mín. 5 duelos)</p>
+                  <SummaryList
+                    items={summaryStats.worstStreak}
+                    render={(m) => `${Math.round(m.winRate * 100)}%`}
+                  />
+                </div>
+
+                <div className="summary-card">
+                  <p className="summary-card-title">En números</p>
+                  <div className="summary-kpis">
+                    <div className="summary-kpi">
+                      <span className="summary-kpi-value">
+                        {summaryStats.totalRated}
+                      </span>
+                      <span className="summary-kpi-label">puntuadas</span>
+                    </div>
+                    <div className="summary-kpi">
+                      <span className="summary-kpi-value">
+                        {Math.round(summaryStats.avgElo)}
+                      </span>
+                      <span className="summary-kpi-label">elo promedio</span>
+                    </div>
+                    <div className="summary-kpi">
+                      <span className="summary-kpi-value">{duelCount}</span>
+                      <span className="summary-kpi-label">duelos jugados</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             )}
           </section>
         )}
@@ -3470,6 +3676,25 @@ function MultiLineChart({ xAxis, series, lowerIsBetter }) {
         <p className="evo-chart-hint">tocá o pasá el mouse para ver el detalle</p>
       )}
     </div>
+  );
+}
+
+function SummaryList({ items, render }) {
+  if (items.length === 0) {
+    return <p className="summary-empty">No hay suficientes datos todavía.</p>;
+  }
+  return (
+    <ol className="summary-list">
+      {items.map((m) => (
+        <li key={m.id} className="summary-row">
+          <div className="summary-poster">
+            <MoviePoster path={m.poster} title={m.title} />
+          </div>
+          <span className="summary-row-title">{m.title}</span>
+          <span className="summary-row-value">{render(m)}</span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -4290,6 +4515,97 @@ function StyleSheet() {
       }
       .rank-poster .poster-fallback-icon {
         font-size: 16px;
+      }
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 14px;
+      }
+      .summary-card {
+        background: #1A1C24;
+        border: 1px solid rgba(242,193,78,0.15);
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .summary-card-title {
+        font-family: 'Bebas Neue', sans-serif;
+        font-size: 20px;
+        letter-spacing: 0.02em;
+        color: #EDEAE3;
+        margin: 0 0 2px;
+      }
+      .summary-card-sub {
+        font-size: 11px;
+        color: #8A8D98;
+        margin: 0 0 12px;
+      }
+      .summary-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .summary-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .summary-poster {
+        flex-shrink: 0;
+        width: 32px;
+        height: 48px;
+        border-radius: 4px;
+        overflow: hidden;
+        background: #14151A;
+      }
+      .summary-poster .movie-poster,
+      .summary-poster .poster-fallback {
+        width: 32px;
+        height: 48px;
+      }
+      .summary-poster .poster-fallback-icon {
+        font-size: 13px;
+      }
+      .summary-row-title {
+        flex: 1;
+        min-width: 0;
+        font-size: 13px;
+        color: #EDEAE3;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .summary-row-value {
+        flex-shrink: 0;
+        font-family: 'Space Mono', monospace;
+        font-size: 12px;
+        font-weight: 700;
+        color: #F2C14E;
+      }
+      .summary-empty {
+        font-size: 12px;
+        color: #8A8D98;
+      }
+      .summary-kpis {
+        display: flex;
+        gap: 20px;
+      }
+      .summary-kpi {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .summary-kpi-value {
+        font-family: 'Space Mono', monospace;
+        font-size: 22px;
+        font-weight: 700;
+        color: #EDEAE3;
+      }
+      .summary-kpi-label {
+        font-size: 11px;
+        color: #8A8D98;
       }
       .rank-num {
         font-family: 'Bebas Neue', sans-serif;
