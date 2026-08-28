@@ -1716,10 +1716,10 @@ function CineEloApp() {
   };
 
   // Auto-avanzar al siguiente duelo: 1s por cada rival enfrentado
-  // (duelo de N → N-1 segundos, así que uno de 10 tarda 9s antes de saltar)
+  // (duelo de N → 2*(N-1) segundos, así que uno de 10 tarda 18s antes de saltar)
   useEffect(() => {
     if (!result) return;
-    const durationMs = (result.ranking.length - 1) * 1000;
+    const durationMs = (result.ranking.length - 1) * 2000;
     const timer = setTimeout(() => {
       nextDuel();
     }, durationMs);
@@ -3234,7 +3234,7 @@ function DuelResult({ result, onNext, projectedRating }) {
       <div className="auto-advance-bar">
         <div
           className="auto-advance-fill"
-          style={{ animationDuration: `${rivals}s` }}
+          style={{ animationDuration: `${rivals * 2}s` }}
         />
       </div>
     </div>
