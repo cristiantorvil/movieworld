@@ -1047,7 +1047,7 @@ function CineEloApp() {
       const z = (elo - meanElo) / stdElo;
       const raw = meanRating + z * stdRating;
       const clamped = Math.max(0.5, Math.min(5, raw));
-      return Math.round(clamped * 2) / 2;
+      return Math.round(clamped * 10) / 10;
     },
     [eloRatingStats]
   );
