@@ -1019,6 +1019,39 @@ function CineEloApp() {
     [ranking]
   );
 
+  // Rating proyectado: asumimos que tanto el Elo como el rating (nota que
+  // vos le pusiste) siguen más o menos una distribución normal en todo el
+  // catálogo. Convertimos el Elo de una peli a su z-score dentro de esa
+  // distribución y lo reproyectamos a la escala de rating (0.5-5) usando la
+  // media y el desvío del rating real — así el "rating proyectado" es lo
+  // que el Elo diría que deberías haberle puesto, estadísticamente.
+  const eloRatingStats = useMemo(() => {
+    if (ratedRanking.length < 2) return null;
+    const elos = ratedRanking.map((m) => m.elo);
+    const ratings = ratedRanking.map((m) => Number(m.rating));
+    const mean = (arr) => arr.reduce((s, x) => s + x, 0) / arr.length;
+    const std = (arr, m) =>
+      Math.sqrt(arr.reduce((s, x) => s + (x - m) ** 2, 0) / arr.length);
+    const meanElo = mean(elos);
+    const stdElo = std(elos, meanElo);
+    const meanRating = mean(ratings);
+    const stdRating = std(ratings, meanRating);
+    if (stdElo === 0) return null;
+    return { meanElo, stdElo, meanRating, stdRating };
+  }, [ratedRanking]);
+
+  const projectedRating = useCallback(
+    (elo) => {
+      if (!eloRatingStats) return null;
+      const { meanElo, stdElo, meanRating, stdRating } = eloRatingStats;
+      const z = (elo - meanElo) / stdElo;
+      const raw = meanRating + z * stdRating;
+      const clamped = Math.max(0.5, Math.min(5, raw));
+      return Math.round(clamped * 2) / 2;
+    },
+    [eloRatingStats]
+  );
+
   const yearBounds = useMemo(() => {
     if (!movies) return [1900, new Date().getFullYear()];
     const years = movies
@@ -2246,6 +2279,24 @@ function CineEloApp() {
                                   · {m.comparisons}{" "}
                                   {m.comparisons === 1 ? "duelo" : "duelos"}
                                 </span>
+                              </span>
+                              <span className="movie-card-ratings">
+                                {Number(m.rating) > 0 && (
+                                  <span
+                                    className="movie-card-rating movie-card-rating-gold"
+                                    title="Tu rating"
+                                  >
+                                    ★ {Number(m.rating)}
+                                  </span>
+                                )}
+                                {projectedRating(m.elo) != null && (
+                                  <span
+                                    className="movie-card-rating movie-card-rating-silver"
+                                    title="Rating proyectado según el Elo"
+                                  >
+                                    ★ {projectedRating(m.elo)}
+                                  </span>
+                                )}
                               </span>
                             </div>
                           </button>
@@ -3832,6 +3883,18 @@ function StyleSheet() {
       }
       .movie-card-games {
         color: #55575F;
+      }
+      .movie-card-ratings {
+        display: flex;
+        gap: 10px;
+        font-family: 'Space Mono', monospace;
+        font-size: 11px;
+      }
+      .movie-card-rating-gold {
+        color: #F2C14E;
+      }
+      .movie-card-rating-silver {
+        color: #B8BCC6;
       }
       .delta {
         color: #F2C14E;
