@@ -326,8 +326,7 @@ function CineEloApp() {
   const [showDirectorDuel, setShowDirectorDuel] = useState(false);
   const [directorDuelA, setDirectorDuelA] = useState("");
   const [directorDuelB, setDirectorDuelB] = useState("");
-  const [extremesMode, setExtremesMode] = useState(false);
-  const [extremesRating, setExtremesRating] = useState("");
+  const [biasedMode, setBiasedMode] = useState(null); // null | 'over' | 'under'
   const [tournament, setTournament] = useState(null); // null = sin torneo activo
   const [tournamentFilterGenre, setTournamentFilterGenre] = useState("");
   const [tournamentFilterDecade, setTournamentFilterDecade] = useState("all");
@@ -1542,37 +1541,42 @@ function CineEloApp() {
     duelGenre,
   ]);
 
-  // "Extremos por rating": modo continuo (como duelo de directores) fijado
-  // a un rating elegido — cada duelo enfrenta a alguna de las pelis mejor
-  // rankeadas por Elo dentro de ese rating contra alguna de las peores (no
-  // siempre la primera y la última: pesado al azar dentro de cada mitad,
-  // igual criterio que weightedPick para el resto de la app).
-  const extremesActive = extremesMode && extremesRating !== "";
-
-  const pickExtremesPair = useCallback(() => {
-    if (!extremesActive) {
-      setPair(null);
-      return;
-    }
-    const group = duelPool.filter(
-      (m) => Number(m.rating) === Number(extremesRating)
+  // "Sobrevalorados"/"infravalorados": modo continuo (como duelo de
+  // directores) que enfrenta pelis dentro de un pool restringido a las
+  // mayores diferencias entre tu rating dorado y el proyectado plateado —
+  // mismo cálculo que la pestaña Resumen (gold - silver), pero sobre el
+  // duelPool actual (respeta los filtros activos) y exige >=5 duelos
+  // jugados para que la diferencia sea confiable.
+  const biasedPool = useMemo(() => {
+    if (!biasedMode) return [];
+    const withDiff = duelPool
+      .filter((m) => m.comparisons >= 5)
+      .map((m) => {
+        const gold = Number(m.rating) * 2;
+        const silver = projectedRating(m.elo);
+        if (silver == null) return null;
+        return { ...m, diff: gold - silver };
+      })
+      .filter(Boolean);
+    withDiff.sort((a, b) =>
+      biasedMode === "over" ? b.diff - a.diff : a.diff - b.diff
     );
-    if (group.length < 2) {
+    return withDiff.slice(0, 24);
+  }, [biasedMode, duelPool, projectedRating]);
+
+  const pickBiasedPair = useCallback(() => {
+    if (!biasedMode || biasedPool.length < 2) {
       setPair(null);
       return;
     }
-    const sorted = [...group].sort((a, b) => b.elo - a.elo);
-    const half = Math.max(1, Math.ceil(sorted.length / 2));
-    const topHalf = sorted.slice(0, half);
-    const bottomHalf = sorted.slice(sorted.length - half);
-    const a = weightedPick(topHalf, [], null);
+    const a = weightedPick(biasedPool, [], null);
     if (!a) {
       setPair(null);
       return;
     }
-    const bottomCandidates = bottomHalf.filter((m) => m.id !== a.id);
+    const bCandidates = biasedPool.filter((m) => m.id !== a.id);
     const b = weightedPick(
-      bottomCandidates.length ? bottomCandidates : bottomHalf,
+      bCandidates.length ? bCandidates : biasedPool,
       [a.id],
       null
     );
@@ -1582,24 +1586,25 @@ function CineEloApp() {
     }
     setPair(Math.random() < 0.5 ? [a, b] : [b, a]);
     setRankingPicks([]);
-  }, [extremesActive, duelPool, extremesRating]);
+  }, [biasedMode, biasedPool]);
 
-  const toggleExtremesMode = useCallback(() => {
-    const next = !extremesMode;
-    setExtremesMode(next);
-    setPair(null);
-    if (next) {
-      setShowDirectorDuel(false);
-      setDirectorDuelA("");
-      setDirectorDuelB("");
-    } else {
-      setExtremesRating("");
-    }
-  }, [extremesMode]);
+  const toggleBiasedMode = useCallback(
+    (mode) => {
+      const next = biasedMode === mode ? null : mode;
+      setBiasedMode(next);
+      setPair(null);
+      if (next) {
+        setShowDirectorDuel(false);
+        setDirectorDuelA("");
+        setDirectorDuelB("");
+      }
+    },
+    [biasedMode]
+  );
 
   useEffect(() => {
-    if (extremesMode) {
-      if (extremesActive && !pair) pickExtremesPair();
+    if (biasedMode) {
+      if (!pair) pickBiasedPair();
       return;
     }
     if (directorDuelActive) {
@@ -1621,9 +1626,8 @@ function CineEloApp() {
     duelSize,
     directorDuelActive,
     pickDirectorDuelPair,
-    extremesMode,
-    extremesActive,
-    pickExtremesPair,
+    biasedMode,
+    pickBiasedPair,
   ]);
 
   const [newTmdbId, setNewTmdbId] = useState("");
@@ -1949,7 +1953,7 @@ function CineEloApp() {
     winnerStaysMode ||
     loserStaysMode ||
     directorDuelActive ||
-    extremesMode ||
+    biasedMode ||
     duelSize !== 2;
 
   const setDuelRankRange = (min, max) => {
@@ -2108,8 +2112,7 @@ function CineEloApp() {
                         onClick={() => {
                           setShowDirectorDuel((v) => !v);
                           if (!showDirectorDuel) {
-                            setExtremesMode(false);
-                            setExtremesRating("");
+                            setBiasedMode(null);
                           }
                         }}
                         title="Duelear solo entre las pelis de dos directores"
@@ -2119,45 +2122,29 @@ function CineEloApp() {
                       </button>
                       <button
                         className={
-                          "quick-toggle" + (extremesMode ? " active" : "")
+                          "quick-toggle" + (biasedMode === "over" ? " active" : "")
                         }
-                        onClick={toggleExtremesMode}
-                        title="Duelos infinitos entre las mejores y las peores en Elo de un rating fijo"
+                        onClick={() => toggleBiasedMode("over")}
+                        title="Duelos infinitos entre las pelis con mayor diferencia positiva entre tu rating y el proyectado (las que más sobrevalorás)"
                       >
-                        🎯 Extremos por rating{extremesMode ? " · ON" : ""}
+                        📈 Sobrevalorados{biasedMode === "over" ? " · ON" : ""}
+                      </button>
+                      <button
+                        className={
+                          "quick-toggle" + (biasedMode === "under" ? " active" : "")
+                        }
+                        onClick={() => toggleBiasedMode("under")}
+                        title="Duelos infinitos entre las pelis con mayor diferencia negativa entre tu rating y el proyectado (las que más infravalorás)"
+                      >
+                        📉 Infravalorados{biasedMode === "under" ? " · ON" : ""}
                       </button>
                     </div>
 
-                    {extremesMode && (
-                      <label className="filter-label">
-                        Rating a duelear
-                        <div className="filter-range-presets">
-                          {[0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((r) => (
-                            <button
-                              key={r}
-                              className={
-                                "preset-btn" +
-                                (Number(extremesRating) === r ? " active" : "")
-                              }
-                              onClick={() => {
-                                setExtremesRating(r);
-                                setPair(null);
-                              }}
-                            >
-                              {r}
-                            </button>
-                          ))}
-                        </div>
-                        {extremesRating !== "" &&
-                          duelPool.filter(
-                            (m) => Number(m.rating) === Number(extremesRating)
-                          ).length < 2 && (
-                            <p className="form-error">
-                              Muy pocas pelis con ese rating (y estos
-                              filtros) para duelear.
-                            </p>
-                          )}
-                      </label>
+                    {biasedMode && biasedPool.length < 2 && (
+                      <p className="form-error">
+                        Muy pocas pelis con al menos 5 duelos (y estos
+                        filtros) para duelear.
+                      </p>
                     )}
 
                     <label className="filter-label">
