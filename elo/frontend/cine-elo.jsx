@@ -319,7 +319,7 @@ function CineEloApp() {
   const [duelGenre, setDuelGenre] = useState("");
   const [duelCountry, setDuelCountry] = useState("");
   const [duelLanguage, setDuelLanguage] = useState("");
-  const [onlyUndueled, setOnlyUndueled] = useState(false);
+  const [maxDuelosFilter, setMaxDuelosFilter] = useState(null); // null = sin tope
   const [winnerStaysMode, setWinnerStaysMode] = useState(false);
   const [loserStaysMode, setLoserStaysMode] = useState(false);
   const pendingChampionRef = useRef(null);
@@ -1522,8 +1522,8 @@ function CineEloApp() {
     if (duelLanguage) {
       pool = pool.filter((m) => languageLabel(m.originalLanguage) === duelLanguage);
     }
-    if (onlyUndueled) {
-      pool = pool.filter((m) => m.comparisons === 0);
+    if (maxDuelosFilter != null) {
+      pool = pool.filter((m) => m.comparisons <= maxDuelosFilter);
     }
     return pool;
   }, [
@@ -1537,7 +1537,7 @@ function CineEloApp() {
     duelDirector,
     duelCountry,
     duelLanguage,
-    onlyUndueled,
+    maxDuelosFilter,
     duelGenre,
   ]);
 
@@ -1937,7 +1937,7 @@ function CineEloApp() {
     duelGenre ||
     duelCountry ||
     duelLanguage ||
-    onlyUndueled ||
+    maxDuelosFilter != null ||
     duelRankMin > 1 ||
     (duelRankMax > 0 && duelRankMax < ratedRanking.length) ||
     (duelYearMin != null && duelYearMin > decadeBounds[0]) ||
@@ -2362,16 +2362,37 @@ function CineEloApp() {
                       </select>
                     </label>
 
-                    <label className="filter-label filter-checkbox">
-                      <input
-                        type="checkbox"
-                        checked={onlyUndueled}
-                        onChange={(e) => {
-                          setOnlyUndueled(e.target.checked);
-                          setPair(null);
-                        }}
-                      />
-                      Solo pelis sin duelos
+                    <label className="filter-label">
+                      Máximo de duelos jugados
+                      <div className="filter-range-presets">
+                        <button
+                          className={
+                            "preset-btn" +
+                            (maxDuelosFilter == null ? " active" : "")
+                          }
+                          onClick={() => {
+                            setMaxDuelosFilter(null);
+                            setPair(null);
+                          }}
+                        >
+                          Todas
+                        </button>
+                        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                          <button
+                            key={n}
+                            className={
+                              "preset-btn" +
+                              (maxDuelosFilter === n ? " active" : "")
+                            }
+                            onClick={() => {
+                              setMaxDuelosFilter(n);
+                              setPair(null);
+                            }}
+                          >
+                            {n}
+                          </button>
+                        ))}
+                      </div>
                     </label>
 
                     {hasActiveFilters && (
@@ -2382,7 +2403,7 @@ function CineEloApp() {
                           setDuelGenre("");
                           setDuelCountry("");
                           setDuelLanguage("");
-                          setOnlyUndueled(false);
+                          setMaxDuelosFilter(null);
                           setDuelRankRange(1, 0);
                           setDuelYearRange(decadeBounds[0], decadeBounds[1]);
                         }}
