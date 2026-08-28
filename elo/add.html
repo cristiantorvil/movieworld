@@ -463,7 +463,7 @@
     statusEl.textContent = "Guardando…";
     statusEl.className = "status";
 
-    fetch(SYNC_URL, {
+    fetch(SYNC_URL + "?allowCreate=1", {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify([payload]),
@@ -471,7 +471,11 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         saveBtn.disabled = false;
-        if (data.ok) {
+        var reallySaved =
+          data.ok &&
+          ((data.created && data.created.length > 0) ||
+            (data.updated && data.updated.length > 0));
+        if (reallySaved) {
           statusEl.textContent = "Guardada ✓";
           statusEl.className = "status ok";
           addToRecent(current.title, current.year);
@@ -483,7 +487,7 @@
             searchInput.focus();
           }, 700);
         } else {
-          statusEl.textContent = "Error: " + (data.error || "desconocido");
+          statusEl.textContent = "Error: " + (data.error || "no se guardó (revisá el título)");
           statusEl.className = "status err";
         }
       })
