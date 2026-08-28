@@ -117,6 +117,56 @@ function computeInitialElo(rating, plays) {
   return Math.round(START_ELO + ratingBonus + playsBonus);
 }
 
+// Inversa de la distribución normal estándar (función probit), aproximación
+// racional de Peter Acklam — precisión ~1.15e-9. La usamos para "normalizar"
+// el rating proyectado: en vez de asumir que el Elo ya es continuo y normal
+// (no lo es — se amontona en valores redondos porque la mayoría de las
+// pelis tuvo pocos duelos), convertimos cada Elo a su percentil real dentro
+// del catálogo y pasamos ESE percentil por acá. El resultado es una campana
+// genuinamente lisa por construcción, sin importar cómo esté agrupado el
+// Elo de origen.
+function probit(p) {
+  const a = [
+    -3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2,
+    1.383577518672690e2, -3.066479806614716e1, 2.506628277459239e0,
+  ];
+  const b = [
+    -5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2,
+    6.680131188771972e1, -1.328068155288572e1,
+  ];
+  const c = [
+    -7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838e0,
+    -2.549732539343734e0, 4.374664141464968e0, 2.938163982698783e0,
+  ];
+  const d = [
+    7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996e0,
+    3.754408661907416e0,
+  ];
+  const plow = 0.02425;
+  const phigh = 1 - plow;
+  if (p < plow) {
+    const q = Math.sqrt(-2 * Math.log(p));
+    return (
+      (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+      ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1)
+    );
+  }
+  if (p <= phigh) {
+    const q = p - 0.5;
+    const r = q * q;
+    return (
+      (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) *
+      q /
+      (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1)
+    );
+  }
+  const q = Math.sqrt(-2 * Math.log(1 - p));
+  return -(
+    (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+    ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1)
+  );
+}
+
 // Pisa los movies locales con lo que haya en el Sheet (progreso + metadata
 // de TMDB), y agrega las que estén en el Sheet pero no localmente. Se usa
 // tanto al abrir la app (para no quedar pegado con datos viejos de otro
@@ -1019,39 +1069,67 @@ function CineEloApp() {
     [ranking]
   );
 
-  // Rating proyectado: asumimos que tanto el Elo como el rating (nota que
-  // vos le pusiste) siguen más o menos una distribución normal en todo el
-  // catálogo. Convertimos el Elo de una peli a su z-score dentro de esa
-  // distribución y lo reproyectamos a la escala de rating (0.5-5) usando la
-  // media y el desvío del rating real — así el "rating proyectado" es lo
-  // que el Elo diría que deberías haberle puesto, estadísticamente.
+  // Rating proyectado: el Elo NO es continuo — se amontona en valores
+  // redondos (la mayoría de las pelis tuvo pocos duelos y sigue pegada a su
+  // semilla inicial de computeInitialElo). Si le aplicáramos un z-score
+  // directo, esos bloques pegoteados generan picos artificiales en el
+  // histograma en vez de una campana lisa.
+  //
+  // En cambio, ubicamos cada Elo por su PERCENTIL real dentro de todo el
+  // catálogo puntuado (ranking ordenado, no valor crudo) y pasamos ese
+  // percentil por la inversa de la normal (probit). Como el percentil de
+  // cualquier distribución es uniforme por construcción, el resultado es
+  // una campana genuinamente normal sin importar cómo esté agrupado el Elo
+  // de origen — y como el rating real también es 0.5-5, escalamos el ancho
+  // de esa campana al desvío real de tus ratings.
   const eloRatingStats = useMemo(() => {
     if (ratedRanking.length < 2) return null;
-    const elos = ratedRanking.map((m) => m.elo);
+    const sortedElos = ratedRanking.map((m) => m.elo).sort((a, b) => a - b);
     const ratings = ratedRanking.map((m) => Number(m.rating));
     const mean = (arr) => arr.reduce((s, x) => s + x, 0) / arr.length;
     const std = (arr, m) =>
       Math.sqrt(arr.reduce((s, x) => s + (x - m) ** 2, 0) / arr.length);
-    const meanElo = mean(elos);
-    const stdElo = std(elos, meanElo);
     const meanRating = mean(ratings);
     const stdRating = std(ratings, meanRating);
-    if (stdElo === 0) return null;
-    return { meanElo, stdElo, meanRating, stdRating };
+    return { sortedElos, meanRating, stdRating };
   }, [ratedRanking]);
 
   // Escala 1-10 (el doble de la escala real de 0.5-5) solo para mostrar —
   // el rating que se guarda sigue siendo 0.5-5 en todos lados.
   //
   // El centro de la proyección se fuerza a 2.75/5 (=5.5/10) en vez de usar
-  // el promedio real de tus ratings — el desvío (qué tan repartida está la
+  // el promedio real de tus ratings — el ancho (qué tan repartida está la
   // campana) sigue siendo el real, solo se recentra dónde cae el promedio.
   const PROJECTED_RATING_TARGET_MEAN = 2.75;
   const projectedRating = useCallback(
     (elo) => {
       if (!eloRatingStats) return null;
-      const { meanElo, stdElo, stdRating } = eloRatingStats;
-      const z = (elo - meanElo) / stdElo;
+      const { sortedElos, stdRating } = eloRatingStats;
+      const n = sortedElos.length;
+      // Rango de empate (todas las pelis con ESTE mismo Elo exacto):
+      // percentil = el punto medio de ese rango, así todas quedan en el
+      // mismo lugar de la campana en vez de una detrás de otra al azar.
+      let lo = 0,
+        hi = n;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (sortedElos[mid] < elo) lo = mid + 1;
+        else hi = mid;
+      }
+      const lowerBound = lo;
+      hi = n;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (sortedElos[mid] <= elo) lo = mid + 1;
+        else hi = mid;
+      }
+      const upperBound = lo;
+      const midRank = (lowerBound + upperBound - 1) / 2;
+      const percentile = Math.min(
+        Math.max((midRank + 0.5) / n, 1e-6),
+        1 - 1e-6
+      );
+      const z = probit(percentile);
       const raw = (PROJECTED_RATING_TARGET_MEAN + z * stdRating) * 2;
       const clamped = Math.max(1, Math.min(10, raw));
       return Math.round(clamped * 10) / 10;
