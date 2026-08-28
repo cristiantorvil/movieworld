@@ -1153,6 +1153,7 @@ function CineEloApp() {
     if (!movies || ratedRanking.length === 0) return null;
 
     const withDiff = ratedRanking
+      .filter((m) => m.comparisons >= 5)
       .map((m) => {
         const gold = Number(m.rating) * 2;
         const silver = projectedRating(m.elo);
@@ -3011,7 +3012,7 @@ function CineEloApp() {
                     El Elo te subestima más
                   </p>
                   <p className="summary-card-sub">
-                    el Elo dice que las querés más de lo que las puntuaste
+                    el Elo dice que las querés más de lo que las puntuaste (mín. 5 duelos)
                   </p>
                   <SummaryList
                     items={summaryStats.eloLovesMore}
@@ -3022,7 +3023,7 @@ function CineEloApp() {
                 <div className="summary-card">
                   <p className="summary-card-title">Vos las querés más</p>
                   <p className="summary-card-sub">
-                    les pusiste más nota de la que el Elo cree que merecen
+                    les pusiste más nota de la que el Elo cree que merecen (mín. 5 duelos)
                   </p>
                   <SummaryList
                     items={summaryStats.youLoveMore}
