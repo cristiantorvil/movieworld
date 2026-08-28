@@ -1040,13 +1040,15 @@ function CineEloApp() {
     return { meanElo, stdElo, meanRating, stdRating };
   }, [ratedRanking]);
 
+  // Escala 1-10 (el doble de la escala real de 0.5-5) solo para mostrar —
+  // el rating que se guarda sigue siendo 0.5-5 en todos lados.
   const projectedRating = useCallback(
     (elo) => {
       if (!eloRatingStats) return null;
       const { meanElo, stdElo, meanRating, stdRating } = eloRatingStats;
       const z = (elo - meanElo) / stdElo;
-      const raw = meanRating + z * stdRating;
-      const clamped = Math.max(0.5, Math.min(5, raw));
+      const raw = (meanRating + z * stdRating) * 2;
+      const clamped = Math.max(1, Math.min(10, raw));
       return Math.round(clamped * 10) / 10;
     },
     [eloRatingStats]
@@ -2286,7 +2288,7 @@ function CineEloApp() {
                                     className="movie-card-rating movie-card-rating-gold"
                                     title="Tu rating"
                                   >
-                                    ★ {Number(m.rating)}
+                                    ★ {Number(m.rating) * 2}
                                   </span>
                                 )}
                                 {projectedRating(m.elo) != null && (
