@@ -2320,39 +2320,19 @@ function CineEloApp() {
 
                 {showRankFilters && (
                   <div className="filters-panel">
-                    <label className="filter-label">
-                      Director
-                      <select
-                        className="filter-select"
-                        value={rankFilterDirector}
-                        onChange={(e) =>
-                          setRankFilterDirector(e.target.value)
-                        }
-                      >
-                        <option value="">Todos</option>
-                        {directorsList.map((d) => (
-                          <option key={d} value={d}>
-                            {d}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <SearchablePicker
+                      label="Director"
+                      options={directorsList}
+                      value={rankFilterDirector}
+                      onChange={(d) => setRankFilterDirector(d)}
+                    />
 
-                    <label className="filter-label">
-                      Género
-                      <select
-                        className="filter-select"
-                        value={rankFilterGenre}
-                        onChange={(e) => setRankFilterGenre(e.target.value)}
-                      >
-                        <option value="">Todos</option>
-                        {genresList.map((g) => (
-                          <option key={g} value={g}>
-                            {g}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <SearchablePicker
+                      label="Género"
+                      options={genresList}
+                      value={rankFilterGenre}
+                      onChange={(g) => setRankFilterGenre(g)}
+                    />
 
                     <label className="filter-label">
                       Década
