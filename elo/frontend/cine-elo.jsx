@@ -1138,7 +1138,7 @@ function CineEloApp() {
       );
       const z = probit(percentile);
       const raw = (PROJECTED_RATING_TARGET_MEAN + z * stdRating) * 2;
-      const clamped = Math.max(0, Math.min(10, raw));
+      const clamped = Math.max(0.1, Math.min(10, raw));
       return Math.round(clamped * 10) / 10;
     },
     [eloRatingStats]
