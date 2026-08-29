@@ -1569,19 +1569,30 @@ function CineEloApp() {
       setPair(null);
       return;
     }
-    const a = weightedPick(biasedPool, [], null);
-    if (!a) {
+    const anchor = weightedPick(biasedPool, [], null);
+    if (!anchor) {
       setPair(null);
       return;
     }
-    const b = weightedPick(duelPool, [a.id], null);
-    if (!b) {
-      setPair(null);
-      return;
+    const n = Math.min(duelSize, duelPool.length);
+    const chosen = [anchor];
+    while (chosen.length < n) {
+      const next = weightedPick(
+        duelPool,
+        chosen.map((m) => m.id),
+        null
+      );
+      if (!next) break;
+      chosen.push(next);
     }
-    setPair(Math.random() < 0.5 ? [a, b] : [b, a]);
+    // mezclar para que la biased no quede siempre primera en pantalla
+    for (let i = chosen.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [chosen[i], chosen[j]] = [chosen[j], chosen[i]];
+    }
+    setPair(chosen);
     setRankingPicks([]);
-  }, [biasedMode, biasedPool, duelPool]);
+  }, [biasedMode, biasedPool, duelPool, duelSize]);
 
   const toggleBiasedMode = useCallback(
     (mode) => {
