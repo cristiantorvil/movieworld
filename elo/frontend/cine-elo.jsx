@@ -3005,26 +3005,24 @@ function CineEloApp() {
             ) : (
               <div className="summary-grid">
                 <div className="summary-card">
-                  <p className="summary-card-title">
-                    El Elo te subestima más
-                  </p>
+                  <p className="summary-card-title">📉 Infravaloradas</p>
                   <p className="summary-card-sub">
                     el Elo dice que las quieres más de lo que las puntuaste (mín. 10 duelos)
                   </p>
                   <SummaryList
                     items={summaryStats.eloLovesMore}
-                    render={(m) => `★ ${m.gold} → ★ ${m.silver}`}
+                    render={(m) => <RatingDiff gold={m.gold} silver={m.silver} diff={m.diff} />}
                   />
                 </div>
 
                 <div className="summary-card">
-                  <p className="summary-card-title">Tú las quieres más</p>
+                  <p className="summary-card-title">📈 Sobrevaloradas</p>
                   <p className="summary-card-sub">
                     les pusiste más nota de la que el Elo cree que merecen (mín. 10 duelos)
                   </p>
                   <SummaryList
                     items={summaryStats.youLoveMore}
-                    render={(m) => `★ ${m.gold} → ★ ${m.silver}`}
+                    render={(m) => <RatingDiff gold={m.gold} silver={m.silver} diff={m.diff} />}
                   />
                 </div>
 
@@ -3731,6 +3729,25 @@ function SummaryList({ items, render }) {
         </li>
       ))}
     </ol>
+  );
+}
+
+function RatingDiff({ gold, silver, diff }) {
+  const rounded = Math.round(diff * 10) / 10;
+  return (
+    <>
+      <span className="movie-card-rating-gold">★ {gold}</span>
+      <span className="result-arrow">→</span>
+      <span className="movie-card-rating-silver">★ {silver}</span>
+      <span
+        className={
+          "result-delta " + (rounded >= 0 ? "result-delta-up" : "result-delta-down")
+        }
+      >
+        {rounded >= 0 ? "+" : ""}
+        {rounded}
+      </span>
+    </>
   );
 }
 
@@ -4625,6 +4642,9 @@ function StyleSheet() {
       }
       .summary-row-value {
         flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        gap: 4px;
         font-family: 'Space Mono', monospace;
         font-size: 12px;
         font-weight: 700;
