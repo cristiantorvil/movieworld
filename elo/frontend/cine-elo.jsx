@@ -1107,7 +1107,7 @@ function CineEloApp() {
   // El centro de la proyección se fuerza a 2.75/5 (=5.5/10) en vez de usar
   // el promedio real de tus ratings — el ancho (qué tan repartida está la
   // campana) sigue siendo el real, solo se recentra dónde cae el promedio.
-  const PROJECTED_RATING_TARGET_MEAN = 2.75;
+  const PROJECTED_RATING_TARGET_MEAN = 2.525;
   const projectedRating = useCallback(
     (elo) => {
       if (!eloRatingStats) return null;
