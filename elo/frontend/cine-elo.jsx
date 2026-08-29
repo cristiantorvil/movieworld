@@ -1162,25 +1162,25 @@ function CineEloApp() {
       .filter(Boolean);
     const eloLovesMore = [...withDiff]
       .sort((a, b) => a.diff - b.diff)
-      .slice(0, 5);
+      .slice(0, 10);
     const youLoveMore = [...withDiff]
       .sort((a, b) => b.diff - a.diff)
-      .slice(0, 5);
+      .slice(0, 10);
 
     const mostDueled = [...movies]
       .filter((m) => m.comparisons > 0)
       .sort((a, b) => b.comparisons - a.comparisons)
-      .slice(0, 5);
+      .slice(0, 10);
 
     const withEnoughGames = movies
       .filter((m) => m.comparisons >= 10)
       .map((m) => ({ ...m, winRate: m.wins / m.comparisons }));
     const bestStreak = [...withEnoughGames]
       .sort((a, b) => b.winRate - a.winRate)
-      .slice(0, 5);
+      .slice(0, 10);
     const worstStreak = [...withEnoughGames]
       .sort((a, b) => a.winRate - b.winRate)
-      .slice(0, 5);
+      .slice(0, 10);
 
     let eloGainers = [];
     let eloLosers = [];
@@ -1200,10 +1200,10 @@ function CineEloApp() {
         .filter((x) => x && x.eloDelta !== 0 && x.comparisons >= 10);
       eloGainers = [...deltas]
         .sort((a, b) => b.eloDelta - a.eloDelta)
-        .slice(0, 5);
+        .slice(0, 10);
       eloLosers = [...deltas]
         .sort((a, b) => a.eloDelta - b.eloDelta)
-        .slice(0, 5);
+        .slice(0, 10);
     }
 
     const avgElo =
