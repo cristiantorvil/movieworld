@@ -250,6 +250,9 @@ function doGet(e) {
   if (e && e.parameter && e.parameter.action === 'setField') {
     return handleSetField(e.parameter.title || '', e.parameter.col || '', e.parameter.value || '');
   }
+  if (e && e.parameter && e.parameter.action === 'searchMovies') {
+    return handleSearchMovies(e.parameter.query || '');
+  }
   if (e && e.parameter && e.parameter.action === 'tmdbFindByImdb') {
     return handleTmdbFindByImdb(e.parameter.imdbId || '');
   }
@@ -1239,6 +1242,68 @@ function handleTmdbSearchWide(query, year) {
 // de TMDB con los datos frescos del id correcto. A diferencia del sync
 // normal (fillFields), acá SIEMPRE pisa, porque el dato guardado es el
 // que está mal.
+// Búsqueda liviana por substring de título (case-insensitive) — para la
+// página edit.html: encontrar una peli ya cargada sin bajar toda la Sheet
+// como hace pull(). Devuelve de una los campos editables + los necesarios
+// para mostrar la ficha, así no hace falta un segundo request al elegir
+// un resultado.
+function handleSearchMovies(query) {
+  try {
+    var q = String(query || '').trim().toLowerCase();
+    if (q.length < 2) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: true, results: [] })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var values = sheet.getDataRange().getValues();
+    var header = values[0];
+    var col = function (name) { return header.indexOf(name); };
+    var titleCol = col('movie');
+    var yearCol = col('year');
+    var ratingCol = col('rating');
+    var idCol = col('id');
+    var directorCol = col('director');
+    var genreCol = col('genre');
+    var posterCol = col('poster_path');
+    var countryCol = col('country');
+    var langCol = col('original_language');
+    var runtimeCol = col('runtime');
+    var collectionCol = col('collection');
+    var imdbCol = col('imdb_id');
+    var eloCol = col('elo_rating');
+
+    var results = [];
+    for (var i = 1; i < values.length && results.length < 25; i++) {
+      var row = values[i];
+      var title = String(row[titleCol] || '');
+      if (!title || title.toLowerCase().indexOf(q) === -1) continue;
+      results.push({
+        title: title,
+        year: yearCol > -1 ? row[yearCol] : '',
+        rating: ratingCol > -1 ? row[ratingCol] : '',
+        tmdbId: idCol > -1 ? row[idCol] : '',
+        director: directorCol > -1 ? String(row[directorCol] || '') : '',
+        genre: genreCol > -1 ? String(row[genreCol] || '') : '',
+        poster: posterCol > -1 ? String(row[posterCol] || '') : '',
+        country: countryCol > -1 ? String(row[countryCol] || '') : '',
+        originalLanguage: langCol > -1 ? String(row[langCol] || '') : '',
+        runtime: runtimeCol > -1 ? row[runtimeCol] : '',
+        collection: collectionCol > -1 ? String(row[collectionCol] || '') : '',
+        imdbId: imdbCol > -1 ? String(row[imdbCol] || '') : '',
+        elo: eloCol > -1 ? row[eloCol] : '',
+      });
+    }
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, results: results })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
 // Setter genérico de una sola celda por título exacto — para revertir a
 // mano un campo que un fix automático (fixTmdbMatch, etc.) pisó de más.
 function handleSetField(title, col, value) {

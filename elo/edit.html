@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Editar película — Cine Elo</title>
+<style>
+  :root {
+    --bg: #101116;
+    --card: #181a21;
+    --card-border: #2a2d38;
+    --text: #EDEAE3;
+    --muted: #8A8D98;
+    --gold: #F2C14E;
+    --gold-text: #14151A;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 60px;
+  }
+  .wrap {
+    width: 100%;
+    max-width: 480px;
+  }
+  a.back {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 13px;
+  }
+  a.back:hover { color: var(--gold); }
+  header {
+    text-align: center;
+    margin: 20px 0 28px;
+  }
+  header h1 {
+    font-size: clamp(24px, 6vw, 32px);
+    margin: 0 0 6px;
+  }
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .field {
+    margin-bottom: 16px;
+  }
+  label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  input[type="text"], input[type="number"], select {
+    width: 100%;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    color: var(--text);
+    font-size: 15px;
+  }
+  input:focus, select:focus {
+    outline: none;
+    border-color: var(--gold);
+  }
+  .results {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .result-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 8px 12px;
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+  }
+  .result-item:hover, .result-item:focus {
+    border-color: var(--gold);
+  }
+  .result-item img {
+    width: 40px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #0b0c10;
+    flex-shrink: 0;
+  }
+  .result-item .meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .result-item .title { font-size: 14px; font-weight: 600; }
+  .result-item .year { font-size: 12px; color: var(--muted); }
+  .hint {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 8px;
+  }
+
+  .selected-card {
+    display: none;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 20px;
+    margin-top: 8px;
+  }
+  .selected-card.show { display: block; }
+  .selected-head {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .selected-head img {
+    width: 70px;
+    height: 105px;
+    object-fit: cover;
+    border-radius: 6px;
+    background: #0b0c10;
+    flex-shrink: 0;
+  }
+  .selected-head .meta h2 {
+    margin: 0 0 4px;
+    font-size: 17px;
+  }
+  .selected-head .meta p {
+    margin: 2px 0;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  fieldset {
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 14px 14px 4px;
+    margin: 0 0 16px;
+  }
+  legend {
+    font-size: 11px;
+    color: var(--gold);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0 6px;
+  }
+  .row2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .tmdb-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+  .tmdb-row .field { flex: 1; margin-bottom: 0; }
+  .btn-small {
+    background: none;
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    font-size: 12px;
+    font-weight: 700;
+    padding: 12px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn-small:disabled { opacity: 0.5; cursor: default; }
+  .poster-preview {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .poster-preview img {
+    width: 44px;
+    height: 66px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #0b0c10;
+    flex-shrink: 0;
+  }
+  .btn-gold {
+    width: 100%;
+    background: var(--gold);
+    color: var(--gold-text);
+    border: none;
+    font-weight: 700;
+    font-size: 15px;
+    padding: 14px;
+    border-radius: 10px;
+    cursor: pointer;
+    margin-top: 4px;
+  }
+  .btn-gold:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .btn-ghost {
+    width: 100%;
+    background: none;
+    color: var(--muted);
+    border: 1px solid var(--card-border);
+    font-size: 13px;
+    padding: 10px;
+    border-radius: 10px;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  .status {
+    text-align: center;
+    font-size: 14px;
+    margin-top: 16px;
+    min-height: 20px;
+  }
+  .status.ok { color: #40C057; }
+  .status.err { color: #F03E3E; }
+  .field-status {
+    font-size: 11px;
+    margin-top: 4px;
+    min-height: 14px;
+  }
+  .field-status.ok { color: #40C057; }
+  .field-status.err { color: #F03E3E; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="../index.html">← MovieWorld</a>
+    <header>
+      <h1>✏️ Editar película</h1>
+      <p>Buscá una peli ya cargada y corregí rating, poster, TMDB, director o cualquier otro dato — directo en la Sheet.</p>
+    </header>
+
+    <div class="field">
+      <label for="search">Buscar por título</label>
+      <input type="text" id="search" placeholder="Ej. Winter" autocomplete="off" />
+      <div class="results" id="results"></div>
+      <p class="hint" id="hint"></p>
+    </div>
+
+    <div class="selected-card" id="selectedCard">
+      <div class="selected-head">
+        <img id="selPoster" alt="" />
+        <div class="meta">
+          <h2 id="selTitle"></h2>
+          <p id="selDirectorMeta"></p>
+          <p id="selYear"></p>
+        </div>
+      </div>
+
+      <fieldset>
+        <legend>Rating dorado</legend>
+        <div class="field">
+          <label for="rating">Tu rating</label>
+          <select id="rating">
+            <option value="">Sin ver / watchlist</option>
+            <option value="0.5">★ 0.5</option>
+            <option value="1">★ 1</option>
+            <option value="1.5">★ 1.5</option>
+            <option value="2">★ 2</option>
+            <option value="2.5">★ 2.5</option>
+            <option value="3">★ 3</option>
+            <option value="3.5">★ 3.5</option>
+            <option value="4">★ 4</option>
+            <option value="4.5">★ 4.5</option>
+            <option value="5">★ 5</option>
+          </select>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>TMDB</legend>
+        <div class="tmdb-row">
+          <div class="field">
+            <label for="tmdbId">ID de TMDB</label>
+            <input type="number" id="tmdbId" />
+          </div>
+          <button type="button" class="btn-small" id="resyncBtn">🔄 Resync</button>
+        </div>
+        <p class="hint">Resync trae de nuevo director, género, poster, país, etc. desde ese ID de TMDB y pisa lo que haya. Usalo si el match está mal.</p>
+        <p class="field-status" id="resyncStatus"></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Poster</legend>
+        <div class="poster-preview">
+          <img id="posterPreview" alt="" />
+          <div class="field" style="flex:1; margin-bottom:0;">
+            <label for="poster">Poster path (TMDB)</label>
+            <input type="text" id="poster" placeholder="/abc123.jpg" />
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Director</legend>
+        <div class="field" style="margin-bottom:0;">
+          <label for="director">Director</label>
+          <input type="text" id="director" />
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Otro dato</legend>
+        <div class="row2">
+          <div class="field">
+            <label for="otherCol">Columna</label>
+            <select id="otherCol">
+              <option value="">— elegir —</option>
+              <option value="genre">genre</option>
+              <option value="country">country</option>
+              <option value="original_language">original_language</option>
+              <option value="year">year</option>
+              <option value="runtime">runtime</option>
+              <option value="collection">collection</option>
+              <option value="imdb_id">imdb_id</option>
+              <option value="__custom__">otra (escribir)…</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="otherValue">Valor</label>
+            <input type="text" id="otherValue" />
+          </div>
+        </div>
+        <div class="field" id="customColWrap" style="display:none;">
+          <label for="customCol">Nombre exacto de la columna</label>
+          <input type="text" id="customCol" placeholder="Ej. tagline" />
+        </div>
+      </fieldset>
+
+      <button class="btn-gold" id="saveBtn">Guardar cambios</button>
+      <button class="btn-ghost" id="cancelBtn">buscar otra</button>
+      <p class="status" id="status"></p>
+    </div>
+  </div>
+
+<script>
+(function () {
+  var SYNC_URL = "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
+  var TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w200";
+
+  var searchInput = document.getElementById("search");
+  var resultsEl = document.getElementById("results");
+  var hintEl = document.getElementById("hint");
+  var selectedCard = document.getElementById("selectedCard");
+  var selPoster = document.getElementById("selPoster");
+  var selTitle = document.getElementById("selTitle");
+  var selDirectorMeta = document.getElementById("selDirectorMeta");
+  var selYear = document.getElementById("selYear");
+  var ratingSel = document.getElementById("rating");
+  var tmdbIdInput = document.getElementById("tmdbId");
+  var resyncBtn = document.getElementById("resyncBtn");
+  var resyncStatus = document.getElementById("resyncStatus");
+  var posterInput = document.getElementById("poster");
+  var posterPreview = document.getElementById("posterPreview");
+  var directorInput = document.getElementById("director");
+  var otherColSel = document.getElementById("otherCol");
+  var otherValueInput = document.getElementById("otherValue");
+  var customColWrap = document.getElementById("customColWrap");
+  var customColInput = document.getElementById("customCol");
+  var saveBtn = document.getElementById("saveBtn");
+  var cancelBtn = document.getElementById("cancelBtn");
+  var statusEl = document.getElementById("status");
+
+  var current = null; // datos originales de la peli seleccionada (para diffear al guardar)
+  var searchTimer = null;
+
+  function clearResults() {
+    resultsEl.innerHTML = "";
+  }
+
+  function renderResults(results) {
+    clearResults();
+    if (!results.length) {
+      hintEl.textContent = "Sin resultados.";
+      return;
+    }
+    hintEl.textContent = "";
+    results.forEach(function (r) {
+      var item = document.createElement("button");
+      item.type = "button";
+      item.className = "result-item";
+      var img = r.poster
+        ? '<img src="' + TMDB_POSTER_BASE + r.poster + '" alt="" />'
+        : '<img alt="" />';
+      item.innerHTML =
+        img +
+        '<span class="meta"><span class="title"></span><span class="year"></span></span>';
+      item.querySelector(".title").textContent = r.title;
+      item.querySelector(".year").textContent =
+        (r.year || "") + (r.director ? " · " + r.director : "");
+      item.onclick = function () { select(r); };
+      resultsEl.appendChild(item);
+    });
+  }
+
+  function doSearch(query) {
+    if (!query || query.length < 2) {
+      clearResults();
+      hintEl.textContent = "";
+      return;
+    }
+    hintEl.textContent = "Buscando…";
+    fetch(SYNC_URL + "?action=searchMovies&query=" + encodeURIComponent(query))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.ok) renderResults(data.results || []);
+        else hintEl.textContent = "Error buscando.";
+      })
+      .catch(function () {
+        hintEl.textContent = "No se pudo conectar con el backend.";
+      });
+  }
+
+  searchInput.addEventListener("input", function () {
+    clearTimeout(searchTimer);
+    var q = searchInput.value.trim();
+    searchTimer = setTimeout(function () { doSearch(q); }, 350);
+  });
+
+  function updatePosterPreview() {
+    var p = posterInput.value.trim();
+    posterPreview.src = p ? TMDB_POSTER_BASE + p : "";
+  }
+  posterInput.addEventListener("input", updatePosterPreview);
+
+  otherColSel.addEventListener("change", function () {
+    customColWrap.style.display = otherColSel.value === "__custom__" ? "block" : "none";
+  });
+
+  function select(r) {
+    current = r;
+    selPoster.src = r.poster ? TMDB_POSTER_BASE + r.poster : "";
+    selTitle.textContent = r.title + (r.year ? " (" + r.year + ")" : "");
+    selDirectorMeta.textContent = r.director || "Director desconocido";
+    selYear.textContent = "Elo " + (r.elo || "—");
+
+    ratingSel.value = r.rating ? String(r.rating) : "";
+    tmdbIdInput.value = r.tmdbId || "";
+    posterInput.value = r.poster || "";
+    directorInput.value = r.director || "";
+    otherColSel.value = "";
+    otherValueInput.value = "";
+    customColWrap.style.display = "none";
+    customColInput.value = "";
+    resyncStatus.textContent = "";
+    resyncStatus.className = "field-status";
+    statusEl.textContent = "";
+    statusEl.className = "status";
+    updatePosterPreview();
+
+    selectedCard.classList.add("show");
+    selectedCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  resyncBtn.onclick = function () {
+    if (!current) return;
+    var newId = tmdbIdInput.value.trim();
+    if (!newId) {
+      resyncStatus.textContent = "Poné un ID de TMDB primero.";
+      resyncStatus.className = "field-status err";
+      return;
+    }
+    resyncBtn.disabled = true;
+    resyncStatus.textContent = "Trayendo datos de TMDB…";
+    resyncStatus.className = "field-status";
+    fetch(
+      SYNC_URL +
+        "?action=fixTmdbMatch&title=" + encodeURIComponent(current.title) +
+        "&newId=" + encodeURIComponent(newId)
+    )
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        resyncBtn.disabled = false;
+        if (!data.ok) {
+          resyncStatus.textContent = "Error: " + (data.error || "no se pudo resincronizar");
+          resyncStatus.className = "field-status err";
+          return;
+        }
+        resyncStatus.textContent = "Resincronizado ✓ (" + data.newTitle + ")";
+        resyncStatus.className = "field-status ok";
+        var applied = data.applied || {};
+        current.tmdbId = applied.id != null ? applied.id : current.tmdbId;
+        current.director = applied.director || "";
+        current.poster = applied.poster_path || "";
+        directorInput.value = current.director;
+        posterInput.value = current.poster;
+        selDirectorMeta.textContent = current.director || "Director desconocido";
+        selPoster.src = current.poster ? TMDB_POSTER_BASE + current.poster : "";
+        updatePosterPreview();
+      })
+      .catch(function () {
+        resyncBtn.disabled = false;
+        resyncStatus.textContent = "No se pudo conectar con el backend.";
+        resyncStatus.className = "field-status err";
+      });
+  };
+
+  function setField(title, col, value) {
+    return fetch(
+      SYNC_URL +
+        "?action=setField&title=" + encodeURIComponent(title) +
+        "&col=" + encodeURIComponent(col) +
+        "&value=" + encodeURIComponent(value)
+    ).then(function (r) { return r.json(); });
+  }
+
+  cancelBtn.onclick = function () {
+    current = null;
+    selectedCard.classList.remove("show");
+    searchInput.value = "";
+    clearResults();
+    searchInput.focus();
+  };
+
+  saveBtn.onclick = function () {
+    if (!current) return;
+
+    var changes = [];
+    var newRating = ratingSel.value === "" ? 0 : Number(ratingSel.value);
+    if (newRating !== Number(current.rating || 0)) {
+      changes.push({ col: "rating", value: newRating });
+    }
+    var newPoster = posterInput.value.trim();
+    if (newPoster !== (current.poster || "")) {
+      changes.push({ col: "poster_path", value: newPoster });
+    }
+    var newDirector = directorInput.value.trim();
+    if (newDirector !== (current.director || "")) {
+      changes.push({ col: "director", value: newDirector });
+    }
+    var otherCol = otherColSel.value === "__custom__"
+      ? customColInput.value.trim()
+      : otherColSel.value;
+    var otherValue = otherValueInput.value.trim();
+    if (otherCol && otherValue) {
+      changes.push({ col: otherCol, value: otherValue });
+    }
+
+    if (!changes.length) {
+      statusEl.textContent = "No hay cambios para guardar.";
+      statusEl.className = "status";
+      return;
+    }
+
+    saveBtn.disabled = true;
+    statusEl.textContent = "Guardando…";
+    statusEl.className = "status";
+
+    var title = current.title;
+    var chain = Promise.resolve();
+    var failed = [];
+    changes.forEach(function (c) {
+      chain = chain.then(function () {
+        return setField(title, c.col, c.value).then(function (data) {
+          if (!data.ok) failed.push(c.col + ": " + (data.error || "error"));
+        });
+      });
+    });
+
+    chain
+      .then(function () {
+        saveBtn.disabled = false;
+        if (failed.length) {
+          statusEl.textContent = "Error en: " + failed.join(", ");
+          statusEl.className = "status err";
+          return;
+        }
+        statusEl.textContent = "Guardado ✓";
+        statusEl.className = "status ok";
+        current.rating = newRating;
+        current.poster = newPoster;
+        current.director = newDirector;
+        otherColSel.value = "";
+        otherValueInput.value = "";
+        customColWrap.style.display = "none";
+        customColInput.value = "";
+      })
+      .catch(function () {
+        saveBtn.disabled = false;
+        statusEl.textContent = "No se pudo conectar con el backend.";
+        statusEl.className = "status err";
+      });
+  };
+
+  searchInput.focus();
+})();
+</script>
+</body>
+</html>

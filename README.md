@@ -4,8 +4,8 @@ Proyecto unificado de dos apps que antes vivían separadas (ELO y GRAFO), con un
 
 ## Estructura
 
-- `index.html` — portada, enlaza a las dos apps y a `elo/add.html`.
-- `elo/` — **Cine Elo**: app de ranking por comparación (React, standalone). `apps-script/` tiene el backend (Google Apps Script, manejado con `clasp`); `frontend/` tiene el código fuente `.jsx`. `add.html` es una página aparte (sin build, vanilla JS) para agregar una película rápido sin abrir toda la app.
+- `index.html` — portada, enlaza a las dos apps, a `elo/add.html` y a `elo/edit.html`.
+- `elo/` — **Cine Elo**: app de ranking por comparación (React, standalone). `apps-script/` tiene el backend (Google Apps Script, manejado con `clasp`); `frontend/` tiene el código fuente `.jsx`. `add.html` es una página aparte (sin build, vanilla JS) para agregar una película rápido sin abrir toda la app; `edit.html` es su equivalente para corregir una peli ya cargada (rating, poster, TMDB, director, u otro campo suelto).
 - `grafo/` — **Directors Graph**: grafo de influencias entre directores (notebook `grafo.ipynb` + PyVis). `lib/` son librerías JS de terceros (vis.js, tom-select); `posters/`/`profiles/` son imágenes cacheadas localmente.
 
 ## Base de datos única
@@ -26,6 +26,10 @@ Dos formas, ambas pegan directo a la misma Sheet vía el webhook de Apps Script:
 
 - Desde la app Cine Elo (`elo/index.html`, tab "Mis pelis") — al escribir el título, busca en TMDB automáticamente y completa director/género/año/poster antes de guardar.
 - Desde `elo/add.html` (enlazada en la portada) — versión rápida standalone, sin abrir todo Cine Elo ni cargar el catálogo completo. Busca en TMDB, dejás elegir rating/veces vista opcional, y guarda. No aparece en Cine Elo hasta la próxima sincronización con la Sheet ahí (botón "restaurar desde el Sheet", o al abrir la app sin progreso local).
+
+## Cómo corregir una película ya cargada
+
+Desde `elo/edit.html` (enlazada en la portada) — buscá por título (sin cargar el catálogo completo, usa el action `searchMovies` del backend) y editá rating dorado, poster, director o cualquier otra columna suelta vía `setField`. Si el match de TMDB está mal (título equivocado, poster que no corresponde), poné el ID correcto de TMDB y usá "Resync": trae de nuevo director/género/poster/país/etc. desde ese ID (`fixTmdbMatch`), igual que se usó para corregir varios matches mal hechos durante la auditoría inicial.
 
 ## Cómo actualizar el grafo de directores
 
