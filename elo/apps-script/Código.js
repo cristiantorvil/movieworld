@@ -256,6 +256,9 @@ function doGet(e) {
   if (e && e.parameter && e.parameter.action === 'tmdbFindByImdb') {
     return handleTmdbFindByImdb(e.parameter.imdbId || '');
   }
+  if (e && e.parameter && e.parameter.action === 'tmdbImages') {
+    return handleTmdbImages(e.parameter.id || '');
+  }
   if (e && e.parameter && e.parameter.action === 'tmdbDetails') {
     return handleTmdbDetails(e.parameter.id || '');
   }
@@ -1471,6 +1474,49 @@ function handleTmdbFindByImdb(imdbId) {
     });
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, results: results, tvResults: (json.tv_results || []).length })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Para el selector de poster en edit.html: todos los posters que TMDB
+// tiene cargados para esa peli (no solo el que quedó pisado en la Sheet),
+// ordenados por vote_average — así se puede elegir uno distinto sin tener
+// que resincronizar todo el resto de los campos.
+function handleTmdbImages(id) {
+  try {
+    var apiKey = getTmdbApiKey_();
+    if (!apiKey || !id) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: true, posters: [] })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var url = 'https://api.themoviedb.org/3/movie/' + encodeURIComponent(id) +
+      '/images?api_key=' + encodeURIComponent(apiKey);
+    var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (resp.getResponseCode() !== 200) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'TMDB images falló para id ' + id })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var json = JSON.parse(resp.getContentText());
+    var posters = (json.posters || [])
+      .sort(function (a, b) { return (b.vote_average || 0) - (a.vote_average || 0); })
+      .slice(0, 40)
+      .map(function (p) {
+        return {
+          path: p.file_path,
+          language: p.iso_639_1 || '',
+          voteAverage: p.vote_average || 0,
+          width: p.width,
+          height: p.height,
+        };
+      });
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, posters: posters })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(

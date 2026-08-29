@@ -199,6 +199,31 @@
     background: #0b0c10;
     flex-shrink: 0;
   }
+  .poster-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .poster-grid button {
+    padding: 0;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    background: none;
+    cursor: pointer;
+    line-height: 0;
+  }
+  .poster-grid button.selected {
+    border-color: var(--gold);
+  }
+  .poster-grid img {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #0b0c10;
+    display: block;
+  }
   .btn-gold {
     width: 100%;
     background: var(--gold);
@@ -310,6 +335,9 @@
             <input type="text" id="poster" placeholder="/abc123.jpg" />
           </div>
         </div>
+        <button type="button" class="btn-small" id="postersBtn">🖼️ Elegir poster de TMDB</button>
+        <p class="field-status" id="postersStatus"></p>
+        <div class="poster-grid" id="posterGrid"></div>
       </fieldset>
 
       <fieldset>
@@ -373,6 +401,9 @@
   var resyncStatus = document.getElementById("resyncStatus");
   var posterInput = document.getElementById("poster");
   var posterPreview = document.getElementById("posterPreview");
+  var postersBtn = document.getElementById("postersBtn");
+  var postersStatus = document.getElementById("postersStatus");
+  var posterGrid = document.getElementById("posterGrid");
   var directorInput = document.getElementById("director");
   var otherColSel = document.getElementById("otherCol");
   var otherValueInput = document.getElementById("otherValue");
@@ -441,8 +472,78 @@
   function updatePosterPreview() {
     var p = posterInput.value.trim();
     posterPreview.src = p ? TMDB_POSTER_BASE + p : "";
+    markSelectedPoster();
   }
   posterInput.addEventListener("input", updatePosterPreview);
+
+  var TMDB_POSTER_THUMB = "https://image.tmdb.org/t/p/w154";
+
+  function markSelectedPoster() {
+    var current = posterInput.value.trim();
+    Array.prototype.forEach.call(
+      posterGrid.querySelectorAll("button"),
+      function (btn) {
+        btn.classList.toggle("selected", btn.dataset.path === current);
+      }
+    );
+  }
+
+  function renderPosterGrid(posters) {
+    posterGrid.innerHTML = "";
+    posters.forEach(function (p) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.path = p.path;
+      btn.title = (p.language || "sin idioma") + " · ★" + p.voteAverage.toFixed(1);
+      btn.innerHTML = '<img src="' + TMDB_POSTER_THUMB + p.path + '" alt="" />';
+      btn.onclick = function () {
+        posterInput.value = p.path;
+        updatePosterPreview();
+      };
+      posterGrid.appendChild(btn);
+    });
+    markSelectedPoster();
+  }
+
+  postersBtn.onclick = function () {
+    if (posterGrid.childElementCount) {
+      // ya están cargados: solo toggle mostrar/ocultar
+      posterGrid.style.display = posterGrid.style.display === "none" ? "grid" : "none";
+      return;
+    }
+    var id = tmdbIdInput.value.trim();
+    if (!id) {
+      postersStatus.textContent = "Poné un ID de TMDB primero.";
+      postersStatus.className = "field-status err";
+      return;
+    }
+    postersBtn.disabled = true;
+    postersStatus.textContent = "Buscando posters en TMDB…";
+    postersStatus.className = "field-status";
+    fetch(SYNC_URL + "?action=tmdbImages&id=" + encodeURIComponent(id))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        postersBtn.disabled = false;
+        if (!data.ok) {
+          postersStatus.textContent = "Error: " + (data.error || "no se pudo traer posters");
+          postersStatus.className = "field-status err";
+          return;
+        }
+        if (!data.posters.length) {
+          postersStatus.textContent = "TMDB no tiene posters cargados para este ID.";
+          postersStatus.className = "field-status";
+          return;
+        }
+        postersStatus.textContent = data.posters.length + " posters — elegí uno.";
+        postersStatus.className = "field-status ok";
+        renderPosterGrid(data.posters);
+      })
+      .catch(function () {
+        postersBtn.disabled = false;
+        postersStatus.textContent = "No se pudo conectar con el backend.";
+        postersStatus.className = "field-status err";
+      });
+  };
 
   otherColSel.addEventListener("change", function () {
     customColWrap.style.display = otherColSel.value === "__custom__" ? "block" : "none";
@@ -467,6 +568,10 @@
     resyncStatus.className = "field-status";
     statusEl.textContent = "";
     statusEl.className = "status";
+    posterGrid.innerHTML = "";
+    posterGrid.style.display = "grid";
+    postersStatus.textContent = "";
+    postersStatus.className = "field-status";
     updatePosterPreview();
 
     selectedCard.classList.add("show");
@@ -507,6 +612,9 @@
         posterInput.value = current.poster;
         selDirectorMeta.textContent = current.director || "Director desconocido";
         selPoster.src = current.poster ? TMDB_POSTER_BASE + current.poster : "";
+        posterGrid.innerHTML = "";
+        postersStatus.textContent = "";
+        postersStatus.className = "field-status";
         updatePosterPreview();
       })
       .catch(function () {
