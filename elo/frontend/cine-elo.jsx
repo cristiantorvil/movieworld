@@ -1565,7 +1565,7 @@ function CineEloApp() {
   }, [biasedMode, duelPool, projectedRating]);
 
   const pickBiasedPair = useCallback(() => {
-    if (!biasedMode || biasedPool.length < 2) {
+    if (!biasedMode || biasedPool.length < 1 || duelPool.length < 2) {
       setPair(null);
       return;
     }
@@ -1574,19 +1574,14 @@ function CineEloApp() {
       setPair(null);
       return;
     }
-    const bCandidates = biasedPool.filter((m) => m.id !== a.id);
-    const b = weightedPick(
-      bCandidates.length ? bCandidates : biasedPool,
-      [a.id],
-      null
-    );
+    const b = weightedPick(duelPool, [a.id], null);
     if (!b) {
       setPair(null);
       return;
     }
     setPair(Math.random() < 0.5 ? [a, b] : [b, a]);
     setRankingPicks([]);
-  }, [biasedMode, biasedPool]);
+  }, [biasedMode, biasedPool, duelPool]);
 
   const toggleBiasedMode = useCallback(
     (mode) => {
@@ -2140,12 +2135,13 @@ function CineEloApp() {
                       </button>
                     </div>
 
-                    {biasedMode && biasedPool.length < 2 && (
-                      <p className="form-error">
-                        Muy pocas pelis con al menos 5 duelos (y estos
-                        filtros) para duelear.
-                      </p>
-                    )}
+                    {biasedMode &&
+                      (biasedPool.length < 1 || duelPool.length < 2) && (
+                        <p className="form-error">
+                          Muy pocas pelis con al menos 5 duelos (y estos
+                          filtros) para duelear.
+                        </p>
+                      )}
 
                     <label className="filter-label">
                       Tamaño del duelo
