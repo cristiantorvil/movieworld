@@ -259,6 +259,9 @@ function doGet(e) {
   if (e && e.parameter && e.parameter.action === 'tmdbImages') {
     return handleTmdbImages(e.parameter.id || '');
   }
+  if (e && e.parameter && e.parameter.action === 'normalizePosterPaths') {
+    return handleNormalizePosterPaths();
+  }
   if (e && e.parameter && e.parameter.action === 'tmdbDetails') {
     return handleTmdbDetails(e.parameter.id || '');
   }
@@ -1517,6 +1520,47 @@ function handleTmdbImages(id) {
       });
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, posters: posters })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Migración one-off: la Sheet original guardaba poster_path sin la "/"
+// inicial (~5100 de ~5200 filas); TMDB siempre la devuelve con "/" y
+// fixTmdbMatch/edit.html la escriben tal cual viene de la API. Uniforma
+// todo al formato con "/" en un solo batch write (no una llamada por
+// fila) para que add.html/edit.html, que arman la URL por concatenación
+// directa sin normalizar, funcionen igual con cualquier poster de la
+// Sheet. Idempotente: correrla de nuevo no toca las filas ya migradas.
+function handleNormalizePosterPaths() {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var values = sheet.getDataRange().getValues();
+    var header = values[0];
+    var posterCol = header.indexOf('poster_path');
+    if (posterCol === -1) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'No existe la columna "poster_path".' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var changed = 0;
+    var column = [];
+    for (var i = 1; i < values.length; i++) {
+      var v = String(values[i][posterCol] || '');
+      if (v && v.charAt(0) !== '/') {
+        v = '/' + v;
+        changed++;
+      }
+      column.push([v]);
+    }
+    if (changed > 0) {
+      sheet.getRange(2, posterCol + 1, column.length, 1).setValues(column);
+    }
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, changed: changed, total: column.length })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(

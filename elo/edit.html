@@ -387,6 +387,11 @@
   var SYNC_URL = "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
   var TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w200";
 
+  function posterUrl(path) {
+    if (!path) return "";
+    return TMDB_POSTER_BASE + (path.charAt(0) === "/" ? path : "/" + path);
+  }
+
   var searchInput = document.getElementById("search");
   var resultsEl = document.getElementById("results");
   var hintEl = document.getElementById("hint");
@@ -432,7 +437,7 @@
       item.type = "button";
       item.className = "result-item";
       var img = r.poster
-        ? '<img src="' + TMDB_POSTER_BASE + r.poster + '" alt="" />'
+        ? '<img src="' + posterUrl(r.poster) + '" alt="" />'
         : '<img alt="" />';
       item.innerHTML =
         img +
@@ -471,7 +476,7 @@
 
   function updatePosterPreview() {
     var p = posterInput.value.trim();
-    posterPreview.src = p ? TMDB_POSTER_BASE + p : "";
+    posterPreview.src = posterUrl(p);
     markSelectedPoster();
   }
   posterInput.addEventListener("input", updatePosterPreview);
@@ -551,7 +556,7 @@
 
   function select(r) {
     current = r;
-    selPoster.src = r.poster ? TMDB_POSTER_BASE + r.poster : "";
+    selPoster.src = posterUrl(r.poster);
     selTitle.textContent = r.title + (r.year ? " (" + r.year + ")" : "");
     selDirectorMeta.textContent = r.director || "Director desconocido";
     selYear.textContent = "Elo " + (r.elo || "—");
@@ -611,7 +616,7 @@
         directorInput.value = current.director;
         posterInput.value = current.poster;
         selDirectorMeta.textContent = current.director || "Director desconocido";
-        selPoster.src = current.poster ? TMDB_POSTER_BASE + current.poster : "";
+        selPoster.src = posterUrl(current.poster);
         posterGrid.innerHTML = "";
         postersStatus.textContent = "";
         postersStatus.className = "field-status";
