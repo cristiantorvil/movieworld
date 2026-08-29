@@ -485,7 +485,7 @@ function CineEloApp() {
       tournamentFilterDecade !== "all";
     if (entrants.length < size) {
       setError(
-        `Necesitás al menos ${size} películas vistas${
+        `Necesitas al menos ${size} películas vistas${
           hasFilter ? " que cumplan el filtro elegido" : ""
         } para armar este torneo.`
       );
@@ -598,7 +598,7 @@ function CineEloApp() {
       const pullData = await pullRes.json();
       if (!pullData || !pullData.ok || !Array.isArray(pullData.movies)) {
         setRestoreMsg(
-          "No se pudo leer el Sheet. Actualizá el script de Apps Script con el endpoint de lectura."
+          "No se pudo leer el Sheet. Actualiza el script de Apps Script con el endpoint de lectura."
         );
         setRestoringFromSheet(false);
         return;
@@ -612,7 +612,7 @@ function CineEloApp() {
         `Listo: ${updatedCount} actualizadas, ${newCount} películas nuevas agregadas desde el Sheet.`
       );
     } catch (e) {
-      setRestoreMsg("Hubo un error leyendo el Sheet. Probá de nuevo.");
+      setRestoreMsg("Hubo un error leyendo el Sheet. Intenta de nuevo.");
     }
     setRestoringFromSheet(false);
   };
@@ -662,7 +662,7 @@ function CineEloApp() {
         `Listo: ${sentSnapshots} corte(s), ${sentRows} filas mandadas al Sheet.`
       );
     } catch (e) {
-      setResyncMsg("Hubo un error mandando el historial. Probá de nuevo.");
+      setResyncMsg("Hubo un error mandando el historial. Intenta de nuevo.");
     }
     setResyncingHistory(false);
   };
@@ -1152,7 +1152,7 @@ function CineEloApp() {
     if (!movies || ratedRanking.length === 0) return null;
 
     const withDiff = ratedRanking
-      .filter((m) => m.comparisons >= 5)
+      .filter((m) => m.comparisons >= 10)
       .map((m) => {
         const gold = Number(m.rating) * 2;
         const silver = projectedRating(m.elo);
@@ -1173,7 +1173,7 @@ function CineEloApp() {
       .slice(0, 5);
 
     const withEnoughGames = movies
-      .filter((m) => m.comparisons >= 5)
+      .filter((m) => m.comparisons >= 10)
       .map((m) => ({ ...m, winRate: m.wins / m.comparisons }));
     const bestStreak = [...withEnoughGames]
       .sort((a, b) => b.winRate - a.winRate)
@@ -1197,7 +1197,7 @@ function CineEloApp() {
           if (oldElo == null || !m) return null;
           return { ...m, eloDelta: elo - oldElo };
         })
-        .filter((x) => x && x.eloDelta !== 0);
+        .filter((x) => x && x.eloDelta !== 0 && x.comparisons >= 10);
       eloGainers = [...deltas]
         .sort((a, b) => b.eloDelta - a.eloDelta)
         .slice(0, 5);
@@ -1992,6 +1992,9 @@ function CineEloApp() {
       <header className="header">
         <Sprockets />
         <div className="header-inner">
+          <a className="back-link" href="../index.html">
+            ← MovieWorld
+          </a>
           <p className="eyebrow">tu cartelera, tu criterio</p>
           <h1 className="title">CINE ELO</h1>
         </div>
@@ -2044,8 +2047,8 @@ function CineEloApp() {
               <div className="empty">
                 <p className="empty-title">Falta reparto.</p>
                 <p className="empty-body">
-                  Agregá al menos dos películas en la pestaña "Mis pelis" para
-                  arrancar a compararlas.
+                  Agrega al menos dos películas en la pestaña "Mis pelis" para
+                  empezar a compararlas.
                 </p>
                 <button className="btn-gold" onClick={() => setTab("gestionar")}>
                   Agregar películas
@@ -2131,7 +2134,7 @@ function CineEloApp() {
                           "quick-toggle" + (biasedMode === "over" ? " active" : "")
                         }
                         onClick={() => toggleBiasedMode("over")}
-                        title="Duelos infinitos entre las pelis con mayor diferencia positiva entre tu rating y el proyectado (las que más sobrevalorás)"
+                        title="Duelos infinitos entre las pelis con mayor diferencia positiva entre tu rating y el proyectado (las que más sobrevaloras)"
                       >
                         📈 Sobrevalorados{biasedMode === "over" ? " · ON" : ""}
                       </button>
@@ -2140,7 +2143,7 @@ function CineEloApp() {
                           "quick-toggle" + (biasedMode === "under" ? " active" : "")
                         }
                         onClick={() => toggleBiasedMode("under")}
-                        title="Duelos infinitos entre las pelis con mayor diferencia negativa entre tu rating y el proyectado (las que más infravalorás)"
+                        title="Duelos infinitos entre las pelis con mayor diferencia negativa entre tu rating y el proyectado (las que más infravaloras)"
                       >
                         📉 Infravalorados{biasedMode === "under" ? " · ON" : ""}
                       </button>
@@ -2195,7 +2198,7 @@ function CineEloApp() {
                           directorDuelB &&
                           directorDuelA === directorDuelB && (
                             <p className="form-error">
-                              Elegí dos directores distintos.
+                              Elige dos directores distintos.
                             </p>
                           )}
                         {(directorDuelA || directorDuelB) && (
@@ -2416,7 +2419,7 @@ function CineEloApp() {
                       Con esta combinación de director, género y rango solo
                       queda {duelPool.length}{" "}
                       {duelPool.length === 1 ? "película" : "películas"}.
-                      Ajustá los filtros para seguir comparando.
+                      Ajusta los filtros para seguir comparando.
                     </p>
                   </div>
                 ) : result ? (
@@ -2547,7 +2550,7 @@ function CineEloApp() {
               <div className="empty">
                 <p className="empty-title">Todavía no hay ranking.</p>
                 <p className="empty-body">
-                  Agregá películas y empezá a compararlas para ver el orden.
+                  Agrega películas y empieza a compararlas para ver el orden.
                 </p>
               </div>
             ) : (
@@ -2646,7 +2649,7 @@ function CineEloApp() {
                 placeholder={
                   evoSelectedIds.length >= EVO_MAX_MOVIES
                     ? `Máximo ${EVO_MAX_MOVIES} películas`
-                    : "Escribí para agregar una película…"
+                    : "Escribe para agregar una película…"
                 }
                 value={evoQuery}
                 disabled={evoSelectedIds.length >= EVO_MAX_MOVIES}
@@ -2734,19 +2737,19 @@ function CineEloApp() {
                 <p className="empty-title">Todavía no hay historial.</p>
                 <p className="empty-body">
                   Se guarda un corte automático cada {SNAPSHOT_INTERVAL}{" "}
-                  duelos. Seguí jugando y volvé más adelante.
+                  duelos. Sigue jugando y vuelve más adelante.
                 </p>
               </div>
             ) : evoMultiSeries.length === 0 ? (
               <p className="sync-hint" style={{ textAlign: "center" }}>
-                Buscá una o varias películas arriba para ver y comparar cómo
+                Busca una o varias películas arriba para ver y comparar cómo
                 cambió su posición en el ranking a lo largo del tiempo.
               </p>
             ) : evoXAxis.length < 2 || !evoAnySeriesHasData ? (
               <div className="empty">
                 <p className="empty-title">Todavía no hay suficiente data.</p>
                 <p className="empty-body">
-                  Necesitás al menos 2 cortes del historial en los que estas
+                  Necesitas al menos 2 cortes del historial en los que estas
                   películas hayan estado dentro del top {SNAPSHOT_TOP_N}.
                 </p>
               </div>
@@ -2779,9 +2782,9 @@ function CineEloApp() {
           <section>
             {!tournament ? (
               <div className="empty">
-                <p className="empty-title">Armá un torneo</p>
+                <p className="empty-title">Arma un torneo</p>
                 <p className="empty-body">
-                  Elegí cuántas películas entran (al azar entre las vistas,
+                  Elige cuántas películas entran (al azar entre las vistas,
                   opcionalmente filtradas) y arrancamos un cuadro de
                   eliminación directa.
                 </p>
@@ -2996,7 +2999,7 @@ function CineEloApp() {
               <div className="empty">
                 <p className="empty-title">Todavía no hay nada que resumir.</p>
                 <p className="empty-body">
-                  Puntuá y dueleá algunas películas primero.
+                  Puntúa y duelea algunas películas primero.
                 </p>
               </div>
             ) : (
@@ -3006,7 +3009,7 @@ function CineEloApp() {
                     El Elo te subestima más
                   </p>
                   <p className="summary-card-sub">
-                    el Elo dice que las querés más de lo que las puntuaste (mín. 5 duelos)
+                    el Elo dice que las quieres más de lo que las puntuaste (mín. 10 duelos)
                   </p>
                   <SummaryList
                     items={summaryStats.eloLovesMore}
@@ -3015,9 +3018,9 @@ function CineEloApp() {
                 </div>
 
                 <div className="summary-card">
-                  <p className="summary-card-title">Vos las querés más</p>
+                  <p className="summary-card-title">Tú las quieres más</p>
                   <p className="summary-card-sub">
-                    les pusiste más nota de la que el Elo cree que merecen (mín. 5 duelos)
+                    les pusiste más nota de la que el Elo cree que merecen (mín. 10 duelos)
                   </p>
                   <SummaryList
                     items={summaryStats.youLoveMore}
@@ -3028,7 +3031,9 @@ function CineEloApp() {
                 {summaryStats.eloGainers.length > 0 && (
                   <div className="summary-card">
                     <p className="summary-card-title">Más subieron de Elo</p>
-                    <p className="summary-card-sub">desde el corte más viejo guardado</p>
+                    <p className="summary-card-sub">
+                      desde el corte más viejo guardado (mín. 10 duelos)
+                    </p>
                     <SummaryList
                       items={summaryStats.eloGainers}
                       render={(m) => `+${m.eloDelta}`}
@@ -3039,7 +3044,9 @@ function CineEloApp() {
                 {summaryStats.eloLosers.length > 0 && (
                   <div className="summary-card">
                     <p className="summary-card-title">Más bajaron de Elo</p>
-                    <p className="summary-card-sub">desde el corte más viejo guardado</p>
+                    <p className="summary-card-sub">
+                      desde el corte más viejo guardado (mín. 10 duelos)
+                    </p>
                     <SummaryList
                       items={summaryStats.eloLosers}
                       render={(m) => `${m.eloDelta}`}
@@ -3058,7 +3065,7 @@ function CineEloApp() {
 
                 <div className="summary-card">
                   <p className="summary-card-title">Mejor racha</p>
-                  <p className="summary-card-sub">mayor % de duelos ganados (mín. 5 duelos)</p>
+                  <p className="summary-card-sub">mayor % de duelos ganados (mín. 10 duelos)</p>
                   <SummaryList
                     items={summaryStats.bestStreak}
                     render={(m) => `${Math.round(m.winRate * 100)}%`}
@@ -3067,7 +3074,7 @@ function CineEloApp() {
 
                 <div className="summary-card">
                   <p className="summary-card-title">Peor racha</p>
-                  <p className="summary-card-sub">menor % de duelos ganados (mín. 5 duelos)</p>
+                  <p className="summary-card-sub">menor % de duelos ganados (mín. 10 duelos)</p>
                   <SummaryList
                     items={summaryStats.worstStreak}
                     render={(m) => `${Math.round(m.winRate * 100)}%`}
@@ -3142,11 +3149,11 @@ function CineEloApp() {
             {movies.length === 0 ? (
               <div className="empty">
                 <p className="empty-title">Lista vacía.</p>
-                <p className="empty-body">Sumá tu primera película arriba.</p>
+                <p className="empty-body">Suma tu primera película arriba.</p>
               </div>
             ) : !filterText.trim() ? (
               <p className="sync-hint" style={{ textAlign: "center" }}>
-                Escribí algo arriba para buscar y editar una película puntual.
+                Escribe algo arriba para buscar y editar una película puntual.
               </p>
             ) : (
               <>
@@ -3238,10 +3245,10 @@ function CineEloApp() {
                 </p>
               )}
               <p className="sync-hint">
-                <strong>"Sincronizar todo"</strong> manda lo que tenés en{" "}
+                <strong>"Sincronizar todo"</strong> manda lo que tienes en{" "}
                 <em>este</em> navegador hacia el Sheet (pisa el Sheet).{" "}
                 <strong>"Restaurar"</strong> hace lo contrario: trae lo que
-                hay en el Sheet hacia este navegador (pisa lo local). Usá
+                hay en el Sheet hacia este navegador (pisa lo local). Usa
                 "restaurar" siempre que abras la app en un dispositivo nuevo
                 o si algo quedó desincronizado.
               </p>
@@ -3279,7 +3286,7 @@ function CineEloApp() {
                 <>
                   <p className="empty-body" style={{ marginBottom: "10px" }}>
                     Esto borra tu progreso y vuelve a cargar el catálogo completo
-                    de tu excel ({SEED_MOVIES.length} películas). ¿Confirmás?
+                    de tu excel ({SEED_MOVIES.length} películas). ¿Confirmas?
                   </p>
                   <button className="btn-gold" onClick={reloadSeed}>
                     Sí, reiniciar catálogo
@@ -3367,7 +3374,7 @@ function SearchablePicker({ label, options, value, onChange, placeholder }) {
         <input
           className="filter-select"
           type="text"
-          placeholder={placeholder || "Escribí para buscar…"}
+          placeholder={placeholder || "Escribe para buscar…"}
           value={query}
           onFocus={() => setOpen(true)}
           onChange={(e) => {
@@ -3450,8 +3457,21 @@ function MoviePoster({ path, title }) {
 function DuelResult({ result, onNext, projectedRating }) {
   const { ranking } = result;
   const n = ranking.length;
-  const rivals = n - 1; // cuántos rivales entraron en este duelo, para escalar el hint
-  const winnerDelta = ranking[0].delta;
+  const rivals = n - 1;
+
+  // El hint de abajo describe por qué la GANADORA sumó lo que sumó — así que
+  // tiene que basarse en su Elo viejo contra el de las rivales que venció,
+  // no en la magnitud de lo que sumó. Esa magnitud también depende del
+  // K-factor (32/20/12 según cuántos duelos jugó cada una, ver getKFactor),
+  // así que una peli nueva puede sumar "mucho" sin haber vencido a nadie
+  // mejor puntuada, y el texto quedaba contradiciendo lo que mostraban las
+  // fichas de arriba (#rank viejo → nuevo, Elo viejo → nuevo).
+  const winner = ranking[0];
+  const beatenRivals = ranking.slice(1);
+  const toughestRivalElo = beatenRivals.length
+    ? Math.max(...beatenRivals.map((r) => r.oldElo))
+    : winner.oldElo;
+  const eloGapVsToughest = toughestRivalElo - winner.oldElo;
 
   const placeLabel = (place) => {
     if (place === 1) return "ganó";
@@ -3546,10 +3566,10 @@ function DuelResult({ result, onNext, projectedRating }) {
       })}
 
       <p className="result-hint">
-        {Math.abs(winnerDelta) <= 2 * rivals
-          ? "Ya era favorita (mejor puntuada): por eso sumó poco."
-          : Math.abs(winnerDelta) >= 6 * rivals
-          ? "Le ganó a rivales bastante más arriba: por eso sumó tanto."
+        {eloGapVsToughest <= 0
+          ? "Ya era la mejor puntuada del grupo: por eso sumó poco."
+          : eloGapVsToughest >= 100
+          ? "Le ganó a alguien bastante mejor puntuado: por eso sumó tanto."
           : "Diferencia moderada de nivel entre las opciones."}
       </p>
 
@@ -3689,7 +3709,7 @@ function MultiLineChart({ xAxis, series, lowerIsBetter }) {
           ))}
         </div>
       ) : (
-        <p className="evo-chart-hint">tocá o pasá el mouse para ver el detalle</p>
+        <p className="evo-chart-hint">toca o pasa el mouse para ver el detalle</p>
       )}
     </div>
   );
@@ -3809,6 +3829,16 @@ function StyleSheet() {
         padding: 18px 16px 14px;
         background: #0B0C10;
         border-bottom: 1px solid rgba(242,193,78,0.15);
+      }
+      .back-link {
+        display: inline-block;
+        color: #8A8D98;
+        text-decoration: none;
+        font-size: 12px;
+        margin-bottom: 8px;
+      }
+      .back-link:hover {
+        color: #F2C14E;
       }
       .eyebrow {
         font-family: 'Space Mono', monospace;
@@ -4898,7 +4928,7 @@ class ErrorBoundary extends React.Component {
             Algo se rompió 🎬💥
           </p>
           <p style={{ fontSize: "13px", color: "#8A8D98", maxWidth: "320px" }}>
-            Tu progreso sigue guardado. Recargá la página para volver a
+            Tu progreso sigue guardado. Recarga la página para volver a
             intentarlo.
           </p>
           <button

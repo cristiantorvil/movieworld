@@ -273,7 +273,7 @@
     <a class="back" href="../index.html">← MovieWorld</a>
     <header>
       <h1>✏️ Editar película</h1>
-      <p>Buscá una peli ya cargada y corregí rating, poster, TMDB, director o cualquier otro dato — directo en la Sheet.</p>
+      <p>Busca una peli ya cargada y corrige rating, poster, TMDB, director o cualquier otro dato — directo en la Sheet.</p>
     </header>
 
     <div class="field">
@@ -322,7 +322,7 @@
           </div>
           <button type="button" class="btn-small" id="resyncBtn">🔄 Resync</button>
         </div>
-        <p class="hint">Resync trae de nuevo director, género, poster, país, etc. desde ese ID de TMDB y pisa lo que haya. Usalo si el match está mal.</p>
+        <p class="hint">Resync trae de nuevo director, género, poster, país, etc. desde ese ID de TMDB y pisa lo que haya. Úsalo si el match está mal.</p>
         <p class="field-status" id="resyncStatus"></p>
       </fieldset>
 
@@ -518,7 +518,7 @@
     }
     var id = tmdbIdInput.value.trim();
     if (!id) {
-      postersStatus.textContent = "Poné un ID de TMDB primero.";
+      postersStatus.textContent = "Pon un ID de TMDB primero.";
       postersStatus.className = "field-status err";
       return;
     }
@@ -539,7 +539,7 @@
           postersStatus.className = "field-status";
           return;
         }
-        postersStatus.textContent = data.posters.length + " posters — elegí uno.";
+        postersStatus.textContent = data.posters.length + " posters — elige uno.";
         postersStatus.className = "field-status ok";
         renderPosterGrid(data.posters);
       })
@@ -587,7 +587,7 @@
     if (!current) return;
     var newId = tmdbIdInput.value.trim();
     if (!newId) {
-      resyncStatus.textContent = "Poné un ID de TMDB primero.";
+      resyncStatus.textContent = "Pon un ID de TMDB primero.";
       resyncStatus.className = "field-status err";
       return;
     }
