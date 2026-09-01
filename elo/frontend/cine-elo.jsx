@@ -2005,6 +2005,37 @@ function CineEloApp() {
     setPair(null);
   };
 
+  // Duelear una peli puntual desde Resumen/Ranking: se limpian modos y
+  // filtros de Comparar (para garantizar que la peli entre en el pool, sin
+  // importar qué filtros hubiera activos) y se la fija como protagonista del
+  // próximo duelo — pickContenders arma el resto alrededor de ella.
+  const duelSpecificMovie = useCallback(
+    (movieId) => {
+      setBiasedMode(null);
+      setShowDirectorDuel(false);
+      setDirectorDuelA("");
+      setDirectorDuelB("");
+      setDuelDirector("");
+      setDuelGenre("");
+      setDuelCountry("");
+      setDuelLanguage("");
+      setMaxDuelosFilter(null);
+      setDuelRankMin(1);
+      setDuelRankMax(0);
+      setDuelYearMin(decadeBounds[0]);
+      setDuelYearMax(decadeBounds[1]);
+      setDuelGoldMin(1);
+      setDuelGoldMax(10);
+      setDuelSilverMin(0);
+      setDuelSilverMax(10);
+      pendingChampionRef.current = movieId;
+      setResult(null);
+      setPair(null);
+      setTab("comparar");
+    },
+    [decadeBounds]
+  );
+
   if (movies === null) {
     return (
       <div className="app-root">
@@ -2725,6 +2756,7 @@ function CineEloApp() {
                     filterText={debouncedFilterText}
                     globalRanking={ranking}
                     projectedRating={projectedRating}
+                    onDuel={duelSpecificMovie}
                   />
                 )}
               </>
@@ -3103,6 +3135,7 @@ function CineEloApp() {
                     el Elo dice que las quieres más de lo que las puntuaste (mín. 10 duelos)
                   </p>
                   <SummaryList
+                    onDuel={duelSpecificMovie}
                     items={summaryStats.eloLovesMore}
                     render={(m) => <RatingDiff gold={m.gold} silver={m.silver} diff={m.diff} />}
                   />
@@ -3114,6 +3147,7 @@ function CineEloApp() {
                     les pusiste más nota de la que el Elo cree que merecen (mín. 10 duelos)
                   </p>
                   <SummaryList
+                    onDuel={duelSpecificMovie}
                     items={summaryStats.youLoveMore}
                     render={(m) => <RatingDiff gold={m.gold} silver={m.silver} diff={m.diff} />}
                   />
@@ -3126,6 +3160,7 @@ function CineEloApp() {
                       desde el corte más viejo guardado (mín. 10 duelos)
                     </p>
                     <SummaryList
+                      onDuel={duelSpecificMovie}
                       items={summaryStats.eloGainers}
                       render={(m) => `+${m.eloDelta}`}
                     />
@@ -3139,6 +3174,7 @@ function CineEloApp() {
                       desde el corte más viejo guardado (mín. 10 duelos)
                     </p>
                     <SummaryList
+                      onDuel={duelSpecificMovie}
                       items={summaryStats.eloLosers}
                       render={(m) => `${m.eloDelta}`}
                     />
@@ -3149,6 +3185,7 @@ function CineEloApp() {
                   <p className="summary-card-title">Las más dueleadas</p>
                   <p className="summary-card-sub">las que más veces entraron a un duelo</p>
                   <SummaryList
+                    onDuel={duelSpecificMovie}
                     items={summaryStats.mostDueled}
                     render={(m) => `${m.comparisons} duelos`}
                   />
@@ -3158,6 +3195,7 @@ function CineEloApp() {
                   <p className="summary-card-title">Mejor racha</p>
                   <p className="summary-card-sub">mayor % de duelos ganados (mín. 10 duelos)</p>
                   <SummaryList
+                    onDuel={duelSpecificMovie}
                     items={summaryStats.bestStreak}
                     render={(m) => `${Math.round(m.winRate * 100)}%`}
                   />
@@ -3167,6 +3205,7 @@ function CineEloApp() {
                   <p className="summary-card-title">Peor racha</p>
                   <p className="summary-card-sub">menor % de duelos ganados (mín. 10 duelos)</p>
                   <SummaryList
+                    onDuel={duelSpecificMovie}
                     items={summaryStats.worstStreak}
                     render={(m) => `${Math.round(m.winRate * 100)}%`}
                   />
@@ -3806,7 +3845,7 @@ function MultiLineChart({ xAxis, series, lowerIsBetter }) {
   );
 }
 
-function SummaryList({ items, render }) {
+function SummaryList({ items, render, onDuel }) {
   if (items.length === 0) {
     return <p className="summary-empty">No hay suficientes datos todavía.</p>;
   }
@@ -3817,14 +3856,22 @@ function SummaryList({ items, render }) {
           <div className="summary-poster">
             <MoviePoster path={m.poster} title={m.title} />
           </div>
-          <a
+          <button
+            type="button"
             className="summary-row-title"
+            onClick={() => onDuel(m.id)}
+            title="Duelear esta película"
+          >
+            {m.title}
+          </button>
+          <a
+            className="summary-row-edit"
             href={`edit.html?title=${encodeURIComponent(m.title)}`}
             target="_blank"
             rel="noreferrer"
             title="Editar esta película"
           >
-            {m.title}
+            ✏️
           </a>
           <span className="summary-row-value">{render(m)}</span>
         </li>
@@ -3852,7 +3899,7 @@ function RatingDiff({ gold, silver, diff }) {
   );
 }
 
-function RankingList({ ranking, filterText, globalRanking, projectedRating }) {
+function RankingList({ ranking, filterText, globalRanking, projectedRating, onDuel }) {
   const source = globalRanking || ranking;
   const q = filterText.trim().toLowerCase();
   const filtered = q
@@ -3872,9 +3919,25 @@ function RankingList({ ranking, filterText, globalRanking, projectedRating }) {
                 <MoviePoster path={m.poster} title={m.title} />
               </div>
               <div className="rank-info">
-                <span className="rank-title">
-                  {m.title}
-                  {m.year ? <span className="rank-year"> ({m.year})</span> : null}
+                <span className="rank-title-row">
+                  <button
+                    type="button"
+                    className="rank-title"
+                    onClick={() => onDuel(m.id)}
+                    title="Duelear esta película"
+                  >
+                    {m.title}
+                    {m.year ? <span className="rank-year"> ({m.year})</span> : null}
+                  </button>
+                  <a
+                    className="rank-edit"
+                    href={`edit.html?title=${encodeURIComponent(m.title)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="Editar esta película"
+                  >
+                    ✏️
+                  </a>
                 </span>
                 <span className="rank-meta">
                   {m.comparisons} comparaciones · {m.wins} ganadas
@@ -4746,10 +4809,26 @@ function StyleSheet() {
         overflow: hidden;
         text-overflow: ellipsis;
         text-decoration: none;
+        background: none;
+        border: none;
+        padding: 0;
+        font-family: inherit;
+        text-align: left;
+        cursor: pointer;
       }
       .summary-row-title:hover {
         color: #F2C14E;
         text-decoration: underline;
+      }
+      .summary-row-edit {
+        flex-shrink: 0;
+        font-size: 12px;
+        text-decoration: none;
+        opacity: 0.55;
+        line-height: 1;
+      }
+      .summary-row-edit:hover {
+        opacity: 1;
       }
       .summary-row-value {
         flex-shrink: 0;
@@ -4798,12 +4877,41 @@ function StyleSheet() {
         flex-direction: column;
         min-width: 0;
       }
+      .rank-title-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
       .rank-title {
+        flex: 1;
+        min-width: 0;
+        font-family: inherit;
         font-weight: 700;
         font-size: 15px;
+        color: #EDEAE3;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        background: none;
+        border: none;
+        padding: 0;
+        text-align: left;
+        cursor: pointer;
+      }
+      .rank-title:hover {
+        color: #F2C14E;
+        text-decoration: underline;
+      }
+      .rank-edit {
+        flex-shrink: 0;
+        font-size: 12px;
+        text-decoration: none;
+        opacity: 0.55;
+        line-height: 1;
+      }
+      .rank-edit:hover {
+        opacity: 1;
       }
       .rank-meta {
         font-size: 11px;
