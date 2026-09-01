@@ -320,6 +320,10 @@ function CineEloApp() {
   const [duelCountry, setDuelCountry] = useState("");
   const [duelLanguage, setDuelLanguage] = useState("");
   const [maxDuelosFilter, setMaxDuelosFilter] = useState(null); // null = sin tope
+  const [duelGoldMin, setDuelGoldMin] = useState(1);
+  const [duelGoldMax, setDuelGoldMax] = useState(10);
+  const [duelSilverMin, setDuelSilverMin] = useState(0);
+  const [duelSilverMax, setDuelSilverMax] = useState(10);
   const [winnerStaysMode, setWinnerStaysMode] = useState(false);
   const [loserStaysMode, setLoserStaysMode] = useState(false);
   const pendingChampionRef = useRef(null);
@@ -1531,6 +1535,18 @@ function CineEloApp() {
     if (maxDuelosFilter != null) {
       pool = pool.filter((m) => m.comparisons <= maxDuelosFilter);
     }
+    if (duelGoldMin > 1 || duelGoldMax < 10) {
+      pool = pool.filter((m) => {
+        const gold = Number(m.rating) * 2;
+        return gold >= duelGoldMin && gold <= duelGoldMax;
+      });
+    }
+    if (duelSilverMin > 0 || duelSilverMax < 10) {
+      pool = pool.filter((m) => {
+        const silver = projectedRating(m.elo);
+        return silver != null && silver >= duelSilverMin && silver <= duelSilverMax;
+      });
+    }
     return pool;
   }, [
     movies,
@@ -1545,6 +1561,11 @@ function CineEloApp() {
     duelLanguage,
     maxDuelosFilter,
     duelGenre,
+    duelGoldMin,
+    duelGoldMax,
+    duelSilverMin,
+    duelSilverMax,
+    projectedRating,
   ]);
 
   // "Sobrevalorados"/"infravalorados": modo continuo (como duelo de
@@ -1958,7 +1979,11 @@ function CineEloApp() {
     duelRankMin > 1 ||
     (duelRankMax > 0 && duelRankMax < ratedRanking.length) ||
     (duelYearMin != null && duelYearMin > decadeBounds[0]) ||
-    (duelYearMax != null && duelYearMax < decadeBounds[1]);
+    (duelYearMax != null && duelYearMax < decadeBounds[1]) ||
+    duelGoldMin > 1 ||
+    duelGoldMax < 10 ||
+    duelSilverMin > 0 ||
+    duelSilverMax < 10;
 
   const hasActiveModes =
     quickMode ||
@@ -2338,6 +2363,44 @@ function CineEloApp() {
                     </label>
 
                     <label className="filter-label">
+                      Rango de rating dorado
+                      <span className="filter-range-value">
+                        ★ {duelGoldMin} — ★ {duelGoldMax}
+                      </span>
+                      <DualRangeSlider
+                        min={1}
+                        max={10}
+                        step={1}
+                        valueMin={duelGoldMin}
+                        valueMax={duelGoldMax}
+                        onChange={(newMin, newMax) => {
+                          setDuelGoldMin(newMin);
+                          setDuelGoldMax(newMax);
+                          setPair(null);
+                        }}
+                      />
+                    </label>
+
+                    <label className="filter-label">
+                      Rango de rating plateado
+                      <span className="filter-range-value">
+                        ★ {duelSilverMin} — ★ {duelSilverMax}
+                      </span>
+                      <DualRangeSlider
+                        min={0}
+                        max={10}
+                        step={1}
+                        valueMin={duelSilverMin}
+                        valueMax={duelSilverMax}
+                        onChange={(newMin, newMax) => {
+                          setDuelSilverMin(newMin);
+                          setDuelSilverMax(newMax);
+                          setPair(null);
+                        }}
+                      />
+                    </label>
+
+                    <label className="filter-label">
                       Década
                       <select
                         className="filter-select"
@@ -2410,6 +2473,11 @@ function CineEloApp() {
                           setMaxDuelosFilter(null);
                           setDuelRankRange(1, 0);
                           setDuelYearRange(decadeBounds[0], decadeBounds[1]);
+                          setDuelGoldMin(1);
+                          setDuelGoldMax(10);
+                          setDuelSilverMin(0);
+                          setDuelSilverMax(10);
+                          setPair(null);
                         }}
                       >
                         limpiar filtros
