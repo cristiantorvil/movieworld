@@ -40,6 +40,8 @@ function doPost(e) {
     var fillFields = [
       { col: header.indexOf('id'), key: 'tmdbId' },
       { col: header.indexOf('year'), key: 'year' },
+      { col: header.indexOf('rating'), key: 'rating' },
+      { col: header.indexOf('diary_count'), key: 'plays' },
       { col: header.indexOf('director'), key: 'director' },
       { col: header.indexOf('genre'), key: 'genre' },
       { col: header.indexOf('poster_path'), key: 'poster' },

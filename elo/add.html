@@ -452,6 +452,8 @@
       title: current.title,
       tmdbId: current.tmdbId,
       year: current.year,
+      rating: ratingVal,
+      plays: playsVal,
       elo: computeInitialElo(ratingVal, playsVal || 1),
       games: 0,
       wins: 0,
