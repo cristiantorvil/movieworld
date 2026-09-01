@@ -1727,22 +1727,39 @@ function CineEloApp() {
     syncToSheet([newMovie], true);
   };
 
-  const removeMovie = (id) => {
+  const removeMovie = async (id) => {
     const movie = movies.find((m) => m.id === id);
-    const next = movies.filter((m) => m.id !== id);
-    setMovies(next);
+    if (!movie) return;
+    setMovies((current) => current.filter((m) => m.id !== id));
     if (pair && pair.some((p) => p.id === id)) {
       setPair(null);
     }
-    if (syncUrl && movie) {
-      fetch(syncUrl, {
+    if (!syncUrl) return;
+    // Si el borrado en el Sheet falla (red, redirect raro de Apps Script,
+    // etc.) y lo dejamos como borrado local nomás, el próximo pull la trae
+    // de vuelta del Sheet — parece "revivir sola" sin ningún aviso. Por eso
+    // esperamos la respuesta: si no vino ok, la restauramos localmente y
+    // avisamos, en vez de fallar en silencio.
+    try {
+      const res = await fetch(syncUrl, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify({ type: "deleteMovie", title: movie.title }),
-      }).catch(() => {
-        // si falla el borrado remoto, sigue borrada localmente; el próximo
-        // pull la vuelve a traer del Sheet, pero eso ya lo verías reflejado.
       });
+      const data = await res.json();
+      if (!data || !data.ok) {
+        setMovies((current) => [...current, movie]);
+        setError(
+          `No se pudo borrar "${movie.title}" del Sheet (${
+            (data && data.error) || "error desconocido"
+          }). Probá de nuevo.`
+        );
+      }
+    } catch (e) {
+      setMovies((current) => [...current, movie]);
+      setError(
+        `No se pudo borrar "${movie.title}": sin conexión con el Sheet. Probá de nuevo.`
+      );
     }
   };
 
