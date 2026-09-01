@@ -1104,10 +1104,15 @@ function CineEloApp() {
   // Escala 1-10 (el doble de la escala real de 0.5-5) solo para mostrar —
   // el rating que se guarda sigue siendo 0.5-5 en todos lados.
   //
-  // El centro de la proyección se fuerza a 2.75/5 (=5.5/10) en vez de usar
-  // el promedio real de tus ratings — el ancho (qué tan repartida está la
-  // campana) sigue siendo el real, solo se recentra dónde cae el promedio.
+  // El centro de la proyección se fuerza a 2.525/5 (=5.05/10) en vez de usar
+  // el promedio real de tus ratings — el ancho de la campana parte del real
+  // (stdRating), pero se ensancha con PROJECTED_RATING_SPREAD para que
+  // proporcionalmente entren más pelis en los extremos (0.1/10.0): con
+  // spread=1 casi nada tocaba el piso o el techo (percentil+probit da una
+  // normal "de verdad", con colas finas por construcción); en 1.3 la
+  // proporción en los extremos se multiplica por ~5.
   const PROJECTED_RATING_TARGET_MEAN = 2.525;
+  const PROJECTED_RATING_SPREAD = 1.3;
   const projectedRating = useCallback(
     (elo) => {
       if (!eloRatingStats) return null;
@@ -1137,7 +1142,8 @@ function CineEloApp() {
         1 - 1e-6
       );
       const z = probit(percentile);
-      const raw = (PROJECTED_RATING_TARGET_MEAN + z * stdRating) * 2;
+      const raw =
+        (PROJECTED_RATING_TARGET_MEAN + z * stdRating * PROJECTED_RATING_SPREAD) * 2;
       const clamped = Math.max(0.1, Math.min(10, raw));
       return Math.round(clamped * 10) / 10;
     },
@@ -1900,10 +1906,10 @@ function CineEloApp() {
   };
 
   // Auto-avanzar al siguiente duelo: 1s por cada rival enfrentado
-  // (duelo de N → 2*(N-1) segundos, así que uno de 10 tarda 18s antes de saltar)
+  // (duelo de N → (N-1) segundos, así que uno de 10 tarda 9s antes de saltar)
   useEffect(() => {
     if (!result) return;
-    const durationMs = (result.ranking.length - 1) * 2000;
+    const durationMs = (result.ranking.length - 1) * 1000;
     const timer = setTimeout(() => {
       nextDuel();
     }, durationMs);
@@ -2437,7 +2443,9 @@ function CineEloApp() {
                     </p>
                     <div
                       className={
-                        "duel-cards duel-cards-" + pair.length
+                        "duel-cards duel-cards-" +
+                        pair.length +
+                        (pair.length > 4 ? " duel-cards-grid" : "")
                       }
                     >
                       {pair.map((m, i) => {
@@ -2487,26 +2495,43 @@ function CineEloApp() {
                                 </span>
                               </span>
                               <span className="movie-card-ratings">
-                                {Number(m.rating) > 0 && (
-                                  <span
-                                    className="movie-card-rating movie-card-rating-gold"
-                                    title="Tu rating"
-                                  >
-                                    ★ {Number(m.rating) * 2}
-                                  </span>
-                                )}
-                                {projectedRating(m.elo) != null && (
-                                  <span
-                                    className="movie-card-rating movie-card-rating-silver"
-                                    title="Rating proyectado según el Elo"
-                                  >
-                                    ★ {projectedRating(m.elo)}
-                                  </span>
-                                )}
+                                {(() => {
+                                  const silver = projectedRating(m.elo);
+                                  if (Number(m.rating) > 0 && silver != null) {
+                                    const gold = Number(m.rating) * 2;
+                                    return (
+                                      <RatingDiff
+                                        gold={gold}
+                                        silver={silver}
+                                        diff={gold - silver}
+                                      />
+                                    );
+                                  }
+                                  return (
+                                    <>
+                                      {Number(m.rating) > 0 && (
+                                        <span
+                                          className="movie-card-rating-gold"
+                                          title="Tu rating"
+                                        >
+                                          ★ {Number(m.rating) * 2}
+                                        </span>
+                                      )}
+                                      {silver != null && (
+                                        <span
+                                          className="movie-card-rating-silver"
+                                          title="Rating proyectado según el Elo"
+                                        >
+                                          ★ {silver}
+                                        </span>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </span>
                             </div>
                           </button>
-                          {i < pair.length - 1 && (
+                          {i < pair.length - 1 && pair.length <= 4 && (
                             <div className="vs-wrap">
                               <span className="vs">VS</span>
                             </div>
@@ -3574,7 +3599,7 @@ function DuelResult({ result, onNext, projectedRating }) {
       <div className="auto-advance-bar">
         <div
           className="auto-advance-fill"
-          style={{ animationDuration: `${rivals * 2}s` }}
+          style={{ animationDuration: `${rivals}s` }}
         />
       </div>
     </div>
@@ -3724,7 +3749,15 @@ function SummaryList({ items, render }) {
           <div className="summary-poster">
             <MoviePoster path={m.poster} title={m.title} />
           </div>
-          <span className="summary-row-title">{m.title}</span>
+          <a
+            className="summary-row-title"
+            href={`edit.html?title=${encodeURIComponent(m.title)}`}
+            target="_blank"
+            rel="noreferrer"
+            title="Editar esta película"
+          >
+            {m.title}
+          </a>
           <span className="summary-row-value">{render(m)}</span>
         </li>
       ))}
@@ -4203,6 +4236,11 @@ function StyleSheet() {
         gap: 0;
         align-items: stretch;
       }
+      .duel-cards-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
       .movie-card {
         background: #1E2027;
         border: 1px solid rgba(242,193,78,0.18);
@@ -4639,6 +4677,11 @@ function StyleSheet() {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        text-decoration: none;
+      }
+      .summary-row-title:hover {
+        color: #F2C14E;
+        text-decoration: underline;
       }
       .summary-row-value {
         flex-shrink: 0;

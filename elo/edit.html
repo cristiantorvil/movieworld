@@ -716,7 +716,39 @@
       });
   };
 
-  searchInput.focus();
+  // Si llegamos con ?title=... (ej. desde un link "editar" en Cine Elo),
+  // buscamos ese título y, si hay un match exacto, lo seleccionamos de una
+  // en vez de obligar a tipear y hacer click.
+  function autoSelectFromUrl() {
+    var params = new URLSearchParams(window.location.search);
+    var wantedTitle = params.get("title");
+    if (!wantedTitle) {
+      searchInput.focus();
+      return;
+    }
+    searchInput.value = wantedTitle;
+    hintEl.textContent = "Buscando…";
+    fetch(SYNC_URL + "?action=searchMovies&query=" + encodeURIComponent(wantedTitle))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.ok) {
+          hintEl.textContent = "Error buscando.";
+          return;
+        }
+        var results = data.results || [];
+        var exact = results.find(function (r) { return r.title === wantedTitle; });
+        if (exact) {
+          select(exact);
+        } else {
+          renderResults(results);
+        }
+      })
+      .catch(function () {
+        hintEl.textContent = "No se pudo conectar con el backend.";
+      });
+  }
+
+  autoSelectFromUrl();
 })();
 </script>
 </body>
