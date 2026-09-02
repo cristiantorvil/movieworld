@@ -3899,6 +3899,9 @@ function SummaryList({ items, render, onDuel }) {
 
 function RatingDiff({ gold, silver, diff }) {
   const rounded = Math.round(diff * 10) / 10;
+  // diff = gold - silver. Plateado más alto (diff <= 0) => amarillo/dorado;
+  // dorado más alto (diff > 0) => rojo.
+  const silverHigher = rounded <= 0;
   return (
     <>
       <span className="movie-card-rating-gold">★ {gold}</span>
@@ -3906,7 +3909,7 @@ function RatingDiff({ gold, silver, diff }) {
       <span className="movie-card-rating-silver">★ {silver}</span>
       <span
         className={
-          "result-delta " + (rounded >= 0 ? "result-delta-up" : "result-delta-down")
+          "result-delta " + (silverHigher ? "result-delta-up" : "result-delta-down")
         }
       >
         {rounded >= 0 ? "+" : ""}
@@ -3961,16 +3964,24 @@ function RankingList({ ranking, filterText, globalRanking, projectedRating, onDu
                   {m.plays ? ` · vista ${m.plays}x` : ""}
                 </span>
                 <span className="movie-card-ratings">
-                  {Number(m.rating) > 0 && (
-                    <span className="movie-card-rating movie-card-rating-gold">
-                      ★ {Number(m.rating) * 2}
-                    </span>
-                  )}
-                  {proj != null && (
-                    <span className="movie-card-rating movie-card-rating-silver">
-                      ★ {proj}
-                    </span>
-                  )}
+                  {(() => {
+                    if (Number(m.rating) > 0 && proj != null) {
+                      const gold = Number(m.rating) * 2;
+                      return <RatingDiff gold={gold} silver={proj} diff={gold - proj} />;
+                    }
+                    return (
+                      <>
+                        {Number(m.rating) > 0 && (
+                          <span className="movie-card-rating-gold">
+                            ★ {Number(m.rating) * 2}
+                          </span>
+                        )}
+                        {proj != null && (
+                          <span className="movie-card-rating-silver">★ {proj}</span>
+                        )}
+                      </>
+                    );
+                  })()}
                 </span>
               </div>
               <span className="rank-elo">{m.elo}</span>
