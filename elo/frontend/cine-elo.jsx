@@ -3898,10 +3898,12 @@ function SummaryList({ items, render, onDuel }) {
 }
 
 function RatingDiff({ gold, silver, diff }) {
-  const rounded = Math.round(diff * 10) / 10;
-  // diff = gold - silver. Plateado más alto (diff <= 0) => amarillo/dorado;
-  // dorado más alto (diff > 0) => rojo.
-  const silverHigher = rounded <= 0;
+  // El prop diff llega como gold - silver; lo mostramos y coloreamos al
+  // revés (silver - gold), así el signo del número siempre coincide con
+  // el color: positivo/plateado más alto => amarillo, negativo/dorado más
+  // alto => rojo — igual que el resto de los badges de la app (elo, etc.).
+  const delta = Math.round(-diff * 10) / 10;
+  const silverHigher = delta >= 0;
   return (
     <>
       <span className="movie-card-rating-gold">★ {gold}</span>
@@ -3912,8 +3914,8 @@ function RatingDiff({ gold, silver, diff }) {
           "result-delta " + (silverHigher ? "result-delta-up" : "result-delta-down")
         }
       >
-        {rounded >= 0 ? "+" : ""}
-        {rounded}
+        {delta >= 0 ? "+" : ""}
+        {delta}
       </span>
     </>
   );
