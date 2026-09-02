@@ -965,8 +965,11 @@ function CineEloApp() {
       : list;
     if (candidates.length === 0) return null;
     const weights = candidates.map((m) => {
-      // Pocos duelos pesa mucho más que muchos duelos.
-      const freqWeight = 1 / (1 + m.comparisons);
+      // Pocos duelos pesa más que muchos duelos, pero suavizado (raíz en
+      // vez de lineal): antes 10 duelos ya pesaban 10x menos que 0, ahora
+      // solo ~3x menos — así las pelis con más duelos siguen saliendo con
+      // una frecuencia razonable en vez de casi desaparecer del pool.
+      const freqWeight = 1 / Math.sqrt(1 + m.comparisons);
       // Si hay un ancla de elo, favorece rivales de nivel parecido:
       // matches más parejos son más informativos y convergen más rápido.
       let proxWeight = 1;
