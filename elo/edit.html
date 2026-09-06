@@ -295,22 +295,33 @@
 
       <fieldset>
         <legend>Rating dorado</legend>
-        <div class="field">
-          <label for="rating">Tu rating</label>
-          <select id="rating">
-            <option value="">Sin ver / watchlist</option>
-            <option value="0.5">★ 0.5</option>
-            <option value="1">★ 1</option>
-            <option value="1.5">★ 1.5</option>
-            <option value="2">★ 2</option>
-            <option value="2.5">★ 2.5</option>
-            <option value="3">★ 3</option>
-            <option value="3.5">★ 3.5</option>
-            <option value="4">★ 4</option>
-            <option value="4.5">★ 4.5</option>
-            <option value="5">★ 5</option>
-          </select>
+        <div class="row2">
+          <div class="field" style="margin-bottom:0;">
+            <label for="rating">Tu rating</label>
+            <select id="rating">
+              <option value="">Sin ver / watchlist</option>
+              <option value="0.5">★ 0.5</option>
+              <option value="1">★ 1</option>
+              <option value="1.5">★ 1.5</option>
+              <option value="2">★ 2</option>
+              <option value="2.5">★ 2.5</option>
+              <option value="3">★ 3</option>
+              <option value="3.5">★ 3.5</option>
+              <option value="4">★ 4</option>
+              <option value="4.5">★ 4.5</option>
+              <option value="5">★ 5</option>
+            </select>
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label for="plays">Veces vista</label>
+            <input type="number" id="plays" min="0" />
+          </div>
         </div>
+        <p class="hint">
+          Si la peli todavía no tenía rating ni Elo (recién en tu watchlist),
+          ponerle un rating acá también le arma el Elo inicial — no hace
+          falta agregarla de nuevo con "Agregar película".
+        </p>
       </fieldset>
 
       <fieldset>
@@ -392,6 +403,15 @@
     return TMDB_POSTER_BASE + (path.charAt(0) === "/" ? path : "/" + path);
   }
 
+  var START_ELO = 1200;
+  function computeInitialElo(rating, plays) {
+    var r = typeof rating === "number" ? rating : 2.5;
+    var p = typeof plays === "number" ? plays : 1;
+    var ratingBonus = (r - 2.5) * 100;
+    var playsBonus = Math.min(p - 1, 10) * 10;
+    return Math.round(START_ELO + ratingBonus + playsBonus);
+  }
+
   var searchInput = document.getElementById("search");
   var resultsEl = document.getElementById("results");
   var hintEl = document.getElementById("hint");
@@ -401,6 +421,7 @@
   var selDirectorMeta = document.getElementById("selDirectorMeta");
   var selYear = document.getElementById("selYear");
   var ratingSel = document.getElementById("rating");
+  var playsInput = document.getElementById("plays");
   var tmdbIdInput = document.getElementById("tmdbId");
   var resyncBtn = document.getElementById("resyncBtn");
   var resyncStatus = document.getElementById("resyncStatus");
@@ -562,6 +583,7 @@
     selYear.textContent = "Elo " + (r.elo || "—");
 
     ratingSel.value = r.rating ? String(r.rating) : "";
+    playsInput.value = r.plays ? String(r.plays) : "";
     tmdbIdInput.value = r.tmdbId || "";
     posterInput.value = r.poster || "";
     directorInput.value = r.director || "";
@@ -654,6 +676,25 @@
     if (newRating !== Number(current.rating || 0)) {
       changes.push({ col: "rating", value: newRating });
     }
+    var newPlays = playsInput.value === "" ? 0 : Number(playsInput.value);
+    if (newRating > 0) {
+      // No tiene sentido puntuarla con 0 vistas — si se puso un rating y no
+      // se tocó "veces vista", asumimos al menos 1 (mismo criterio que
+      // "Agregar película").
+      newPlays = Math.max(newPlays, 1);
+    }
+    if (newPlays !== Number(current.plays || 0)) {
+      changes.push({ col: "diary_count", value: newPlays });
+    }
+    // Pelis que estaban en watchlist (sin rating, sin Elo) nunca pasaron
+    // por "Agregar película", así que no tienen Elo inicial. Si ahora se
+    // les pone un rating por primera vez, armamos ese Elo acá — si ya
+    // tenían Elo (o sea, ya jugaron duelos), no lo tocamos.
+    var hadNoElo = current.elo === "" || current.elo == null;
+    if (hadNoElo && newRating > 0) {
+      var seedElo = computeInitialElo(newRating, Math.max(newPlays, 1));
+      changes.push({ col: "elo_rating", value: seedElo });
+    }
     var newPoster = posterInput.value.trim();
     if (newPoster !== (current.poster || "")) {
       changes.push({ col: "poster_path", value: newPoster });
@@ -702,6 +743,11 @@
         statusEl.textContent = "Guardado ✓";
         statusEl.className = "status ok";
         current.rating = newRating;
+        current.plays = newPlays;
+        if (hadNoElo && newRating > 0) {
+          current.elo = computeInitialElo(newRating, Math.max(newPlays, 1));
+          selYear.textContent = "Elo " + current.elo;
+        }
         current.poster = newPoster;
         current.director = newDirector;
         otherColSel.value = "";

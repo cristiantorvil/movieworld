@@ -1270,6 +1270,7 @@ function handleSearchMovies(query) {
     var titleCol = col('movie');
     var yearCol = col('year');
     var ratingCol = col('rating');
+    var playsCol = col('diary_count');
     var idCol = col('id');
     var directorCol = col('director');
     var genreCol = col('genre');
@@ -1290,6 +1291,7 @@ function handleSearchMovies(query) {
         title: title,
         year: yearCol > -1 ? row[yearCol] : '',
         rating: ratingCol > -1 ? row[ratingCol] : '',
+        plays: playsCol > -1 ? row[playsCol] : '',
         tmdbId: idCol > -1 ? row[idCol] : '',
         director: directorCol > -1 ? String(row[directorCol] || '') : '',
         genre: genreCol > -1 ? String(row[genreCol] || '') : '',
