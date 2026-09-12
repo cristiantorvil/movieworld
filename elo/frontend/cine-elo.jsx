@@ -17,7 +17,7 @@ function getKFactor(comparisons) {
 }
 const SNAPSHOT_INTERVAL = 25; // guardar posiciones cada N duelos
 const MAX_SNAPSHOTS = 15; // tope de cortes guardados en el historial
-const SNAPSHOT_TOP_N = 500; // solo se guarda el top 500 en cada corte
+const SNAPSHOT_TOP_N = 1000; // solo se guarda el top 1000 en cada corte
 
 function expectedScore(a, b) {
   return 1 / (1 + Math.pow(10, (b - a) / 400));
@@ -1345,22 +1345,6 @@ function CineEloApp() {
     "#E85D9F",
     "#9B9B9B",
   ];
-
-  // Por defecto, al entrar a la pestaña, precargar el Top 10 actual.
-  // Reacciona tanto al cambio de pestaña como a que el ranking termine de
-  // cargar (por si todavía no había datos cuando se entró a la pestaña).
-  const evoDefaultAppliedRef = useRef(false);
-  useEffect(() => {
-    if (
-      tab === "evolucion" &&
-      !evoDefaultAppliedRef.current &&
-      evoSelectedIds.length === 0 &&
-      ranking.length > 0
-    ) {
-      setEvoSelectedIds(ranking.slice(0, 10).map((m) => m.id));
-      evoDefaultAppliedRef.current = true;
-    }
-  }, [tab, ranking, evoSelectedIds]);
 
   const evoSuggestions = useMemo(() => {
     if (!movies) return [];
