@@ -491,6 +491,30 @@
     });
   }
 
+  // Buscar con ?action=searchMovies lee las ~5200 filas de la Sheet en cada
+  // tecleo (~2-3s cada vez, aunque el backend responda bien). En vez de eso,
+  // bajamos el catálogo completo UNA sola vez con ?action=pull (lo mismo que
+  // ya usa la app principal) y filtramos en memoria — las búsquedas quedan
+  // instantáneas después de esa carga inicial. Se refresca sola después de
+  // cada guardado para no mostrar datos viejos (ver saveBtn.onclick).
+  function loadMoviesIndex() {
+    return fetchJsonWithRetry(SYNC_URL + "?action=pull").then(function (data) {
+      if (!data.ok) throw new Error(data.error || "pull failed");
+      return data.movies || [];
+    });
+  }
+  var moviesIndexPromise = loadMoviesIndex();
+
+  function filterMovies(movies, query) {
+    var q = query.trim().toLowerCase();
+    var results = [];
+    for (var i = 0; i < movies.length && results.length < 25; i++) {
+      var title = String(movies[i].title || "");
+      if (title.toLowerCase().indexOf(q) !== -1) results.push(movies[i]);
+    }
+    return results;
+  }
+
   function doSearch(query) {
     if (!query || query.length < 2) {
       clearResults();
@@ -498,10 +522,9 @@
       return;
     }
     hintEl.textContent = "Buscando…";
-    fetchJsonWithRetry(SYNC_URL + "?action=searchMovies&query=" + encodeURIComponent(query))
-      .then(function (data) {
-        if (data.ok) renderResults(data.results || []);
-        else hintEl.textContent = "Error buscando.";
+    moviesIndexPromise
+      .then(function (movies) {
+        renderResults(filterMovies(movies, query));
       })
       .catch(function () {
         hintEl.textContent = "No se pudo conectar con el backend.";
@@ -771,6 +794,10 @@
         otherValueInput.value = "";
         customColWrap.style.display = "none";
         customColInput.value = "";
+        // El índice en memoria queda desactualizado con este guardado — lo
+        // refrescamos en segundo plano para que la próxima búsqueda en esta
+        // misma sesión no muestre los valores viejos.
+        moviesIndexPromise = loadMoviesIndex();
       })
       .catch(function () {
         saveBtn.disabled = false;
@@ -791,13 +818,9 @@
     }
     searchInput.value = wantedTitle;
     hintEl.textContent = "Buscando…";
-    fetchJsonWithRetry(SYNC_URL + "?action=searchMovies&query=" + encodeURIComponent(wantedTitle))
-      .then(function (data) {
-        if (!data.ok) {
-          hintEl.textContent = "Error buscando.";
-          return;
-        }
-        var results = data.results || [];
+    moviesIndexPromise
+      .then(function (movies) {
+        var results = filterMovies(movies, wantedTitle);
         var exact = results.find(function (r) { return r.title === wantedTitle; });
         if (exact) {
           select(exact);
