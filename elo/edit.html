@@ -398,6 +398,26 @@
   var SYNC_URL = "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
   var TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w200";
 
+  // El deployment de Apps Script falla de forma intermitente con una página
+  // de error genérica de Google (HTML, no JSON — ni siquiera llega a correr
+  // el script). Reintentar un par de veces resuelve la gran mayoría de esos
+  // casos sin que el usuario vea "No se pudo conectar con el backend" por
+  // una falla de red pasajera que no tiene nada que ver con el estado real
+  // de la Sheet. Hay que reintentar todo el ciclo fetch+json, no solo el
+  // fetch: esa página de error llega como 200 OK, así que fetch() no la
+  // rechaza — recién falla al intentar parsear el HTML como JSON.
+  function fetchJsonWithRetry(url, retries) {
+    if (retries == null) retries = 2;
+    return fetch(url)
+      .then(function (r) { return r.json(); })
+      .catch(function (err) {
+        if (retries <= 0) throw err;
+        return new Promise(function (resolve) { setTimeout(resolve, 500); }).then(
+          function () { return fetchJsonWithRetry(url, retries - 1); }
+        );
+      });
+  }
+
   function posterUrl(path) {
     if (!path) return "";
     return TMDB_POSTER_BASE + (path.charAt(0) === "/" ? path : "/" + path);
@@ -478,8 +498,7 @@
       return;
     }
     hintEl.textContent = "Buscando…";
-    fetch(SYNC_URL + "?action=searchMovies&query=" + encodeURIComponent(query))
-      .then(function (r) { return r.json(); })
+    fetchJsonWithRetry(SYNC_URL + "?action=searchMovies&query=" + encodeURIComponent(query))
       .then(function (data) {
         if (data.ok) renderResults(data.results || []);
         else hintEl.textContent = "Error buscando.";
@@ -546,8 +565,7 @@
     postersBtn.disabled = true;
     postersStatus.textContent = "Buscando posters en TMDB…";
     postersStatus.className = "field-status";
-    fetch(SYNC_URL + "?action=tmdbImages&id=" + encodeURIComponent(id))
-      .then(function (r) { return r.json(); })
+    fetchJsonWithRetry(SYNC_URL + "?action=tmdbImages&id=" + encodeURIComponent(id))
       .then(function (data) {
         postersBtn.disabled = false;
         if (!data.ok) {
@@ -616,12 +634,11 @@
     resyncBtn.disabled = true;
     resyncStatus.textContent = "Trayendo datos de TMDB…";
     resyncStatus.className = "field-status";
-    fetch(
+    fetchJsonWithRetry(
       SYNC_URL +
         "?action=fixTmdbMatch&title=" + encodeURIComponent(current.title) +
         "&newId=" + encodeURIComponent(newId)
     )
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         resyncBtn.disabled = false;
         if (!data.ok) {
@@ -652,12 +669,12 @@
   };
 
   function setField(title, col, value) {
-    return fetch(
+    return fetchJsonWithRetry(
       SYNC_URL +
         "?action=setField&title=" + encodeURIComponent(title) +
         "&col=" + encodeURIComponent(col) +
         "&value=" + encodeURIComponent(value)
-    ).then(function (r) { return r.json(); });
+    );
   }
 
   cancelBtn.onclick = function () {
@@ -774,8 +791,7 @@
     }
     searchInput.value = wantedTitle;
     hintEl.textContent = "Buscando…";
-    fetch(SYNC_URL + "?action=searchMovies&query=" + encodeURIComponent(wantedTitle))
-      .then(function (r) { return r.json(); })
+    fetchJsonWithRetry(SYNC_URL + "?action=searchMovies&query=" + encodeURIComponent(wantedTitle))
       .then(function (data) {
         if (!data.ok) {
           hintEl.textContent = "Error buscando.";
