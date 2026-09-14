@@ -252,6 +252,9 @@ function doGet(e) {
   if (e && e.parameter && e.parameter.action === 'setField') {
     return handleSetField(e.parameter.title || '', e.parameter.col || '', e.parameter.value || '');
   }
+  if (e && e.parameter && e.parameter.action === 'setFields') {
+    return handleSetFields(e.parameter.title || '', e.parameter.changes || '[]');
+  }
   if (e && e.parameter && e.parameter.action === 'searchMovies') {
     return handleSearchMovies(e.parameter.query || '');
   }
@@ -1345,6 +1348,69 @@ function handleSetField(title, col, value) {
     sheet.getRange(rowIndex + 1, colIdx + 1).setValue(value);
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, title: title, col: col, value: value })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Como handleSetField, pero para varios campos de una sola peli en un solo
+// viaje — evita hacer un getDataRange().getValues() de las ~5200 filas de
+// MOVIES (¡el costo real, no el de escribir!) por cada campo tocado. edit.html
+// guardaba antes con una llamada a setField por campo cambiado, y con eso un
+// guardado de 3 campos (ej. rating + veces vista + elo inicial) tardaba
+// 10-12s en vez de los ~3-4s de una sola lectura de la Sheet.
+function handleSetFields(title, changesJson) {
+  try {
+    if (!title) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'Falta title.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var changes;
+    try {
+      changes = JSON.parse(changesJson || '[]');
+    } catch (parseErr) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'changes no es JSON válido.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    if (!Array.isArray(changes) || !changes.length) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'No hay cambios para guardar.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var values = sheet.getDataRange().getValues();
+    var header = values[0];
+    var titleCol = header.indexOf('movie');
+    var rowIndex = -1;
+    for (var i = 1; i < values.length; i++) {
+      if (String(values[i][titleCol]) === title) { rowIndex = i; break; }
+    }
+    if (rowIndex === -1) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'No se encontró "' + title + '" en la Sheet.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var applied = [];
+    var failed = [];
+    changes.forEach(function (c) {
+      var colIdx = header.indexOf(c.col);
+      if (colIdx === -1) {
+        failed.push({ col: c.col, error: 'No existe la columna "' + c.col + '".' });
+        return;
+      }
+      sheet.getRange(rowIndex + 1, colIdx + 1).setValue(c.value);
+      applied.push({ col: c.col, value: c.value });
+    });
+
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, title: title, applied: applied, failed: failed })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(

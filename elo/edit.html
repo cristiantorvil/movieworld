@@ -709,12 +709,11 @@
       });
   };
 
-  function setField(title, col, value) {
+  function setFields(title, changes) {
     return fetchJsonWithRetry(
       SYNC_URL +
-        "?action=setField&title=" + encodeURIComponent(title) +
-        "&col=" + encodeURIComponent(col) +
-        "&value=" + encodeURIComponent(value)
+        "?action=setFields&title=" + encodeURIComponent(title) +
+        "&changes=" + encodeURIComponent(JSON.stringify(changes))
     );
   }
 
@@ -780,21 +779,20 @@
     statusEl.className = "status";
 
     var title = current.title;
-    var chain = Promise.resolve();
-    var failed = [];
-    changes.forEach(function (c) {
-      chain = chain.then(function () {
-        return setField(title, c.col, c.value).then(function (data) {
-          if (!data.ok) failed.push(c.col + ": " + (data.error || "error"));
-        });
-      });
-    });
 
-    chain
-      .then(function () {
+    setFields(title, changes)
+      .then(function (data) {
         saveBtn.disabled = false;
+        if (!data.ok) {
+          statusEl.textContent = "Error: " + (data.error || "no se pudo guardar");
+          statusEl.className = "status err";
+          return;
+        }
+        var failed = data.failed || [];
         if (failed.length) {
-          statusEl.textContent = "Error en: " + failed.join(", ");
+          statusEl.textContent = "Error en: " + failed.map(function (f) {
+            return f.col + ": " + f.error;
+          }).join(", ");
           statusEl.className = "status err";
           return;
         }
