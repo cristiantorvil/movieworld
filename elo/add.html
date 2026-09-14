@@ -294,6 +294,36 @@
   var SYNC_URL = "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
   var TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w200";
 
+  // Mismo criterio que edit.html: los duelos de index.html son
+  // instantáneos porque juegan contra su copia local en localStorage y
+  // sincronizan al Sheet en segundo plano. Guardar una peli nueva hace lo
+  // mismo acá — se agrega al toque al mismo localStorage (mismo dominio,
+  // mismo storage que index.html) y el POST al Sheet pasa sin bloquear.
+  var STORAGE_KEY = "cine-elo-movies";
+
+  function uid() {
+    return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  }
+
+  function readLocalMovies() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeLocalMovies(movies) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(movies));
+    } catch (e) {
+      // almacenamiento lleno o bloqueado: no es crítico, seguimos igual
+    }
+  }
+
   function posterUrl(path) {
     if (!path) return "";
     return TMDB_POSTER_BASE + (path.charAt(0) === "/" ? path : "/" + path);
@@ -464,9 +494,44 @@
       payload[k] = current[k];
     });
 
-    saveBtn.disabled = true;
-    statusEl.textContent = "Guardando…";
-    statusEl.className = "status";
+    // Local-first, igual que los duelos de index.html: la agregamos ya
+    // mismo a su mismo localStorage y mostramos "Guardada ✓" al instante —
+    // el POST al Sheet (el que de verdad tarda 3-4s, o a veces se cuelga
+    // por la inestabilidad de Apps Script) pasa en segundo plano, sin que
+    // el usuario tenga que esperarlo.
+    var localMovies = readLocalMovies() || [];
+    var existingIdx = localMovies.findIndex(function (m) { return m.title === current.title; });
+    var localMovie = {
+      id: existingIdx !== -1 ? localMovies[existingIdx].id : uid(),
+      title: current.title,
+      year: current.year || null,
+      rating: ratingVal,
+      plays: playsVal,
+      elo: computeInitialElo(ratingVal, playsVal || 1),
+      comparisons: 0,
+      wins: 0,
+      tmdbId: current.tmdbId || "",
+    };
+    META_FIELD_KEYS.forEach(function (k) {
+      localMovie[k] = current[k] || "";
+    });
+    if (existingIdx !== -1) {
+      localMovies[existingIdx] = localMovie;
+    } else {
+      localMovies.push(localMovie);
+    }
+    writeLocalMovies(localMovies);
+
+    statusEl.textContent = "Guardada ✓";
+    statusEl.className = "status ok";
+    addToRecent(current.title, current.year);
+    setTimeout(function () {
+      current = null;
+      selectedCard.classList.remove("show");
+      searchInput.value = "";
+      clearResults();
+      searchInput.focus();
+    }, 700);
 
     fetch(SYNC_URL + "?allowCreate=1", {
       method: "POST",
@@ -475,31 +540,16 @@
     })
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        saveBtn.disabled = false;
         var reallySaved =
           data.ok &&
           ((data.created && data.created.length > 0) ||
             (data.updated && data.updated.length > 0));
-        if (reallySaved) {
-          statusEl.textContent = "Guardada ✓";
-          statusEl.className = "status ok";
-          addToRecent(current.title, current.year);
-          setTimeout(function () {
-            current = null;
-            selectedCard.classList.remove("show");
-            searchInput.value = "";
-            clearResults();
-            searchInput.focus();
-          }, 700);
-        } else {
-          statusEl.textContent = "Error: " + (data.error || "no se guardó (revisa el título)");
-          statusEl.className = "status err";
+        if (!reallySaved) {
+          console.error('Sync en segundo plano falló para "' + payload.title + '":', data && data.error);
         }
       })
-      .catch(function () {
-        saveBtn.disabled = false;
-        statusEl.textContent = "No se pudo conectar con el backend.";
-        statusEl.className = "status err";
+      .catch(function (err) {
+        console.error('Sync en segundo plano falló para "' + payload.title + '":', err);
       });
   };
 

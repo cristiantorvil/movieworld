@@ -497,19 +497,76 @@
     });
   }
 
-  // Buscar con ?action=searchMovies lee las ~5200 filas de la Sheet en cada
-  // tecleo (~2-3s cada vez, aunque el backend responda bien). En vez de eso,
-  // bajamos el catálogo completo UNA sola vez con ?action=pull (lo mismo que
-  // ya usa la app principal) y filtramos en memoria — las búsquedas quedan
-  // instantáneas después de esa carga inicial. Se refresca sola después de
-  // cada guardado para no mostrar datos viejos (ver saveBtn.onclick).
+  // Los duelos de la app principal (index.html) siempre son instantáneos
+  // porque nunca esperan al Sheet: juegan contra su propia copia local en
+  // localStorage y sincronizan el resultado en segundo plano. Acá hacemos
+  // lo mismo para no heredar la lentitud/cuelgues de Apps Script en cada
+  // búsqueda: leemos la MISMA clave de localStorage que ya usa index.html
+  // (mismo dominio → mismo storage) en vez de pedirle el catálogo al
+  // backend en cada carga de esta página. moviesIndexCache guarda la
+  // referencia al array ya resuelto para poder mutarlo al instante al
+  // guardar (ver saveBtn.onclick), sin perder sincronía con lo que ya
+  // filtran las búsquedas en curso.
+  var STORAGE_KEY = "cine-elo-movies";
+  var moviesIndexCache = null;
+
+  function readLocalMovies() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeLocalMovies(movies) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(movies));
+    } catch (e) {
+      // almacenamiento lleno o bloqueado: no es crítico, seguimos igual
+    }
+  }
+
+  // Si este navegador nunca abrió index.html (sin localStorage todavía),
+  // caemos al ?action=pull de siempre — mismo camino lento de antes, pero
+  // solo para ese primer uso; de ahí en más ya queda todo local.
   function loadMoviesIndex() {
+    var local = readLocalMovies();
+    if (local) {
+      moviesIndexCache = local;
+      return Promise.resolve(local);
+    }
     return fetchJsonWithRetry(SYNC_URL + "?action=pull").then(function (data) {
       if (!data.ok) throw new Error(data.error || "pull failed");
-      return data.movies || [];
+      var movies = data.movies || [];
+      writeLocalMovies(movies);
+      moviesIndexCache = movies;
+      return movies;
     });
   }
   var moviesIndexPromise = loadMoviesIndex();
+
+  // Nombre de columna en la Sheet -> key correspondiente en el objeto de
+  // index.html/localStorage, para reflejar un guardado en el cache local al
+  // instante. Un "otro dato" con columna custom (texto libre) no tiene
+  // mapeo acá y por lo tanto no se refleja en el cache hasta el próximo
+  // pull real — solo afecta ese caso puntual, poco común.
+  var COL_TO_LOCAL_KEY = {
+    rating: "rating",
+    diary_count: "plays",
+    elo_rating: "elo",
+    poster_path: "poster",
+    director: "director",
+    genre: "genre",
+    country: "country",
+    original_language: "originalLanguage",
+    year: "year",
+    runtime: "runtime",
+    collection: "collection",
+    imdb_id: "imdbId",
+  };
 
   // Si la carga del catálogo falló (backend colgado, sin conexión, etc.),
   // moviesIndexPromise queda rechazado para siempre — sin esto, cualquier
@@ -774,52 +831,46 @@
       return;
     }
 
-    saveBtn.disabled = true;
-    statusEl.textContent = "Guardando…";
-    statusEl.className = "status";
-
     var title = current.title;
 
-    setFields(title, changes)
-      .then(function (data) {
-        saveBtn.disabled = false;
-        if (!data.ok) {
-          statusEl.textContent = "Error: " + (data.error || "no se pudo guardar");
-          statusEl.className = "status err";
-          return;
-        }
-        var failed = data.failed || [];
-        if (failed.length) {
-          statusEl.textContent = "Error en: " + failed.map(function (f) {
-            return f.col + ": " + f.error;
-          }).join(", ");
-          statusEl.className = "status err";
-          return;
-        }
-        statusEl.textContent = "Guardado ✓";
-        statusEl.className = "status ok";
-        current.rating = newRating;
-        current.plays = newPlays;
-        if (hadNoElo && newRating > 0) {
-          current.elo = computeInitialElo(newRating, Math.max(newPlays, 1));
-          selYear.textContent = "Elo " + current.elo;
-        }
-        current.poster = newPoster;
-        current.director = newDirector;
-        otherColSel.value = "";
-        otherValueInput.value = "";
-        customColWrap.style.display = "none";
-        customColInput.value = "";
-        // El índice en memoria queda desactualizado con este guardado — lo
-        // refrescamos en segundo plano para que la próxima búsqueda en esta
-        // misma sesión no muestre los valores viejos.
-        moviesIndexPromise = loadMoviesIndex();
-      })
-      .catch(function () {
-        saveBtn.disabled = false;
-        statusEl.textContent = "No se pudo conectar con el backend.";
-        statusEl.className = "status err";
-      });
+    // Local-first, igual que los duelos: guardamos ya mismo en el mismo
+    // localStorage que usa index.html (así la próxima búsqueda ve el
+    // cambio al instante, sin depender de que el Sheet haya respondido) y
+    // mostramos "Guardado ✓" de una — la sincronización real al Sheet pasa
+    // en segundo plano, sin bloquear ni frenar a este usuario.
+    if (moviesIndexCache) {
+      var idx = moviesIndexCache.findIndex(function (m) { return m.title === title; });
+      if (idx !== -1) {
+        changes.forEach(function (c) {
+          var key = COL_TO_LOCAL_KEY[c.col];
+          if (key) moviesIndexCache[idx][key] = c.value;
+        });
+        writeLocalMovies(moviesIndexCache);
+      }
+    }
+
+    current.rating = newRating;
+    current.plays = newPlays;
+    if (hadNoElo && newRating > 0) {
+      current.elo = computeInitialElo(newRating, Math.max(newPlays, 1));
+      selYear.textContent = "Elo " + current.elo;
+    }
+    current.poster = newPoster;
+    current.director = newDirector;
+    otherColSel.value = "";
+    otherValueInput.value = "";
+    customColWrap.style.display = "none";
+    customColInput.value = "";
+    statusEl.textContent = "Guardado ✓";
+    statusEl.className = "status ok";
+
+    // Si esto falla o queda colgado (Apps Script es intermitente), no
+    // molestamos al usuario — mismo trato que un duelo cuyo sync falla: el
+    // valor correcto ya quedó en este navegador, y la próxima edición de
+    // esta peli lo vuelve a mandar con los valores vigentes.
+    setFields(title, changes).catch(function (err) {
+      console.error('Sync en segundo plano falló para "' + title + '":', err);
+    });
   };
 
   // Si llegamos con ?title=... (ej. desde un link "editar" en Cine Elo),
