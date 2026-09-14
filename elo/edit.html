@@ -398,22 +398,28 @@
   var SYNC_URL = "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
   var TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w200";
 
-  // El deployment de Apps Script falla de forma intermitente con una página
-  // de error genérica de Google (HTML, no JSON — ni siquiera llega a correr
-  // el script). Reintentar un par de veces resuelve la gran mayoría de esos
-  // casos sin que el usuario vea "No se pudo conectar con el backend" por
-  // una falla de red pasajera que no tiene nada que ver con el estado real
-  // de la Sheet. Hay que reintentar todo el ciclo fetch+json, no solo el
-  // fetch: esa página de error llega como 200 OK, así que fetch() no la
-  // rechaza — recién falla al intentar parsear el HTML como JSON.
-  function fetchJsonWithRetry(url, retries) {
+  // El deployment de Apps Script falla de forma intermitente de dos formas
+  // distintas: (a) devuelve una página de error genérica de Google (HTML,
+  // no JSON — ni siquiera llega a correr el script), o (b) el pedido queda
+  // colgado sin responder NUNCA (confirmado: 15s+ sin éxito ni error). El
+  // caso (a) lo resuelve el reintento de abajo; el (b) necesita, además, un
+  // timeout propio — fetch() no tiene uno por default, así que sin esto la
+  // página se queda en "Buscando…" para siempre. Hay que reintentar todo el
+  // ciclo fetch+json, no solo el fetch: la página de error del caso (a)
+  // llega como 200 OK, así que fetch() no la rechaza — recién falla al
+  // intentar parsear el HTML como JSON.
+  function fetchJsonWithRetry(url, retries, timeoutMs) {
     if (retries == null) retries = 2;
-    return fetch(url)
+    if (timeoutMs == null) timeoutMs = 10000;
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+    return fetch(url, { signal: controller.signal })
       .then(function (r) { return r.json(); })
+      .finally(function () { clearTimeout(timer); })
       .catch(function (err) {
         if (retries <= 0) throw err;
         return new Promise(function (resolve) { setTimeout(resolve, 500); }).then(
-          function () { return fetchJsonWithRetry(url, retries - 1); }
+          function () { return fetchJsonWithRetry(url, retries - 1, timeoutMs); }
         );
       });
   }
@@ -505,6 +511,18 @@
   }
   var moviesIndexPromise = loadMoviesIndex();
 
+  // Si la carga del catálogo falló (backend colgado, sin conexión, etc.),
+  // moviesIndexPromise queda rechazado para siempre — sin esto, cualquier
+  // búsqueda posterior fallaría de nuevo al toque aunque el backend ya
+  // esté disponible, y habría que recargar la página a mano. En vez de
+  // eso, cada consumidor dispara un intento nuevo para la PRÓXIMA búsqueda.
+  function getMoviesIndex() {
+    return moviesIndexPromise.catch(function (err) {
+      moviesIndexPromise = loadMoviesIndex();
+      throw err;
+    });
+  }
+
   function filterMovies(movies, query) {
     var q = query.trim().toLowerCase();
     var results = [];
@@ -522,7 +540,7 @@
       return;
     }
     hintEl.textContent = "Buscando…";
-    moviesIndexPromise
+    getMoviesIndex()
       .then(function (movies) {
         renderResults(filterMovies(movies, query));
       })
@@ -818,7 +836,7 @@
     }
     searchInput.value = wantedTitle;
     hintEl.textContent = "Buscando…";
-    moviesIndexPromise
+    getMoviesIndex()
       .then(function (movies) {
         var results = filterMovies(movies, wantedTitle);
         var exact = results.find(function (r) { return r.title === wantedTitle; });
