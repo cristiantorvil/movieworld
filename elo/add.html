@@ -533,10 +533,15 @@
       searchInput.focus();
     }, 700);
 
+    // keepalive: este POST corre en segundo plano y ya no se espera (ver
+    // más arriba) — sin esto, el navegador lo cancela apenas el usuario
+    // navega a otra página (ej. "← MovieWorld" para ir a dueleando), y la
+    // peli nunca llega a guardarse en el Sheet.
     fetch(SYNC_URL + "?allowCreate=1", {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify([payload]),
+      keepalive: true,
     })
       .then(function (r) { return r.json(); })
       .then(function (data) {

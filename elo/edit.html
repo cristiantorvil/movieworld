@@ -413,7 +413,12 @@
     if (timeoutMs == null) timeoutMs = 10000;
     var controller = new AbortController();
     var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
-    return fetch(url, { signal: controller.signal })
+    // keepalive: la sincronización de un guardado se dispara en segundo
+    // plano y ya no se espera (ver saveBtn.onclick) — sin esto, el navegador
+    // cancela el pedido en curso apenas el usuario navega a otra página
+    // (ej. "← MovieWorld" para seguir dueleando), y el cambio nunca llega al
+    // Sheet. Con keepalive el pedido sigue vivo aunque la página se cierre.
+    return fetch(url, { signal: controller.signal, keepalive: true })
       .then(function (r) { return r.json(); })
       .finally(function () { clearTimeout(timer); })
       .catch(function (err) {
