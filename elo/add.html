@@ -348,41 +348,91 @@
   }
 
   // Igual que en edit.html: keepalive es "mejor esfuerzo" (no sobrevive a
-  // cerrar el navegador entero, ni a un cuelgue más largo de lo que tolera).
-  // Esta cola en localStorage es la garantía real — cada peli nueva se
-  // anota ACÁ antes de intentar mandarla, y cualquier página de Cine Elo
-  // (mismo dominio, mismo localStorage) la reintenta apenas se abre, hasta
-  // que el Sheet confirme que la recibió.
-  var PENDING_SYNC_KEY = "cine-elo-pending-sync";
+  // cerrar el navegador entero, ni a un cuelgue más largo de lo que
+  // tolera). Esta cola es la garantía real — vive en IndexedDB (no
+  // localStorage) porque el Service Worker (sw.js) que la reintenta en
+  // segundo plano vía Background Sync, incluso con todas las pestañas
+  // cerradas, no tiene acceso a localStorage. Misma base que edit.html.
+  var IDB_NAME = "cine-elo-db";
+  var IDB_STORE = "pendingSync";
 
-  function readPendingSync() {
-    try {
-      var raw = localStorage.getItem(PENDING_SYNC_KEY);
-      var parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (e) {
-      return [];
-    }
-  }
-
-  function writePendingSync(queue) {
-    try {
-      localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(queue));
-    } catch (e) {
-      // almacenamiento lleno o bloqueado: no es crítico
-    }
+  function idbOpen() {
+    return new Promise(function (resolve, reject) {
+      var req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = function () {
+        req.result.createObjectStore(IDB_STORE, { keyPath: "id" });
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
   }
 
   function enqueuePendingSync(item) {
     item.id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-    var queue = readPendingSync();
-    queue.push(item);
-    writePendingSync(queue);
-    return item.id;
+    return idbOpen().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).put(item);
+        tx.oncomplete = function () { resolve(item.id); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+
+  function readPendingSync() {
+    return idbOpen().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, "readonly");
+        var req = tx.objectStore(IDB_STORE).getAll();
+        req.onsuccess = function () { resolve(req.result || []); };
+        req.onerror = function () { reject(req.error); };
+      });
+    });
   }
 
   function removePendingSync(id) {
-    writePendingSync(readPendingSync().filter(function (i) { return i.id !== id; }));
+    return idbOpen().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).delete(id);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+
+  // Guardados de una versión anterior (antes de migrar a IndexedDB) pueden
+  // haber quedado en el localStorage viejo — los movemos una sola vez para
+  // no perderlos.
+  function migrateOldPendingSync() {
+    try {
+      var raw = localStorage.getItem("cine-elo-pending-sync");
+      if (!raw) return Promise.resolve();
+      var items = JSON.parse(raw) || [];
+      localStorage.removeItem("cine-elo-pending-sync");
+      return Promise.all(items.map(function (item) {
+        delete item.id;
+        return enqueuePendingSync(item);
+      }));
+    } catch (e) {
+      return Promise.resolve(); // nada que migrar o storage bloqueado
+    }
+  }
+
+  // Le pide al navegador que reintente en segundo plano vía Service
+  // Worker — incluso con TODAS las pestañas de Cine Elo cerradas, en
+  // cuanto haya conexión. Si el navegador no soporta Background Sync
+  // (ej. Safari/iPhone) no hace nada acá: igual queda el reintento al
+  // abrir cualquier página y el intervalo de abajo como red de contención.
+  function requestBackgroundSync() {
+    if (!("serviceWorker" in navigator) || !("SyncManager" in window)) return;
+    navigator.serviceWorker.ready
+      .then(function (reg) { return reg.sync.register("flush-pending-sync"); })
+      .catch(function () {});
+  }
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(function () {});
   }
 
   function syncPendingItem(item) {
@@ -404,20 +454,27 @@
     return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
   }
 
-  // Se llama una vez al cargar la página (al final del archivo) — no
-  // bloquea nada ni se le avisa al usuario, mismo trato silencioso que la
+  // Se llama al cargar la página, cada vez que se encola un guardado
+  // nuevo, y cada FLUSH_INTERVAL_MS mientras esta pestaña siga abierta
+  // (red de contención para navegadores sin Background Sync). No bloquea
+  // nada ni se le avisa al usuario, mismo trato silencioso que la
   // sincronización de un duelo.
   function flushPendingSync() {
-    readPendingSync().forEach(function (item) {
-      syncPendingItem(item)
-        .then(function (data) {
-          if (data && data.ok) removePendingSync(item.id);
-        })
-        .catch(function () {
-          // sigue en la cola: se reintenta la próxima vez.
-        });
+    readPendingSync().then(function (queue) {
+      queue.forEach(function (item) {
+        syncPendingItem(item)
+          .then(function (data) {
+            if (data && data.ok) removePendingSync(item.id);
+          })
+          .catch(function () {
+            // sigue en la cola: se reintenta la próxima vez.
+          });
+      });
     });
   }
+
+  var FLUSH_INTERVAL_MS = 20000;
+  setInterval(flushPendingSync, FLUSH_INTERVAL_MS);
 
   function posterUrl(path) {
     if (!path) return "";
@@ -628,24 +685,27 @@
 
     // Encolado ANTES de intentar mandarlo: si el intento de abajo falla, se
     // cuelga, o no llega a correr porque el usuario ya cerró la página, la
-    // peli sigue anotada en localStorage y se reintenta sola la próxima vez
-    // que se abra cualquier página de Cine Elo en este navegador.
-    var pendingId = enqueuePendingSync({ type: "create", payload: payload });
-    syncPendingItem({ type: "create", payload: payload })
-      .then(function (data) {
-        var reallySaved =
-          data.ok &&
-          ((data.created && data.created.length > 0) ||
-            (data.updated && data.updated.length > 0));
-        if (reallySaved) {
-          removePendingSync(pendingId);
-        } else {
-          console.error('Sync en segundo plano falló para "' + payload.title + '" (queda pendiente):', data && data.error);
-        }
-      })
-      .catch(function (err) {
-        console.error('Sync en segundo plano falló para "' + payload.title + '" (queda pendiente):', err);
-      });
+    // peli sigue anotada en IndexedDB. requestBackgroundSync hace que el
+    // navegador la reintente solo en cuanto haya conexión, aunque se
+    // cierren todas las pestañas de Cine Elo.
+    enqueuePendingSync({ type: "create", payload: payload }).then(function (pendingId) {
+      requestBackgroundSync();
+      syncPendingItem({ type: "create", payload: payload })
+        .then(function (data) {
+          var reallySaved =
+            data.ok &&
+            ((data.created && data.created.length > 0) ||
+              (data.updated && data.updated.length > 0));
+          if (reallySaved) {
+            removePendingSync(pendingId);
+          } else {
+            console.error('Sync en segundo plano falló para "' + payload.title + '" (queda pendiente, Background Sync reintentará):', data && data.error);
+          }
+        })
+        .catch(function (err) {
+          console.error('Sync en segundo plano falló para "' + payload.title + '" (queda pendiente, Background Sync reintentará):', err);
+        });
+    });
   };
 
   function addToRecent(title, year) {
@@ -656,7 +716,7 @@
   }
 
   searchInput.focus();
-  flushPendingSync();
+  migrateOldPendingSync().then(flushPendingSync);
 })();
 </script>
 </body>

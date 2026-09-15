@@ -27,47 +27,94 @@ function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
 
-// edit.html y add.html guardan cada cambio al toque en localStorage y
+// edit.html y add.html guardan cada cambio al toque en su copia local y
 // muestran éxito de inmediato, pero la escritura real al Sheet pasa en
 // segundo plano sin que esa página la espere — si el usuario cierra la
 // pestaña justo antes de que termine (o Apps Script se cuelga más de lo
-// que el navegador tolera), ese pedido se pierde y no queda nada
-// corriendo para reintentarlo. Por eso cada cambio se anota ANTES en esta
-// cola en localStorage (misma clave, mismo dominio) — y como index.html
-// suele ser la página que más se reabre de las tres, drenarla acá también
-// es lo que da la garantía real de que, tarde o temprano, todo llega al
-// Sheet.
-const PENDING_SYNC_KEY = "cine-elo-pending-sync";
+// que el navegador tolera, algo confirmado en producción), ese pedido se
+// pierde y no queda nada corriendo para reintentarlo. Por eso cada cambio
+// se anota ANTES en esta cola. Vive en IndexedDB (no localStorage) porque
+// el Service Worker (sw.js) que la reintenta en segundo plano vía
+// Background Sync — incluso con TODAS las pestañas de Cine Elo cerradas —
+// no tiene acceso a localStorage. Misma base "cine-elo-db" en las tres
+// páginas, así que cualquiera puede drenarla.
+const IDB_NAME = "cine-elo-db";
+const IDB_STORE = "pendingSync";
 
-function readPendingSync() {
-  try {
-    const raw = localStorage.getItem(PENDING_SYNC_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (e) {
-    return [];
-  }
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(IDB_STORE, { keyPath: "id" });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
 }
 
-function writePendingSync(queue) {
-  try {
-    localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(queue));
-  } catch (e) {
-    // almacenamiento lleno o bloqueado: no es crítico
-  }
+function readPendingSync() {
+  return idbOpen().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readonly");
+        const req = tx.objectStore(IDB_STORE).getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error);
+      })
+  );
+}
+
+function enqueuePendingSync(item) {
+  item.id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  return idbOpen().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).put(item);
+        tx.oncomplete = () => resolve(item.id);
+        tx.onerror = () => reject(tx.error);
+      })
+  );
 }
 
 function removePendingSync(id) {
-  writePendingSync(readPendingSync().filter((i) => i.id !== id));
+  return idbOpen().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).delete(id);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      })
+  );
+}
+
+// Guardados de una versión anterior (antes de migrar a IndexedDB) pueden
+// haber quedado en el localStorage viejo — los movemos una sola vez para
+// no perderlos.
+function migrateOldPendingSync() {
+  try {
+    const raw = localStorage.getItem("cine-elo-pending-sync");
+    if (!raw) return Promise.resolve();
+    const items = JSON.parse(raw) || [];
+    localStorage.removeItem("cine-elo-pending-sync");
+    return Promise.all(
+      items.map((item) => {
+        delete item.id;
+        return enqueuePendingSync(item);
+      })
+    );
+  } catch (e) {
+    return Promise.resolve(); // nada que migrar o storage bloqueado
+  }
 }
 
 // Apps Script a veces deja un pedido colgado sin responder nunca (confirmado
 // en producción) — fetch() no tiene timeout propio, así que sin esto un
 // intento colgado nunca se resuelve ni se rechaza, y ese item queda "en
 // curso" hasta que se cierre la pestaña. No hace falta reintentar acá
-// mismo (a diferencia de edit.html/add.html): si este intento falla o
-// expira, el item sigue en la cola y el PRÓXIMO montaje de cualquier
-// página de Cine Elo ya vuelve a intentarlo.
+// mismo: si este intento falla o expira, el item sigue en la cola y
+// Background Sync (o el intervalo/montaje de abajo) lo reintenta.
 function fetchWithTimeout(url, options, timeoutMs = 10000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -92,20 +139,26 @@ function syncPendingItem(item) {
   return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
 }
 
-// Se llama una vez al montar la app (ver useEffect más abajo). No bloquea
+// Se llama al montar la app y cada FLUSH_INTERVAL_MS mientras siga
+// abierta (red de contención para navegadores sin Background Sync, ej.
+// Safari/iPhone, o mientras ese registro todavía no disparó). No bloquea
 // nada ni se le avisa al usuario — mismo trato silencioso que la
 // sincronización de un duelo.
 function flushPendingSync() {
-  readPendingSync().forEach((item) => {
-    syncPendingItem(item)
-      .then((data) => {
-        if (data && data.ok) removePendingSync(item.id);
-      })
-      .catch(() => {
-        // sigue en la cola: se reintenta la próxima vez.
-      });
+  readPendingSync().then((queue) => {
+    queue.forEach((item) => {
+      syncPendingItem(item)
+        .then((data) => {
+          if (data && data.ok) removePendingSync(item.id);
+        })
+        .catch(() => {
+          // sigue en la cola: se reintenta la próxima vez.
+        });
+    });
   });
 }
+
+const FLUSH_INTERVAL_MS = 20000;
 
 // --- Torneo / bracket ---
 
@@ -398,8 +451,16 @@ function CineEloApp() {
   // Drena al toque cualquier guardado de edit.html/add.html que se haya
   // quedado pendiente (ver flushPendingSync arriba) — index.html suele ser
   // la página que más se reabre, así que es donde más conviene reintentar.
+  // También registra el Service Worker: sin él, Background Sync no
+  // funciona en NINGUNA de las tres páginas (el registro es compartido,
+  // pero alguien tiene que darlo de alta la primera vez).
   useEffect(() => {
-    flushPendingSync();
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    }
+    migrateOldPendingSync().then(flushPendingSync);
+    const interval = setInterval(flushPendingSync, FLUSH_INTERVAL_MS);
+    return () => clearInterval(interval);
   }, []);
   const [confirmReset, setConfirmReset] = useState(false);
   const [duelDirector, setDuelDirector] = useState("");
