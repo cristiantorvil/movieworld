@@ -160,6 +160,18 @@ function flushPendingSync() {
 
 const FLUSH_INTERVAL_MS = 20000;
 
+// Le pide al navegador que reintente en segundo plano vía Service Worker —
+// incluso con TODAS las pestañas de Cine Elo cerradas, en cuanto haya
+// conexión. Si el navegador no soporta Background Sync (ej. Safari/iPhone)
+// no hace nada acá: igual queda el reintento al abrir cualquier página y
+// el intervalo de FLUSH_INTERVAL_MS como red de contención.
+function requestBackgroundSync() {
+  if (!("serviceWorker" in navigator) || !("SyncManager" in window)) return;
+  navigator.serviceWorker.ready
+    .then((reg) => reg.sync.register("flush-pending-sync"))
+    .catch(() => {});
+}
+
 // --- Torneo / bracket ---
 
 const TOURNAMENT_STORAGE_KEY = "cine-elo-tournament";
@@ -2188,6 +2200,54 @@ function CineEloApp() {
     [decadeBounds]
   );
 
+  // Editar el rating directo desde Resumen/Ranking, sin pasar por
+  // edit.html. syncToSheet (el que ya usan los duelos) NO sirve acá: solo
+  // rellena celdas VACÍAS, nunca pisa un rating ya cargado — necesitamos
+  // el mismo setFields (sobreescribe) que usa edit.html, con la misma cola
+  // de sincronización (IndexedDB + Background Sync) para que el cambio
+  // llegue al Sheet aunque se cierre la pestaña.
+  const saveMovieRating = useCallback((movie, newRating) => {
+    const title = movie.title;
+    const changes = [];
+    if (newRating !== Number(movie.rating || 0)) {
+      changes.push({ col: "rating", value: newRating });
+    }
+    let newPlays = Number(movie.plays || 0);
+    if (newRating > 0) {
+      newPlays = Math.max(newPlays, 1);
+      if (newPlays !== Number(movie.plays || 0)) {
+        changes.push({ col: "diary_count", value: newPlays });
+      }
+    }
+    const hadNoElo = movie.elo === "" || movie.elo == null;
+    let newElo = movie.elo;
+    if (hadNoElo && newRating > 0) {
+      newElo = computeInitialElo(newRating, Math.max(newPlays, 1));
+      changes.push({ col: "elo_rating", value: newElo });
+    }
+    if (!changes.length) return;
+
+    setMovies((current) =>
+      current.map((m) =>
+        m.id === movie.id ? { ...m, rating: newRating, plays: newPlays, elo: newElo } : m
+      )
+    );
+
+    enqueuePendingSync({ type: "setFields", title, changes }).then((pendingId) => {
+      requestBackgroundSync();
+      syncPendingItem({ type: "setFields", title, changes })
+        .then((data) => {
+          if (data && data.ok) removePendingSync(pendingId);
+        })
+        .catch((err) => {
+          console.error(
+            `Sync en segundo plano falló para "${title}" (queda pendiente, Background Sync reintentará):`,
+            err
+          );
+        });
+    });
+  }, []);
+
   if (movies === null) {
     return (
       <div className="app-root">
@@ -3289,7 +3349,15 @@ function CineEloApp() {
                   <SummaryList
                     onDuel={duelSpecificMovie}
                     items={summaryStats.eloLovesMore}
-                    render={(m) => <RatingDiff gold={m.gold} silver={m.silver} diff={m.diff} />}
+                    render={(m) => (
+                      <InlineRatingDiff
+                        movie={m}
+                        gold={m.gold}
+                        silver={m.silver}
+                        diff={m.diff}
+                        onSave={(newRating) => saveMovieRating(m, newRating)}
+                      />
+                    )}
                   />
                 </div>
 
@@ -3301,7 +3369,15 @@ function CineEloApp() {
                   <SummaryList
                     onDuel={duelSpecificMovie}
                     items={summaryStats.youLoveMore}
-                    render={(m) => <RatingDiff gold={m.gold} silver={m.silver} diff={m.diff} />}
+                    render={(m) => (
+                      <InlineRatingDiff
+                        movie={m}
+                        gold={m.gold}
+                        silver={m.silver}
+                        diff={m.diff}
+                        onSave={(newRating) => saveMovieRating(m, newRating)}
+                      />
+                    )}
                   />
                 </div>
 
@@ -4056,6 +4132,53 @@ function RatingDiff({ gold, silver, diff }) {
   );
 }
 
+const RATING_EDIT_OPTIONS = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+
+// Rating editable directo desde Resumen, sin pasar por edit.html — click
+// para abrir un <select> en el lugar del badge, elegir, y listo (guarda
+// local al instante + sincroniza al Sheet en segundo plano, ver
+// saveMovieRating). stopPropagation en todos lados porque esta fila entera
+// es clickeable para "duelear esta película".
+function InlineRatingDiff({ movie, gold, silver, diff, onSave }) {
+  const [editing, setEditing] = useState(false);
+
+  if (editing) {
+    return (
+      <select
+        autoFocus
+        className="rating-edit-select"
+        defaultValue={movie.rating ? String(movie.rating) : ""}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => {
+          const value = e.target.value === "" ? 0 : Number(e.target.value);
+          setEditing(false);
+          onSave(value);
+        }}
+        onBlur={() => setEditing(false)}
+      >
+        <option value="">Sin ver</option>
+        {RATING_EDIT_OPTIONS.map((v) => (
+          <option key={v} value={v}>★ {v}</option>
+        ))}
+      </select>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="rating-edit-trigger"
+      onClick={(e) => {
+        e.stopPropagation();
+        setEditing(true);
+      }}
+      title="Editar tu rating"
+    >
+      <RatingDiff gold={gold} silver={silver} diff={diff} />
+    </button>
+  );
+}
+
 function RankingList({ ranking, filterText, globalRanking, projectedRating, onDuel }) {
   const source = globalRanking || ranking;
   const q = filterText.trim().toLowerCase();
@@ -4665,6 +4788,31 @@ function StyleSheet() {
       }
       .movie-card-rating-silver {
         color: #B8BCC6;
+      }
+      .rating-edit-trigger {
+        background: none;
+        border: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font: inherit;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      .rating-edit-trigger:hover {
+        outline: 1px dashed #8A8D98;
+        outline-offset: 2px;
+      }
+      .rating-edit-select {
+        background: #14151A;
+        color: #EDEAE3;
+        border: 1px solid #F2C14E;
+        border-radius: 4px;
+        font-family: 'Space Mono', monospace;
+        font-size: 11px;
+        padding: 2px 4px;
       }
       .delta {
         color: #F2C14E;
