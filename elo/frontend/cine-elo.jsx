@@ -27,6 +27,86 @@ function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
 
+// edit.html y add.html guardan cada cambio al toque en localStorage y
+// muestran éxito de inmediato, pero la escritura real al Sheet pasa en
+// segundo plano sin que esa página la espere — si el usuario cierra la
+// pestaña justo antes de que termine (o Apps Script se cuelga más de lo
+// que el navegador tolera), ese pedido se pierde y no queda nada
+// corriendo para reintentarlo. Por eso cada cambio se anota ANTES en esta
+// cola en localStorage (misma clave, mismo dominio) — y como index.html
+// suele ser la página que más se reabre de las tres, drenarla acá también
+// es lo que da la garantía real de que, tarde o temprano, todo llega al
+// Sheet.
+const PENDING_SYNC_KEY = "cine-elo-pending-sync";
+
+function readPendingSync() {
+  try {
+    const raw = localStorage.getItem(PENDING_SYNC_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function writePendingSync(queue) {
+  try {
+    localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(queue));
+  } catch (e) {
+    // almacenamiento lleno o bloqueado: no es crítico
+  }
+}
+
+function removePendingSync(id) {
+  writePendingSync(readPendingSync().filter((i) => i.id !== id));
+}
+
+// Apps Script a veces deja un pedido colgado sin responder nunca (confirmado
+// en producción) — fetch() no tiene timeout propio, así que sin esto un
+// intento colgado nunca se resuelve ni se rechaza, y ese item queda "en
+// curso" hasta que se cierre la pestaña. No hace falta reintentar acá
+// mismo (a diferencia de edit.html/add.html): si este intento falla o
+// expira, el item sigue en la cola y el PRÓXIMO montaje de cualquier
+// página de Cine Elo ya vuelve a intentarlo.
+function fetchWithTimeout(url, options, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal })
+    .then((r) => r.json())
+    .finally(() => clearTimeout(timer));
+}
+
+function syncPendingItem(item) {
+  if (item.type === "setFields") {
+    return fetchWithTimeout(
+      `${DEFAULT_SYNC_URL}?action=setFields&title=${encodeURIComponent(item.title)}&changes=${encodeURIComponent(JSON.stringify(item.changes))}`
+    );
+  }
+  if (item.type === "create") {
+    return fetchWithTimeout(`${DEFAULT_SYNC_URL}?allowCreate=1`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify([item.payload]),
+    });
+  }
+  return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
+}
+
+// Se llama una vez al montar la app (ver useEffect más abajo). No bloquea
+// nada ni se le avisa al usuario — mismo trato silencioso que la
+// sincronización de un duelo.
+function flushPendingSync() {
+  readPendingSync().forEach((item) => {
+    syncPendingItem(item)
+      .then((data) => {
+        if (data && data.ok) removePendingSync(item.id);
+      })
+      .catch(() => {
+        // sigue en la cola: se reintenta la próxima vez.
+      });
+  });
+}
+
 // --- Torneo / bracket ---
 
 const TOURNAMENT_STORAGE_KEY = "cine-elo-tournament";
@@ -314,6 +394,13 @@ function CineEloApp() {
     const t = setTimeout(() => setDebouncedFilterText(filterText), 250);
     return () => clearTimeout(t);
   }, [filterText]);
+
+  // Drena al toque cualquier guardado de edit.html/add.html que se haya
+  // quedado pendiente (ver flushPendingSync arriba) — index.html suele ser
+  // la página que más se reabre, así que es donde más conviene reintentar.
+  useEffect(() => {
+    flushPendingSync();
+  }, []);
   const [confirmReset, setConfirmReset] = useState(false);
   const [duelDirector, setDuelDirector] = useState("");
   const [duelGenre, setDuelGenre] = useState("");

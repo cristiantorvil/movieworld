@@ -429,6 +429,81 @@
       });
   }
 
+  // keepalive (arriba) es "mejor esfuerzo": si se cierra el navegador
+  // entero (no solo esta pestaña) antes de que el pedido termine, o Apps
+  // Script se cuelga más de lo que el navegador tolera, el guardado se
+  // pierde igual y no queda nada corriendo para reintentarlo. Esta cola en
+  // localStorage es la garantía real: cada cambio se anota ACÁ antes de
+  // intentar mandarlo, y CUALQUIER página de Cine Elo (editar, agregar, o
+  // la principal — mismo dominio, mismo localStorage) lo reintenta apenas
+  // se abre, hasta que el Sheet confirme que lo recibió.
+  var PENDING_SYNC_KEY = "cine-elo-pending-sync";
+
+  function readPendingSync() {
+    try {
+      var raw = localStorage.getItem(PENDING_SYNC_KEY);
+      var parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function writePendingSync(queue) {
+    try {
+      localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(queue));
+    } catch (e) {
+      // almacenamiento lleno o bloqueado: no es crítico
+    }
+  }
+
+  function enqueuePendingSync(item) {
+    item.id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    var queue = readPendingSync();
+    queue.push(item);
+    writePendingSync(queue);
+    return item.id;
+  }
+
+  function removePendingSync(id) {
+    writePendingSync(readPendingSync().filter(function (i) { return i.id !== id; }));
+  }
+
+  function syncPendingItem(item) {
+    if (item.type === "setFields") {
+      return fetchJsonWithRetry(
+        SYNC_URL +
+          "?action=setFields&title=" + encodeURIComponent(item.title) +
+          "&changes=" + encodeURIComponent(JSON.stringify(item.changes))
+      );
+    }
+    if (item.type === "create") {
+      return fetch(SYNC_URL + "?allowCreate=1", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify([item.payload]),
+        keepalive: true,
+      }).then(function (r) { return r.json(); });
+    }
+    return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
+  }
+
+  // Se llama una vez al cargar la página (ver el final del archivo) y cada
+  // vez que se encola un guardado nuevo. No bloquea nada ni se le avisa al
+  // usuario — mismo trato silencioso que la sincronización de un duelo.
+  function flushPendingSync() {
+    readPendingSync().forEach(function (item) {
+      syncPendingItem(item)
+        .then(function (data) {
+          if (data && data.ok) removePendingSync(item.id);
+        })
+        .catch(function () {
+          // sigue en la cola: se reintenta la próxima vez que se abra
+          // cualquier página de Cine Elo en este navegador.
+        });
+    });
+  }
+
   function posterUrl(path) {
     if (!path) return "";
     return TMDB_POSTER_BASE + (path.charAt(0) === "/" ? path : "/" + path);
@@ -785,14 +860,6 @@
       });
   };
 
-  function setFields(title, changes) {
-    return fetchJsonWithRetry(
-      SYNC_URL +
-        "?action=setFields&title=" + encodeURIComponent(title) +
-        "&changes=" + encodeURIComponent(JSON.stringify(changes))
-    );
-  }
-
   cancelBtn.onclick = function () {
     current = null;
     selectedCard.classList.remove("show");
@@ -883,13 +950,18 @@
     statusEl.textContent = "Guardado ✓";
     statusEl.className = "status ok";
 
-    // Si esto falla o queda colgado (Apps Script es intermitente), no
-    // molestamos al usuario — mismo trato que un duelo cuyo sync falla: el
-    // valor correcto ya quedó en este navegador, y la próxima edición de
-    // esta peli lo vuelve a mandar con los valores vigentes.
-    setFields(title, changes).catch(function (err) {
-      console.error('Sync en segundo plano falló para "' + title + '":', err);
-    });
+    // Encolado ANTES de intentar mandarlo: si el intento de abajo falla, se
+    // cuelga, o directamente no llega a correr porque el usuario ya cerró
+    // la página, el cambio sigue anotado en localStorage y se reintenta
+    // solo la próxima vez que se abra cualquier página de Cine Elo.
+    var pendingId = enqueuePendingSync({ type: "setFields", title: title, changes: changes });
+    syncPendingItem({ type: "setFields", title: title, changes: changes })
+      .then(function (data) {
+        if (data && data.ok) removePendingSync(pendingId);
+      })
+      .catch(function (err) {
+        console.error('Sync en segundo plano falló para "' + title + '" (queda pendiente):', err);
+      });
   };
 
   // Si llegamos con ?title=... (ej. desde un link "editar" en Cine Elo),
@@ -920,6 +992,7 @@
   }
 
   autoSelectFromUrl();
+  flushPendingSync();
 })();
 </script>
 </body>

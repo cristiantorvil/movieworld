@@ -324,6 +324,101 @@
     }
   }
 
+  // Apps Script falla de forma intermitente: a veces devuelve una página de
+  // error genérica de Google (200 OK con HTML, no JSON) y a veces el pedido
+  // queda colgado sin responder nunca — fetch() no tiene timeout propio, así
+  // que sin esto un guardado en segundo plano podría quedar esperando para
+  // siempre. keepalive evita que el navegador lo cancele si el usuario
+  // navega a otra página (ej. "← MovieWorld") antes de que termine.
+  function fetchJsonWithRetry(url, options, retries, timeoutMs) {
+    if (retries == null) retries = 2;
+    if (timeoutMs == null) timeoutMs = 10000;
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+    var fetchOptions = Object.assign({}, options, { signal: controller.signal, keepalive: true });
+    return fetch(url, fetchOptions)
+      .then(function (r) { return r.json(); })
+      .finally(function () { clearTimeout(timer); })
+      .catch(function (err) {
+        if (retries <= 0) throw err;
+        return new Promise(function (resolve) { setTimeout(resolve, 500); }).then(
+          function () { return fetchJsonWithRetry(url, options, retries - 1, timeoutMs); }
+        );
+      });
+  }
+
+  // Igual que en edit.html: keepalive es "mejor esfuerzo" (no sobrevive a
+  // cerrar el navegador entero, ni a un cuelgue más largo de lo que tolera).
+  // Esta cola en localStorage es la garantía real — cada peli nueva se
+  // anota ACÁ antes de intentar mandarla, y cualquier página de Cine Elo
+  // (mismo dominio, mismo localStorage) la reintenta apenas se abre, hasta
+  // que el Sheet confirme que la recibió.
+  var PENDING_SYNC_KEY = "cine-elo-pending-sync";
+
+  function readPendingSync() {
+    try {
+      var raw = localStorage.getItem(PENDING_SYNC_KEY);
+      var parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function writePendingSync(queue) {
+    try {
+      localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(queue));
+    } catch (e) {
+      // almacenamiento lleno o bloqueado: no es crítico
+    }
+  }
+
+  function enqueuePendingSync(item) {
+    item.id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    var queue = readPendingSync();
+    queue.push(item);
+    writePendingSync(queue);
+    return item.id;
+  }
+
+  function removePendingSync(id) {
+    writePendingSync(readPendingSync().filter(function (i) { return i.id !== id; }));
+  }
+
+  function syncPendingItem(item) {
+    if (item.type === "setFields") {
+      return fetchJsonWithRetry(
+        SYNC_URL +
+          "?action=setFields&title=" + encodeURIComponent(item.title) +
+          "&changes=" + encodeURIComponent(JSON.stringify(item.changes)),
+        {}
+      );
+    }
+    if (item.type === "create") {
+      return fetchJsonWithRetry(SYNC_URL + "?allowCreate=1", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify([item.payload]),
+      });
+    }
+    return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
+  }
+
+  // Se llama una vez al cargar la página (al final del archivo) — no
+  // bloquea nada ni se le avisa al usuario, mismo trato silencioso que la
+  // sincronización de un duelo.
+  function flushPendingSync() {
+    readPendingSync().forEach(function (item) {
+      syncPendingItem(item)
+        .then(function (data) {
+          if (data && data.ok) removePendingSync(item.id);
+        })
+        .catch(function () {
+          // sigue en la cola: se reintenta la próxima vez.
+        });
+    });
+  }
+
   function posterUrl(path) {
     if (!path) return "";
     return TMDB_POSTER_BASE + (path.charAt(0) === "/" ? path : "/" + path);
@@ -402,8 +497,7 @@
       return;
     }
     hintEl.textContent = "Buscando…";
-    fetch(SYNC_URL + "?action=tmdbSearch&query=" + encodeURIComponent(query))
-      .then(function (r) { return r.json(); })
+    fetchJsonWithRetry(SYNC_URL + "?action=tmdbSearch&query=" + encodeURIComponent(query), {})
       .then(function (data) {
         if (data.ok) renderResults(data.results || []);
         else hintEl.textContent = "Error buscando en TMDB.";
@@ -421,8 +515,7 @@
 
   function selectFromSearch(tmdbId) {
     hintEl.textContent = "Cargando detalles…";
-    fetch(SYNC_URL + "?action=tmdbDetails&id=" + encodeURIComponent(tmdbId))
-      .then(function (r) { return r.json(); })
+    fetchJsonWithRetry(SYNC_URL + "?action=tmdbDetails&id=" + encodeURIComponent(tmdbId), {})
       .then(function (data) {
         if (!data.ok) {
           hintEl.textContent = "No se pudieron traer los detalles.";
@@ -533,28 +626,25 @@
       searchInput.focus();
     }, 700);
 
-    // keepalive: este POST corre en segundo plano y ya no se espera (ver
-    // más arriba) — sin esto, el navegador lo cancela apenas el usuario
-    // navega a otra página (ej. "← MovieWorld" para ir a dueleando), y la
-    // peli nunca llega a guardarse en el Sheet.
-    fetch(SYNC_URL + "?allowCreate=1", {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify([payload]),
-      keepalive: true,
-    })
-      .then(function (r) { return r.json(); })
+    // Encolado ANTES de intentar mandarlo: si el intento de abajo falla, se
+    // cuelga, o no llega a correr porque el usuario ya cerró la página, la
+    // peli sigue anotada en localStorage y se reintenta sola la próxima vez
+    // que se abra cualquier página de Cine Elo en este navegador.
+    var pendingId = enqueuePendingSync({ type: "create", payload: payload });
+    syncPendingItem({ type: "create", payload: payload })
       .then(function (data) {
         var reallySaved =
           data.ok &&
           ((data.created && data.created.length > 0) ||
             (data.updated && data.updated.length > 0));
-        if (!reallySaved) {
-          console.error('Sync en segundo plano falló para "' + payload.title + '":', data && data.error);
+        if (reallySaved) {
+          removePendingSync(pendingId);
+        } else {
+          console.error('Sync en segundo plano falló para "' + payload.title + '" (queda pendiente):', data && data.error);
         }
       })
       .catch(function (err) {
-        console.error('Sync en segundo plano falló para "' + payload.title + '":', err);
+        console.error('Sync en segundo plano falló para "' + payload.title + '" (queda pendiente):', err);
       });
   };
 
@@ -566,6 +656,7 @@
   }
 
   searchInput.focus();
+  flushPendingSync();
 })();
 </script>
 </body>
