@@ -604,6 +604,20 @@
     hintEl.textContent = "Buscando…";
     getMoviesIndex()
       .then(function (movies) {
+        // Si lo tipeado coincide EXACTO (sin mayúsculas) con el título de
+        // una peli ya cargada, saltamos directo a ella — mismo criterio que
+        // ya usa autoSelectFromUrl para el link "editar" de la app
+        // principal. Evita que un título corto (ej. "Mar") que también es
+        // substring de otras pelis (Mars Attacks!, Mary Poppins, ...) te
+        // obligue a buscarlo entre la lista en vez de abrirlo directo.
+        var qLower = query.trim().toLowerCase();
+        var exact = movies.find(function (m) {
+          return String(m.title || "").toLowerCase() === qLower;
+        });
+        if (exact) {
+          select(exact);
+          return;
+        }
         renderResults(filterMovies(movies, query));
       })
       .catch(function () {
