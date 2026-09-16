@@ -339,6 +339,24 @@ const META_FIELDS = [
 ];
 
 function mergeSheetIntoMovies(localMovies, sheetMovies) {
+  // Apps Script confirmadamente falla de forma intermitente (se cuelga, o
+  // devuelve una página de error) — si ALGUNA vez esa falla se cuela como
+  // un pull "exitoso" pero con muy pocas filas (respuesta cortada a mitad,
+  // etc.), lo de abajo filtra el catálogo local entero contra eso y borra
+  // todo lo que no aparezca. Eso pasó de verdad: dejó el catálogo local en
+  // 0-1 películas, persistido para siempre. Un pull legítimo nunca debería
+  // traer drásticamente MENOS de lo que ya hay guardado (los borrados
+  // manuales de a una o pocas pelis son la norma, no perder la mitad del
+  // catálogo de golpe) — si pasa, no es la Sheet real, es una respuesta
+  // mala, y no la usamos.
+  if (localMovies.length > 0 && sheetMovies.length < localMovies.length * 0.5) {
+    console.error(
+      `mergeSheetIntoMovies: pull sospechoso (${sheetMovies.length} filas vs. ` +
+        `${localMovies.length} locales) — se ignora para no perder el catálogo local.`
+    );
+    return { merged: localMovies, updatedCount: 0, newCount: 0, skipped: true };
+  }
+
   const sheetMap = new Map(sheetMovies.map((m) => [m.title, m]));
   const localTitles = new Set(localMovies.map((m) => m.title));
   let updatedCount = 0;
@@ -767,7 +785,17 @@ function CineEloApp() {
         setRestoringFromSheet(false);
         return;
       }
-      const { merged, updatedCount, newCount } = mergeSheetIntoMovies(movies, pullData.movies);
+      const { merged, updatedCount, newCount, skipped } = mergeSheetIntoMovies(movies, pullData.movies);
+
+      if (skipped) {
+        setRestoreMsg(
+          `El Sheet devolvió muy pocas películas (${pullData.movies.length} contra ` +
+            `${movies.length} que ya tenés) — probablemente una respuesta a medias de ` +
+            `Apps Script, no lo real. No se tocó nada. Probá de nuevo en un rato.`
+        );
+        setRestoringFromSheet(false);
+        return;
+      }
 
       setMovies(merged);
       setResult(null);
