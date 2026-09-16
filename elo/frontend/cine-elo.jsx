@@ -349,7 +349,14 @@ function mergeSheetIntoMovies(localMovies, sheetMovies) {
   // manuales de a una o pocas pelis son la norma, no perder la mitad del
   // catálogo de golpe) — si pasa, no es la Sheet real, es una respuesta
   // mala, y no la usamos.
-  if (localMovies.length > 0 && sheetMovies.length < localMovies.length * 0.5) {
+  // sheetMovies.length === 0 se trata como sospechoso SIEMPRE, incluso con
+  // el catálogo local también en 0: esta app real jamás tiene el Sheet
+  // genuinamente vacío, así que un pull vacío es casi seguro la misma
+  // falla de Apps Script, no el estado real — y es justo el caso que más
+  // importa detectar bien, porque es el que se dispara al intentar
+  // RECUPERARSE de un catálogo local ya arruinado (restaurar desde el
+  // Sheet con un pull malo de nuevo dejaría todo en 0 para siempre).
+  if (sheetMovies.length === 0 || (localMovies.length > 0 && sheetMovies.length < localMovies.length * 0.5)) {
     console.error(
       `mergeSheetIntoMovies: pull sospechoso (${sheetMovies.length} filas vs. ` +
         `${localMovies.length} locales) — se ignora para no perder el catálogo local.`
@@ -776,11 +783,34 @@ function CineEloApp() {
     setRestoringFromSheet(true);
     setRestoreMsg("");
     try {
-      const pullRes = await fetch(`${syncUrl}?action=pull`);
-      const pullData = await pullRes.json();
+      // Este botón es justo el mecanismo para recuperarse de un catálogo
+      // local ya arruinado por un pull malo (ver mergeSheetIntoMovies) — no
+      // puede depender de un solo intento contra un backend que confirmado
+      // se cuelga o falla de forma intermitente. 3 intentos con timeout
+      // propio antes de rendirse.
+      let pullData = null;
+      let lastErr = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const attemptData = await fetchWithTimeout(`${syncUrl}?action=pull`);
+          // length > 0 acá, no solo ok+array: un pull "exitoso" pero vacío
+          // es la misma falla intermitente que arruinó el catálogo la
+          // primera vez, y justo estamos tratando de recuperarnos de eso.
+          if (attemptData && attemptData.ok && Array.isArray(attemptData.movies) && attemptData.movies.length > 0) {
+            pullData = attemptData;
+            break;
+          }
+          lastErr = lastErr || new Error("pull vacío o inválido");
+        } catch (e) {
+          lastErr = e;
+        }
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 800));
+      }
       if (!pullData || !pullData.ok || !Array.isArray(pullData.movies)) {
         setRestoreMsg(
-          "No se pudo leer el Sheet. Actualiza el script de Apps Script con el endpoint de lectura."
+          lastErr
+            ? "No se pudo conectar con el Sheet después de varios intentos. Probá de nuevo en un rato."
+            : "No se pudo leer el Sheet. Actualiza el script de Apps Script con el endpoint de lectura."
         );
         setRestoringFromSheet(false);
         return;
@@ -1361,11 +1391,16 @@ function CineEloApp() {
         return { ...m, gold, silver, diff: gold - silver };
       })
       .filter(Boolean);
+    // Desempate cuando el diff da igual entre varias pelis: en
+    // infravaloradas, la que más gana duelos pese a que la puntuaste bajo
+    // es el caso más llamativo → Elo más alto primero. En sobrevaloradas es
+    // al revés: la que peor le va en duelos pese a tu nota alta es el caso
+    // más llamativo → Elo más bajo primero.
     const eloLovesMore = [...withDiff]
-      .sort((a, b) => a.diff - b.diff)
+      .sort((a, b) => a.diff - b.diff || b.elo - a.elo)
       .slice(0, 10);
     const youLoveMore = [...withDiff]
-      .sort((a, b) => b.diff - a.diff)
+      .sort((a, b) => b.diff - a.diff || a.elo - b.elo)
       .slice(0, 10);
 
     const mostDueled = [...movies]
