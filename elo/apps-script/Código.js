@@ -90,6 +90,33 @@ function doPost(e) {
     var created = [];
     var skipped = [];
 
+    // Las altas se juntan en newRows y se escriben con UN solo setValues al
+    // final, en vez de un appendRow por película — con la hoja tan grande
+    // (MOVIES ronda las 5000+ filas, con columnas calculadas en DIRECTORS
+    // que dependen de ella vía SUMIF/COUNTIF) cada appendRow individual
+    // dispara su propio recálculo de fórmulas en toda la hoja. En un
+    // import de cientos de pelis nuevas eso alcanzaba a dejar el
+    // LockService tomado varios minutos por request, haciendo que el resto
+    // de las escrituras (duelos de cualquier pestaña abierta, altas desde
+    // add.html, etc.) fallaran en cadena con "La Sheet está ocupada".
+    var newRows = [];
+    var newTitles = [];
+    var pendingIndex = {}; // título -> índice en newRows, para no duplicar de alta un mismo título repetido dentro del mismo batch
+
+    function buildNewRow(item) {
+      var row = new Array(header.length).fill('');
+      row[titleCol] = item.title;
+      fillFields.forEach(function (f) {
+        if (item[f.key]) row[f.col] = item[f.key];
+      });
+      if (eloCol > -1) row[eloCol] = item.elo;
+      if (gamesCol > -1) row[gamesCol] = item.games;
+      if (winCol > -1) row[winCol] = item.wins;
+      if (lossCol > -1) row[lossCol] = item.losses;
+      if (tieCol > -1) row[tieCol] = item.ties || 0;
+      return row;
+    }
+
     items.forEach(function (item) {
       var rowIndex = titleToRow[item.title];
 
@@ -98,20 +125,15 @@ function doPost(e) {
           skipped.push(item.title);
           return;
         }
-        var newRow = new Array(header.length).fill('');
-        newRow[titleCol] = item.title;
-        fillFields.forEach(function (f) {
-          if (item[f.key]) newRow[f.col] = item[f.key];
-        });
-        if (eloCol > -1) newRow[eloCol] = item.elo;
-        if (gamesCol > -1) newRow[gamesCol] = item.games;
-        if (winCol > -1) newRow[winCol] = item.wins;
-        if (lossCol > -1) newRow[lossCol] = item.losses;
-        if (tieCol > -1) newRow[tieCol] = item.ties || 0;
-
-        sheet.appendRow(newRow);
-        titleToRow[item.title] = sheet.getLastRow();
-        created.push(item.title);
+        if (pendingIndex.hasOwnProperty(item.title)) {
+          // Mismo título repetido dos veces en este batch: nos quedamos con
+          // la versión más nueva en vez de encolar una fila de más.
+          newRows[pendingIndex[item.title]] = buildNewRow(item);
+          return;
+        }
+        pendingIndex[item.title] = newRows.length;
+        newRows.push(buildNewRow(item));
+        newTitles.push(item.title);
         return;
       }
 
@@ -127,6 +149,12 @@ function doPost(e) {
       if (tieCol > -1) sheet.getRange(rowIndex, tieCol + 1).setValue(item.ties || 0);
       updated.push(item.title);
     });
+
+    if (newRows.length > 0) {
+      var startRow = sheet.getLastRow() + 1;
+      sheet.getRange(startRow, 1, newRows.length, header.length).setValues(newRows);
+      created = newTitles;
+    }
     SpreadsheetApp.flush();
 
     return ContentService.createTextOutput(
