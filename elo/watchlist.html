@@ -198,6 +198,118 @@
     align-items: center;
     justify-content: center;
   }
+  .duel-card .rank-badge {
+    display: inline-block;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    color: var(--red);
+    background: rgba(240, 62, 62, 0.12);
+    border: 1px solid rgba(240, 62, 62, 0.35);
+    padding: 2px 7px;
+    border-radius: 999px;
+    margin-bottom: 4px;
+  }
+
+  /* ── Resultado del duelo ── */
+  .duel-result {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .result-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid var(--card-border);
+    background: var(--card);
+  }
+  .result-winner { border-color: rgba(242, 193, 78, 0.4); }
+  .result-loser { opacity: 0.65; }
+  .result-middle { opacity: 0.85; }
+  .result-card img, .result-card .ph-sm {
+    width: 44px;
+    height: 66px;
+    object-fit: cover;
+    border-radius: 6px;
+    background: #0b0c10;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+  }
+  .result-body { flex: 1; min-width: 0; }
+  .result-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 3px;
+  }
+  .result-badge {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .result-winner .result-badge { color: var(--gold); }
+  .result-title {
+    font-size: 14px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .result-rank-row {
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 2px;
+  }
+  .result-rank-change { font-size: 11px; font-weight: 700; }
+  .result-rank-change.up { color: var(--gold); }
+  .result-rank-change.down { color: var(--red); }
+  .result-elo-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .result-arrow { color: var(--muted); }
+  .result-delta {
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+  }
+  .result-delta-up { color: var(--gold-text); background: var(--gold); }
+  .result-delta-down { color: var(--text); background: rgba(240, 62, 62, 0.55); }
+  .auto-advance-bar {
+    width: 100%;
+    height: 3px;
+    background: rgba(242, 193, 78, 0.12);
+    border-radius: 999px;
+    margin-top: 12px;
+    overflow: hidden;
+    cursor: pointer;
+  }
+  .auto-advance-fill {
+    height: 100%;
+    background: var(--gold);
+    width: 0%;
+    animation-name: fillBar;
+    animation-timing-function: linear;
+    animation-fill-mode: forwards;
+  }
+  @keyframes fillBar {
+    from { width: 0%; }
+    to { width: 100%; }
+  }
   .duel-card img {
     width: 100%;
     aspect-ratio: 2 / 3;
@@ -432,6 +544,10 @@
         <select id="filterLanguage"><option value="">Todos los idiomas</option></select>
         <button class="btn-ghost" id="clearFiltersBtn" style="display:none;">limpiar filtros</button>
       </div>
+      <div class="duel-size-row" id="rankFilterRow" style="display:none;">
+        <span class="duel-size-label">Prioridad (por elo)</span>
+        <div class="duel-size-btns" id="rankFilterBtns"></div>
+      </div>
       <div class="duel-size-row" id="duelSizeRow" style="display:none;">
         <span class="duel-size-label">Tamaño del duelo</span>
         <div class="duel-size-btns" id="duelSizeBtns"></div>
@@ -591,7 +707,8 @@
   // género/década/país/idioma acotan el pool sobre el que se sortean los
   // pares, en vez de armar un bracket de eliminación) ──
   var FILTERS_KEY = "cine-elo-watchlist-filters";
-  var filters = { genre: "", decade: "", country: "", language: "" };
+  var RANK_PRESETS = [10, 50, 100, 250];
+  var filters = { genre: "", decade: "", country: "", language: "", rankMax: 0 };
   try {
     var savedFilters = JSON.parse(localStorage.getItem(FILTERS_KEY) || "{}");
     Object.keys(filters).forEach(function (k) { if (savedFilters[k]) filters[k] = savedFilters[k]; });
@@ -604,6 +721,34 @@
   var filtersRow = document.getElementById("filtersRow");
   var clearFiltersBtn = document.getElementById("clearFiltersBtn");
   var poolCountEl = document.getElementById("poolCount");
+  var rankFilterRow = document.getElementById("rankFilterRow");
+  var rankFilterBtnsEl = document.getElementById("rankFilterBtns");
+
+  // Ranking completo por elo (de más a menos prioridad) — se recalcula cada
+  // vez que hace falta en vez de cachearse, porque cambia con cada duelo.
+  function getRanking() {
+    return movies.slice().sort(function (a, b) { return b.elo - a.elo; });
+  }
+
+  function buildRankFilterButtons() {
+    rankFilterBtnsEl.innerHTML = "";
+    RANK_PRESETS.concat([0]).forEach(function (n) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "size-btn" + (filters.rankMax === n ? " active" : "");
+      btn.textContent = n === 0 ? "Todas" : "Top " + n;
+      btn.onclick = function () {
+        filters.rankMax = n;
+        saveFilters();
+        Array.prototype.forEach.call(rankFilterBtnsEl.children, function (b) { b.classList.remove("active"); });
+        btn.classList.add("active");
+        updateClearButton();
+        pickGroup();
+      };
+      rankFilterBtnsEl.appendChild(btn);
+    });
+  }
+  buildRankFilterButtons();
 
   function uniqueSorted(values) {
     var set = {};
@@ -642,6 +787,7 @@
     fillSelect(filterDecadeSel, decadeOptions, filters.decade);
     filtersRow.style.display = movies.length ? "flex" : "none";
     duelSizeRow.style.display = movies.length ? "flex" : "none";
+    rankFilterRow.style.display = movies.length ? "flex" : "none";
     // Los <option> se reconstruyeron: sincronizar filters con lo que
     // realmente quedó seleccionado (por si el valor guardado ya no existe).
     filters.genre = filterGenreSel.value;
@@ -652,7 +798,7 @@
   }
 
   function updateClearButton() {
-    var active = filters.genre || filters.decade || filters.country || filters.language;
+    var active = filters.genre || filters.decade || filters.country || filters.language || filters.rankMax;
     clearFiltersBtn.style.display = active ? "inline-block" : "none";
   }
 
@@ -662,6 +808,11 @@
 
   function getFilteredPool() {
     var pool = movies;
+    if (filters.rankMax) {
+      var topTitles = {};
+      getRanking().slice(0, filters.rankMax).forEach(function (m) { topTitles[m.title] = true; });
+      pool = pool.filter(function (m) { return topTitles[m.title]; });
+    }
     if (filters.genre) {
       pool = pool.filter(function (m) {
         return m.genre && m.genre.split(",").map(function (g) { return g.trim(); }).indexOf(filters.genre) !== -1;
@@ -697,9 +848,10 @@
   });
 
   clearFiltersBtn.onclick = function () {
-    filters = { genre: "", decade: "", country: "", language: "" };
+    filters = { genre: "", decade: "", country: "", language: "", rankMax: 0 };
     saveFilters();
     buildFilterOptions();
+    buildRankFilterButtons();
     pickGroup();
   };
 
@@ -756,17 +908,19 @@
     renderDuel();
   }
 
-  function movieCardHtml(m, pickIndex) {
+  function movieCardHtml(m, pickIndex, rank) {
     var poster = m.poster
       ? '<img src="' + posterUrl(m.poster) + '" alt="" />'
       : '<div class="ph">🎬</div>';
     var director = m.director ? '<div class="director">' + escapeHtml(m.director) + "</div>" : "";
     var badge = pickIndex != null ? '<div class="pick-badge">' + pickIndex + "</div>" : "";
     var pickedClass = pickIndex != null ? " picked" : "";
+    var rankBadge = rank != null ? '<span class="rank-badge">#' + rank + "</span>" : "";
     return (
       '<div class="duel-card' + pickedClass + '" data-title="' + escapeAttr(m.title) + '">' +
       badge +
       poster +
+      rankBadge +
       '<div class="title">' + escapeHtml(m.title) + "</div>" +
       '<div class="year">' + (m.year || "") + "</div>" +
       director +
@@ -786,10 +940,12 @@
   function renderDuel() {
     if (!duelGroup) return;
     var isPair = duelGroup.length === 2;
+    var ranking = getRanking();
     var cardsHtml = duelGroup
       .map(function (m) {
         var idx = rankingPicks.indexOf(m.title);
-        return movieCardHtml(m, idx === -1 ? null : idx + 1);
+        var rank = ranking.findIndex(function (r) { return r.title === m.title; }) + 1;
+        return movieCardHtml(m, idx === -1 ? null : idx + 1, rank);
       })
       .join(isPair ? '<div class="duel-vs">VS</div>' : "");
     duelArea.innerHTML =
@@ -828,6 +984,12 @@
     var ordered = orderedTitles.map(byTitle).filter(Boolean);
     if (ordered.length < 2) return;
 
+    // Posición en el ranking ANTES de tocar ningún elo — para poder mostrar
+    // "#viejo → #nuevo" en la pantalla de resultado.
+    var oldRanking = getRanking();
+    var oldRankByTitle = {};
+    oldRanking.forEach(function (m, idx) { oldRankByTitle[m.title] = idx + 1; });
+
     var eloRunning = {};
     var gamesRunning = {};
     ordered.forEach(function (m) { eloRunning[m.title] = m.elo; gamesRunning[m.title] = m.games; });
@@ -858,32 +1020,91 @@
       }
     }
 
-    var payload = ordered.map(function (m) {
+    var resultRows = ordered.map(function (m, idx) {
+      var oldElo = m.elo;
       m.elo += totalDelta[m.title];
       m.games += gamesAdded[m.title];
       m.wins += winsAdded[m.title];
       m.losses = m.games - m.wins;
+      return {
+        title: m.title, poster: m.poster, place: idx + 1,
+        oldElo: oldElo, newElo: m.elo, delta: totalDelta[m.title],
+        oldRank: oldRankByTitle[m.title] || 0,
+      };
+    });
+
+    // El rank nuevo depende del elo final de TODAS las pelis (no solo las
+    // de este grupo), así que se calcula recién ahora que ya se aplicaron
+    // los deltas sobre el array real de movies.
+    var newRanking = getRanking();
+    var newRankByTitle = {};
+    newRanking.forEach(function (m, idx) { newRankByTitle[m.title] = idx + 1; });
+    resultRows.forEach(function (r) { r.newRank = newRankByTitle[r.title] || 0; });
+
+    var payload = resultRows.map(function (r) {
+      var m = byTitle(r.title);
       return { title: m.title, elo: m.elo, games: m.games, wins: m.wins, losses: m.losses, ties: m.ties || 0 };
     });
 
     duelCount += 1;
     localStorage.setItem(DUEL_COUNT_KEY, String(duelCount));
 
-    var flash = document.getElementById("flashMsg");
-    if (flash) {
-      flash.textContent =
-        "Guardado ✓ (" +
-        ordered
-          .map(function (m) { return (totalDelta[m.title] >= 0 ? "+" : "") + totalDelta[m.title]; })
-          .join(" / ") +
-        ")";
+    postJson(payload, false).catch(function () {});
+
+    renderResult(resultRows);
+  }
+
+  // Pantalla de resultado (mismo criterio que DuelResult en cine-elo.jsx):
+  // por cada peli del grupo, cómo cambió su posición y su elo. Avanza sola
+  // después de un ratito (más rivales, más tiempo para leer), o al toque si
+  // se clickea.
+  function renderResult(rows) {
+    var n = rows.length;
+    var html = rows
+      .map(function (r) {
+        var placeLabel = r.place === 1 ? "ganó" : r.place === n ? "perdió" : r.place + "º lugar";
+        var placeClass = r.place === 1 ? "result-winner" : r.place === n ? "result-loser" : "result-middle";
+        var rankChange = "";
+        if (r.newRank && r.oldRank && r.newRank < r.oldRank) {
+          rankChange = '<span class="result-rank-change up">↑ ' + (r.oldRank - r.newRank) + "</span>";
+        } else if (r.newRank && r.oldRank && r.newRank > r.oldRank) {
+          rankChange = '<span class="result-rank-change down">↓ ' + (r.newRank - r.oldRank) + "</span>";
+        }
+        var poster = r.poster
+          ? '<img src="' + posterUrl(r.poster) + '" alt="" />'
+          : '<div class="ph-sm">🎬</div>';
+        return (
+          '<div class="result-card ' + placeClass + '">' +
+          poster +
+          '<div class="result-body">' +
+          '<div class="result-heading"><span class="result-badge">' + placeLabel + '</span>' +
+          '<span class="result-title">' + escapeHtml(r.title) + "</span></div>" +
+          '<div class="result-rank-row">#' + (r.oldRank || "?") + " → #" + (r.newRank || "?") + rankChange + "</div>" +
+          '<div class="result-elo-row">' + r.oldElo + '<span class="result-arrow"> → </span>' + r.newElo +
+          '<span class="result-delta ' + (r.delta >= 0 ? "result-delta-up" : "result-delta-down") + '">' +
+          (r.delta >= 0 ? "+" : "") + r.delta + "</span></div>" +
+          "</div></div>"
+        );
+      })
+      .join("");
+
+    var seconds = Math.max(1, n - 1);
+    duelArea.innerHTML =
+      '<div class="duel-result">' + html + "</div>" +
+      '<div class="auto-advance-bar" id="advanceBar" title="Tocá para seguir ya">' +
+      '<div class="auto-advance-fill" id="advanceFill" style="animation-duration:' + seconds + 's"></div>' +
+      "</div>";
+
+    var advanced = false;
+    function advance() {
+      if (advanced) return;
+      advanced = true;
+      pickGroup();
     }
-
-    postJson(payload, false).catch(function () {
-      if (flash) flash.textContent = "No se pudo sincronizar con la Sheet — probá de nuevo más tarde.";
-    });
-
-    setTimeout(pickGroup, 700);
+    document.getElementById("advanceBar").onclick = advance;
+    var fillEl = document.getElementById("advanceFill");
+    if (fillEl) fillEl.addEventListener("animationend", advance);
+    setTimeout(advance, seconds * 1000 + 400); // red de contención si el evento de la animación no dispara
   }
 
   // ── Lista ──
