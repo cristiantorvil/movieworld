@@ -87,6 +87,33 @@
   }
 
   /* ── Duelo ── */
+  .filters-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .filters-row select {
+    flex: 1 1 130px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: var(--text);
+    font-size: 13px;
+  }
+  .filters-row select:focus { outline: none; border-color: var(--gold); }
+  .filters-row .btn-ghost {
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  .pool-count {
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 0 14px;
+  }
   .duel-grid {
     display: flex;
     gap: 14px;
@@ -332,6 +359,14 @@
     </div>
 
     <div class="panel active" id="panel-duel">
+      <div class="filters-row" id="filtersRow" style="display:none;">
+        <select id="filterGenre"><option value="">Todos los géneros</option></select>
+        <select id="filterDecade"><option value="">Todas las décadas</option></select>
+        <select id="filterCountry"><option value="">Todos los países</option></select>
+        <select id="filterLanguage"><option value="">Todos los idiomas</option></select>
+        <button class="btn-ghost" id="clearFiltersBtn" style="display:none;">limpiar filtros</button>
+      </div>
+      <p class="pool-count" id="poolCount"></p>
       <div id="duelArea"><p class="center-msg">Cargando watchlist…</p></div>
     </div>
 
@@ -379,6 +414,22 @@
   }
   function expectedScore(a, b) {
     return 1 / (1 + Math.pow(10, (b - a) / 400));
+  }
+
+  // Mismo mapa que cine-elo.jsx: TMDB guarda el idioma como código ISO
+  // 639-1 (en, es, fr...); lo que no está acá se muestra en mayúsculas.
+  var LANGUAGE_NAMES = {
+    en: "Inglés", es: "Español", fr: "Francés", it: "Italiano", de: "Alemán",
+    ja: "Japonés", ko: "Coreano", zh: "Chino (mandarín)", cn: "Chino",
+    pt: "Portugués", ru: "Ruso", sv: "Sueco", da: "Danés", no: "Noruego",
+    fi: "Finlandés", pl: "Polaco", nl: "Neerlandés", hi: "Hindi", ar: "Árabe",
+    tr: "Turco", he: "Hebreo", cs: "Checo", el: "Griego", hu: "Húngaro",
+    ro: "Rumano", th: "Tailandés", fa: "Persa", uk: "Ucraniano",
+    vi: "Vietnamita", id: "Indonesio", tl: "Tagalo",
+  };
+  function languageLabel(code) {
+    if (!code) return "";
+    return LANGUAGE_NAMES[code.toLowerCase()] || code.toUpperCase();
   }
 
   function posterUrl(path) {
@@ -430,7 +481,7 @@
   });
 
   // ── Estado ──
-  var movies = []; // {title, year, tmdbId, director, genre, poster, country, elo, games, wins, losses, ties}
+  var movies = []; // {title, year, tmdbId, director, genre, poster, country, originalLanguage, elo, games, wins, losses, ties}
   var duelPair = null;
   var duelCount = Number(localStorage.getItem(DUEL_COUNT_KEY) || "0");
 
@@ -448,22 +499,143 @@
     });
   }
 
+  // ── Filtros del duelo (mismo criterio que la pestaña Duelo de Cine Elo:
+  // género/década/país/idioma acotan el pool sobre el que se sortean los
+  // pares, en vez de armar un bracket de eliminación) ──
+  var FILTERS_KEY = "cine-elo-watchlist-filters";
+  var filters = { genre: "", decade: "", country: "", language: "" };
+  try {
+    var savedFilters = JSON.parse(localStorage.getItem(FILTERS_KEY) || "{}");
+    Object.keys(filters).forEach(function (k) { if (savedFilters[k]) filters[k] = savedFilters[k]; });
+  } catch (e) {}
+
+  var filterGenreSel = document.getElementById("filterGenre");
+  var filterDecadeSel = document.getElementById("filterDecade");
+  var filterCountrySel = document.getElementById("filterCountry");
+  var filterLanguageSel = document.getElementById("filterLanguage");
+  var filtersRow = document.getElementById("filtersRow");
+  var clearFiltersBtn = document.getElementById("clearFiltersBtn");
+  var poolCountEl = document.getElementById("poolCount");
+
+  function uniqueSorted(values) {
+    var set = {};
+    values.forEach(function (v) { if (v) set[v] = true; });
+    return Object.keys(set).sort(function (a, b) { return a.localeCompare(b); });
+  }
+
+  function fillSelect(sel, options, current) {
+    var placeholder = sel.options[0];
+    sel.innerHTML = "";
+    sel.appendChild(placeholder);
+    options.forEach(function (opt) {
+      var o = document.createElement("option");
+      o.value = opt;
+      o.textContent = opt;
+      sel.appendChild(o);
+    });
+    sel.value = options.indexOf(current) !== -1 ? current : "";
+  }
+
+  function buildFilterOptions() {
+    var genres = [];
+    var countries = [];
+    var languages = [];
+    var decades = {};
+    movies.forEach(function (m) {
+      if (m.genre) m.genre.split(",").forEach(function (g) { genres.push(g.trim()); });
+      if (m.country) m.country.split(",").forEach(function (c) { countries.push(c.trim()); });
+      if (m.originalLanguage) languages.push(languageLabel(m.originalLanguage));
+      if (m.year) decades[Math.floor(Number(m.year) / 10) * 10] = true;
+    });
+    fillSelect(filterGenreSel, uniqueSorted(genres), filters.genre);
+    fillSelect(filterCountrySel, uniqueSorted(countries), filters.country);
+    fillSelect(filterLanguageSel, uniqueSorted(languages), filters.language);
+    var decadeOptions = Object.keys(decades).map(Number).sort(function (a, b) { return a - b; }).map(String);
+    fillSelect(filterDecadeSel, decadeOptions, filters.decade);
+    filtersRow.style.display = movies.length ? "flex" : "none";
+    // Los <option> se reconstruyeron: sincronizar filters con lo que
+    // realmente quedó seleccionado (por si el valor guardado ya no existe).
+    filters.genre = filterGenreSel.value;
+    filters.country = filterCountrySel.value;
+    filters.language = filterLanguageSel.value;
+    filters.decade = filterDecadeSel.value;
+    updateClearButton();
+  }
+
+  function updateClearButton() {
+    var active = filters.genre || filters.decade || filters.country || filters.language;
+    clearFiltersBtn.style.display = active ? "inline-block" : "none";
+  }
+
+  function saveFilters() {
+    localStorage.setItem(FILTERS_KEY, JSON.stringify(filters));
+  }
+
+  function getFilteredPool() {
+    var pool = movies;
+    if (filters.genre) {
+      pool = pool.filter(function (m) {
+        return m.genre && m.genre.split(",").map(function (g) { return g.trim(); }).indexOf(filters.genre) !== -1;
+      });
+    }
+    if (filters.country) {
+      pool = pool.filter(function (m) {
+        return m.country && m.country.split(",").map(function (c) { return c.trim(); }).indexOf(filters.country) !== -1;
+      });
+    }
+    if (filters.language) {
+      pool = pool.filter(function (m) { return languageLabel(m.originalLanguage) === filters.language; });
+    }
+    if (filters.decade) {
+      var d = Number(filters.decade);
+      pool = pool.filter(function (m) { return m.year && Math.floor(Number(m.year) / 10) * 10 === d; });
+    }
+    return pool;
+  }
+
+  [
+    [filterGenreSel, "genre"],
+    [filterDecadeSel, "decade"],
+    [filterCountrySel, "country"],
+    [filterLanguageSel, "language"],
+  ].forEach(function (pair) {
+    pair[0].addEventListener("change", function () {
+      filters[pair[1]] = pair[0].value;
+      saveFilters();
+      updateClearButton();
+      pickPair();
+    });
+  });
+
+  clearFiltersBtn.onclick = function () {
+    filters = { genre: "", decade: "", country: "", language: "" };
+    saveFilters();
+    buildFilterOptions();
+    pickPair();
+  };
+
   // ── Duelo ──
   var duelArea = document.getElementById("duelArea");
 
   function pickPair() {
-    if (movies.length < 2) {
+    var pool = getFilteredPool();
+    poolCountEl.textContent = movies.length
+      ? pool.length + " de " + movies.length + " pelis en el pool" + (pool.length !== movies.length ? " (con filtros)" : "")
+      : "";
+    if (pool.length < 2) {
       duelPair = null;
       duelArea.innerHTML =
-        '<p class="center-msg">Necesitás al menos 2 pelis en la watchlist para armar un duelo.' +
-        (movies.length === 0 ? " Importá tu CSV en la pestaña Importar." : "") +
+        '<p class="center-msg">' +
+        (movies.length === 0
+          ? "Necesitás al menos 2 pelis en la watchlist para armar un duelo. Importá tu CSV en la pestaña Importar."
+          : "Quedan " + pool.length + " " + (pool.length === 1 ? "película" : "películas") + " con estos filtros — probá aflojarlos.") +
         "</p>";
       return;
     }
-    var i = Math.floor(Math.random() * movies.length);
+    var i = Math.floor(Math.random() * pool.length);
     var j;
-    do { j = Math.floor(Math.random() * movies.length); } while (j === i);
-    duelPair = [movies[i], movies[j]];
+    do { j = Math.floor(Math.random() * pool.length); } while (j === i);
+    duelPair = [pool[i], pool[j]];
     renderDuel();
   }
 
@@ -746,8 +918,9 @@
           "Listo — " + created + " agregadas (" + unmatched + " sin match en TMDB, igual agregadas).";
         pendingImport = null;
         return loadWatchlist().then(function () {
+          buildFilterOptions();
           renderList();
-          if (!duelPair) pickPair();
+          pickPair();
         });
       }
       var chunk = pendingImport.slice(done, done + IMPORT_CHUNK);
@@ -807,6 +980,7 @@
   // ── Arranque ──
   loadWatchlist()
     .then(function () {
+      buildFilterOptions();
       pickPair();
       renderList();
     })

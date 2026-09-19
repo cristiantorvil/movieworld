@@ -2169,6 +2169,7 @@ function handlePullWatchlist() {
     var genreCol = col('genre');
     var posterCol = col('poster_path');
     var countryCol = col('country');
+    var langCol = col('original_language');
     var eloCol = col('elo_rating');
     var gamesCol = col('elo_games');
     var winCol = col('elo_win');
@@ -2194,6 +2195,7 @@ function handlePullWatchlist() {
         genre: genreCol > -1 ? String(row[genreCol] || '') : '',
         poster: posterCol > -1 ? String(row[posterCol] || '') : '',
         country: countryCol > -1 ? String(row[countryCol] || '') : '',
+        originalLanguage: langCol > -1 ? String(row[langCol] || '') : '',
         elo: eloCol > -1 && row[eloCol] !== '' ? row[eloCol] : 950,
         games: gamesCol > -1 ? row[gamesCol] || 0 : 0,
         wins: winCol > -1 ? row[winCol] || 0 : 0,
