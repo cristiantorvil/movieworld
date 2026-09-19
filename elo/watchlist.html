@@ -108,29 +108,95 @@
     padding: 8px 12px;
     font-size: 12px;
   }
+  .duel-size-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .duel-size-label {
+    font-size: 12px;
+    color: var(--muted);
+    flex: 0 0 auto;
+  }
+  .duel-size-btns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .size-btn {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    color: var(--muted);
+    padding: 6px 11px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .size-btn:hover { border-color: var(--gold); }
+  .size-btn.active {
+    background: var(--gold);
+    color: var(--gold-text);
+    border-color: var(--gold);
+  }
   .pool-count {
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 0 4px;
+  }
+  .duel-instructions {
     text-align: center;
     font-size: 12px;
     color: var(--muted);
     margin: 0 0 14px;
   }
   .duel-grid {
-    display: flex;
-    gap: 14px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 12px;
+  }
+  .duel-grid.size-2 {
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
   }
   .duel-card {
-    flex: 1;
+    position: relative;
     background: var(--card);
     border: 1px solid var(--card-border);
     border-radius: 16px;
     padding: 14px;
     cursor: pointer;
     text-align: center;
-    transition: border-color 0.15s ease, transform 0.1s ease;
+    transition: border-color 0.15s ease, transform 0.1s ease, opacity 0.15s ease;
   }
   .duel-card:hover {
     border-color: var(--gold);
     transform: translateY(-2px);
+  }
+  .duel-card.picked {
+    border-color: var(--gold);
+    opacity: 0.55;
+    cursor: default;
+    transform: none;
+  }
+  .duel-card.picked:hover { transform: none; }
+  .duel-card .pick-badge {
+    position: absolute;
+    top: -8px;
+    left: -8px;
+    background: var(--gold);
+    color: var(--gold-text);
+    font-size: 12px;
+    font-weight: 800;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
   .duel-card img {
     width: 100%;
@@ -366,7 +432,12 @@
         <select id="filterLanguage"><option value="">Todos los idiomas</option></select>
         <button class="btn-ghost" id="clearFiltersBtn" style="display:none;">limpiar filtros</button>
       </div>
+      <div class="duel-size-row" id="duelSizeRow" style="display:none;">
+        <span class="duel-size-label">Tamaño del duelo</span>
+        <div class="duel-size-btns" id="duelSizeBtns"></div>
+      </div>
       <p class="pool-count" id="poolCount"></p>
+      <p class="duel-instructions" id="duelInstructions"></p>
       <div id="duelArea"><p class="center-msg">Cargando watchlist…</p></div>
     </div>
 
@@ -397,6 +468,8 @@
   var NUDGE_STEP = 15;
   var IMPORT_CHUNK = 20;
   var DUEL_COUNT_KEY = "cine-elo-watchlist-duel-count";
+  var DUEL_SIZE_KEY = "cine-elo-watchlist-duel-size";
+  var DUEL_SIZES = [2, 3, 4, 5, 6, 7, 8, 9, 10]; // mismo rango que "Tamaño del duelo" en Cine Elo
 
   // Mismas fórmulas que cine-elo.jsx/add.html — se duplican acá a propósito
   // (páginas standalone sin build, ver README) en vez de importar el jsx.
@@ -406,6 +479,17 @@
     var ratingBonus = (r - 2.5) * 100;
     var playsBonus = Math.min(p - 1, 10) * 10;
     return Math.round(START_ELO + ratingBonus + playsBonus);
+  }
+  // Elo base de una peli de watchlist: en vez de un valor fijo para todas,
+  // usa el rating promedio de TMDB (vote_average, escala 0-10) pasado por la
+  // misma fórmula de arriba (dividido 2 para llevarlo a escala de estrellas).
+  // Sin votos no hay señal real, así que queda en el neutro 1200. Misma
+  // lógica que _computeWatchlistElo_ en el backend (Código.js).
+  function computeWatchlistElo(voteAverage, voteCount) {
+    var v = typeof voteAverage === "number" ? voteAverage : parseFloat(voteAverage);
+    var count = typeof voteCount === "number" ? voteCount : parseFloat(voteCount);
+    if (!v || !count) return START_ELO;
+    return computeInitialElo(v / 2, 1);
   }
   function getKFactor(comparisons) {
     if (comparisons < 10) return 32;
@@ -482,8 +566,12 @@
 
   // ── Estado ──
   var movies = []; // {title, year, tmdbId, director, genre, poster, country, originalLanguage, elo, games, wins, losses, ties}
-  var duelPair = null;
+  var duelGroup = null; // pelis del duelo actual (2 o más, según duelSize)
+  var rankingPicks = []; // títulos ya tocados en este duelo, del que más quiere ver al que menos
   var duelCount = Number(localStorage.getItem(DUEL_COUNT_KEY) || "0");
+  var duelSize = DUEL_SIZES.indexOf(Number(localStorage.getItem(DUEL_SIZE_KEY))) !== -1
+    ? Number(localStorage.getItem(DUEL_SIZE_KEY))
+    : 2;
 
   function byTitle(title) {
     for (var i = 0; i < movies.length; i++) {
@@ -553,6 +641,7 @@
     var decadeOptions = Object.keys(decades).map(Number).sort(function (a, b) { return a - b; }).map(String);
     fillSelect(filterDecadeSel, decadeOptions, filters.decade);
     filtersRow.style.display = movies.length ? "flex" : "none";
+    duelSizeRow.style.display = movies.length ? "flex" : "none";
     // Los <option> se reconstruyeron: sincronizar filters con lo que
     // realmente quedó seleccionado (por si el valor guardado ya no existe).
     filters.genre = filterGenreSel.value;
@@ -603,7 +692,7 @@
       filters[pair[1]] = pair[0].value;
       saveFilters();
       updateClearButton();
-      pickPair();
+      pickGroup();
     });
   });
 
@@ -611,19 +700,39 @@
     filters = { genre: "", decade: "", country: "", language: "" };
     saveFilters();
     buildFilterOptions();
-    pickPair();
+    pickGroup();
   };
 
   // ── Duelo ──
   var duelArea = document.getElementById("duelArea");
+  var duelSizeRow = document.getElementById("duelSizeRow");
+  var duelSizeBtnsEl = document.getElementById("duelSizeBtns");
+  var duelInstructionsEl = document.getElementById("duelInstructions");
 
-  function pickPair() {
+  DUEL_SIZES.forEach(function (n) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "size-btn" + (n === duelSize ? " active" : "");
+    btn.textContent = n;
+    btn.onclick = function () {
+      duelSize = n;
+      localStorage.setItem(DUEL_SIZE_KEY, String(n));
+      Array.prototype.forEach.call(duelSizeBtnsEl.children, function (b) { b.classList.remove("active"); });
+      btn.classList.add("active");
+      pickGroup();
+    };
+    duelSizeBtnsEl.appendChild(btn);
+  });
+
+  function pickGroup() {
     var pool = getFilteredPool();
     poolCountEl.textContent = movies.length
       ? pool.length + " de " + movies.length + " pelis en el pool" + (pool.length !== movies.length ? " (con filtros)" : "")
       : "";
+    rankingPicks = [];
     if (pool.length < 2) {
-      duelPair = null;
+      duelGroup = null;
+      duelInstructionsEl.textContent = "";
       duelArea.innerHTML =
         '<p class="center-msg">' +
         (movies.length === 0
@@ -632,20 +741,31 @@
         "</p>";
       return;
     }
-    var i = Math.floor(Math.random() * pool.length);
-    var j;
-    do { j = Math.floor(Math.random() * pool.length); } while (j === i);
-    duelPair = [pool[i], pool[j]];
+    var n = Math.min(duelSize, pool.length);
+    // Sorteo sin reposición: barajamos una copia del pool y tomamos las
+    // primeras n (mismo criterio que el torneo de Cine Elo para elegir entrantes).
+    var shuffled = pool.slice();
+    for (var i = shuffled.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = shuffled[i]; shuffled[i] = shuffled[j]; shuffled[j] = tmp;
+    }
+    duelGroup = shuffled.slice(0, n);
+    duelInstructionsEl.textContent = n === 2
+      ? "Elegí cuál querés ver primero."
+      : "Tocalas en orden: de la que más ganas tenés de ver a la que menos.";
     renderDuel();
   }
 
-  function movieCardHtml(m) {
+  function movieCardHtml(m, pickIndex) {
     var poster = m.poster
       ? '<img src="' + posterUrl(m.poster) + '" alt="" />'
       : '<div class="ph">🎬</div>';
     var director = m.director ? '<div class="director">' + escapeHtml(m.director) + "</div>" : "";
+    var badge = pickIndex != null ? '<div class="pick-badge">' + pickIndex + "</div>" : "";
+    var pickedClass = pickIndex != null ? " picked" : "";
     return (
-      '<div class="duel-card" data-title="' + escapeAttr(m.title) + '">' +
+      '<div class="duel-card' + pickedClass + '" data-title="' + escapeAttr(m.title) + '">' +
+      badge +
       poster +
       '<div class="title">' + escapeHtml(m.title) + "</div>" +
       '<div class="year">' + (m.year || "") + "</div>" +
@@ -664,60 +784,106 @@
   }
 
   function renderDuel() {
-    if (!duelPair) return;
+    if (!duelGroup) return;
+    var isPair = duelGroup.length === 2;
+    var cardsHtml = duelGroup
+      .map(function (m) {
+        var idx = rankingPicks.indexOf(m.title);
+        return movieCardHtml(m, idx === -1 ? null : idx + 1);
+      })
+      .join(isPair ? '<div class="duel-vs">VS</div>' : "");
     duelArea.innerHTML =
-      '<div class="duel-grid">' +
-      movieCardHtml(duelPair[0]) +
-      '<div class="duel-vs">VS</div>' +
-      movieCardHtml(duelPair[1]) +
-      "</div>" +
+      '<div class="duel-grid' + (isPair ? " size-2" : "") + '">' + cardsHtml + "</div>" +
       '<div class="duel-actions">' +
       '<span class="duel-count">Duelos jugados: ' + duelCount + "</span>" +
-      '<button class="btn-ghost" id="skipBtn">🔀 Otro par</button>' +
+      '<button class="btn-ghost" id="skipBtn">🔀 ' + (isPair ? "Otro par" : "Otro grupo") + "</button>" +
       "</div>" +
       '<p class="flash" id="flashMsg"></p>';
-    document.getElementById("skipBtn").onclick = pickPair;
-    Array.prototype.forEach.call(duelArea.querySelectorAll(".duel-card"), function (card) {
+    document.getElementById("skipBtn").onclick = pickGroup;
+    Array.prototype.forEach.call(duelArea.querySelectorAll(".duel-card:not(.picked)"), function (card) {
       card.onclick = function () {
-        resolveDuel(card.dataset.title);
+        chooseInGroup(card.dataset.title);
       };
     });
   }
 
-  function resolveDuel(winnerTitle) {
-    if (!duelPair) return;
-    var winner = duelPair[0].title === winnerTitle ? duelPair[0] : duelPair[1];
-    var loser = duelPair[0].title === winnerTitle ? duelPair[1] : duelPair[0];
+  function chooseInGroup(title) {
+    if (!duelGroup || rankingPicks.indexOf(title) !== -1) return;
+    rankingPicks.push(title);
+    if (rankingPicks.length >= duelGroup.length - 1) {
+      var lastTitle = duelGroup.map(function (m) { return m.title; }).find(function (t) { return rankingPicks.indexOf(t) === -1; });
+      var fullOrder = lastTitle ? rankingPicks.concat([lastTitle]) : rankingPicks;
+      resolveGroup(fullOrder);
+    } else {
+      renderDuel();
+    }
+  }
 
-    var expWinner = expectedScore(winner.elo, loser.elo);
-    var expLoser = expectedScore(loser.elo, winner.elo);
-    var winnerDelta = Math.round(getKFactor(winner.games) * (1 - expWinner));
-    var loserDelta = Math.round(getKFactor(loser.games) * (0 - expLoser));
+  // Cada película mejor ubicada le gana, en un duelo 1 a 1 independiente, a
+  // cada una peor ubicada — un grupo de 4 son 6 comparaciones — y se suman
+  // los deltas de elo de cada una sobre todos los pares en que participó.
+  // Mismo algoritmo que resolveDuel en cine-elo.jsx.
+  function resolveGroup(orderedTitles) {
+    if (!duelGroup) return;
+    var ordered = orderedTitles.map(byTitle).filter(Boolean);
+    if (ordered.length < 2) return;
 
-    winner.elo += winnerDelta;
-    winner.games += 1;
-    winner.wins += 1;
-    loser.elo += loserDelta;
-    loser.games += 1;
-    loser.losses += 1;
+    var eloRunning = {};
+    var gamesRunning = {};
+    ordered.forEach(function (m) { eloRunning[m.title] = m.elo; gamesRunning[m.title] = m.games; });
+    var totalDelta = {};
+    var winsAdded = {};
+    var gamesAdded = {};
+    ordered.forEach(function (m) { totalDelta[m.title] = 0; winsAdded[m.title] = 0; gamesAdded[m.title] = 0; });
+
+    for (var i = 0; i < ordered.length; i++) {
+      for (var j = i + 1; j < ordered.length; j++) {
+        var a = ordered[i]; // le gana a b en este par
+        var b = ordered[j];
+        var eloA = eloRunning[a.title];
+        var eloB = eloRunning[b.title];
+        var expA = expectedScore(eloA, eloB);
+        var expB = expectedScore(eloB, eloA);
+        var deltaA = Math.round(getKFactor(gamesRunning[a.title]) * (1 - expA));
+        var deltaB = Math.round(getKFactor(gamesRunning[b.title]) * (0 - expB));
+        eloRunning[a.title] += deltaA;
+        eloRunning[b.title] += deltaB;
+        gamesRunning[a.title] += 1;
+        gamesRunning[b.title] += 1;
+        totalDelta[a.title] += deltaA;
+        totalDelta[b.title] += deltaB;
+        winsAdded[a.title] += 1;
+        gamesAdded[a.title] += 1;
+        gamesAdded[b.title] += 1;
+      }
+    }
+
+    var payload = ordered.map(function (m) {
+      m.elo += totalDelta[m.title];
+      m.games += gamesAdded[m.title];
+      m.wins += winsAdded[m.title];
+      m.losses = m.games - m.wins;
+      return { title: m.title, elo: m.elo, games: m.games, wins: m.wins, losses: m.losses, ties: m.ties || 0 };
+    });
 
     duelCount += 1;
     localStorage.setItem(DUEL_COUNT_KEY, String(duelCount));
 
     var flash = document.getElementById("flashMsg");
-    if (flash) flash.textContent = "Guardado ✓ (" + (winnerDelta >= 0 ? "+" : "") + winnerDelta + " / " + loserDelta + ")";
+    if (flash) {
+      flash.textContent =
+        "Guardado ✓ (" +
+        ordered
+          .map(function (m) { return (totalDelta[m.title] >= 0 ? "+" : "") + totalDelta[m.title]; })
+          .join(" / ") +
+        ")";
+    }
 
-    postJson(
-      [
-        { title: winner.title, elo: winner.elo, games: winner.games, wins: winner.wins, losses: winner.losses, ties: winner.ties || 0 },
-        { title: loser.title, elo: loser.elo, games: loser.games, wins: loser.wins, losses: loser.losses, ties: loser.ties || 0 },
-      ],
-      false
-    ).catch(function () {
+    postJson(payload, false).catch(function () {
       if (flash) flash.textContent = "No se pudo sincronizar con la Sheet — probá de nuevo más tarde.";
     });
 
-    setTimeout(pickPair, 550);
+    setTimeout(pickGroup, 700);
   }
 
   // ── Lista ──
@@ -782,7 +948,7 @@
     if (!confirm('Quitar "' + title + '" de la watchlist? Esto la borra de la Sheet.')) return;
     movies = movies.filter(function (m) { return m.title !== title; });
     renderList();
-    if (duelPair && (duelPair[0].title === title || duelPair[1].title === title)) pickPair();
+    if (duelGroup && duelGroup.some(function (m) { return m.title === title; })) pickGroup();
     postJson({ type: "deleteMovie", title: title }, false).catch(function () {});
   }
 
@@ -920,7 +1086,7 @@
         return loadWatchlist().then(function () {
           buildFilterOptions();
           renderList();
-          pickPair();
+          pickGroup();
         });
       }
       var chunk = pendingImport.slice(done, done + IMPORT_CHUNK);
@@ -938,7 +1104,7 @@
               year: m.year || c.year || "",
               rating: 0,
               plays: 0,
-              elo: computeInitialElo(0, 1),
+              elo: computeWatchlistElo(m.voteAverage, m.voteCount),
               games: 0,
               wins: 0,
               losses: 0,
@@ -981,7 +1147,7 @@
   loadWatchlist()
     .then(function () {
       buildFilterOptions();
-      pickPair();
+      pickGroup();
       renderList();
     })
     .catch(function (err) {

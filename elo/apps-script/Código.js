@@ -392,6 +392,9 @@ function doGet(e) {
   if (e && e.parameter && e.parameter.action === 'pullTitles') {
     return handlePullTitles();
   }
+  if (e && e.parameter && e.parameter.action === 'recomputeWatchlistElo') {
+    return handleRecomputeWatchlistElo();
+  }
   if (e && e.parameter && e.parameter.action === 'pullHistory') {
     return handlePullHistory();
   }
@@ -684,6 +687,21 @@ function agregarColumnasMovies_() {
 // primera vez — ver undoRoofSexMistake. Ya quedaron las dos arregladas a
 // mano, no hace falta que este loop las vuelva a tocar.
 var BROKEN_ELO_IDS = ['308', '844', '1271', '14161']; // Broken Flowers, 2046, 300, 2012
+
+// Elo base para una peli de watchlist (sin ver, sin duelos): en vez de un
+// valor fijo para todas, usamos el rating promedio de TMDB (vote_average,
+// escala 0-10) pasado a la misma fórmula que _computeInitialElo_ usa para el
+// rating propio (escala 0.5-5) — dividimos por 2 y aplicamos el mismo bonus.
+// Sin votos (voteCount vacío/0) no hay señal real, así que queda en el
+// neutro 1200 en vez de arrastrar un 0 que no significa "mala película".
+function _computeWatchlistElo_(voteAverage, voteCount) {
+  var v = typeof voteAverage === 'number' ? voteAverage : parseFloat(voteAverage);
+  var count = typeof voteCount === 'number' ? voteCount : parseFloat(voteCount);
+  if (!v || !count) return 1200;
+  var r = v / 2;
+  var ratingBonus = (r - 2.5) * 100;
+  return Math.round(1200 + ratingBonus);
+}
 
 function _computeInitialElo_(rating, plays) {
   var r = typeof rating === 'number' ? rating : 2.5;
@@ -2237,6 +2255,65 @@ function handlePullTitles() {
     return ContentService.createTextOutput(
       JSON.stringify({ ok: false, error: String(err) })
     ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Recalcula el elo base de las pelis de watchlist (rating 0) que TODAVÍA no
+// jugaron ningún duelo (elo_games 0/vacío) usando _computeWatchlistElo_ —
+// las que ya duelearon quedan intactas, para no pisar elo movido por
+// comparaciones reales. Mantenimiento puntual: correr una vez después de
+// sumar el rating de TMDB como elo base, y de nuevo si se importan más
+// pelis desde afuera de watchlist.html (que ya lo aplica al crear).
+function handleRecomputeWatchlistElo() {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (e) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: 'La Sheet está ocupada, probá de nuevo.' })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var filter = sheet.getFilter();
+    if (filter) filter.remove();
+    var values = sheet.getDataRange().getValues();
+    var header = values[0];
+    var col = function (name) { return header.indexOf(name); };
+    var ratingCol = col('rating');
+    var eloCol = col('elo_rating');
+    var gamesCol = col('elo_games');
+    var voteAvgCol = col('vote_average');
+    var voteCountCol = col('vote_count');
+    var titleCol = col('movie');
+
+    var updated = [];
+    var candidates = 0;
+    for (var i = 1; i < values.length; i++) {
+      var row = values[i];
+      var ratingRaw = row[ratingCol];
+      var rating = typeof ratingRaw === 'number' ? ratingRaw : parseFloat(String(ratingRaw).replace(',', '.')) || 0;
+      if (rating) continue; // ya vista
+      var games = Number(row[gamesCol]) || 0;
+      if (games) continue; // ya jugó duelos, no le tocamos el elo
+      candidates++;
+
+      var newElo = _computeWatchlistElo_(row[voteAvgCol], row[voteCountCol]);
+      var currentElo = Number(row[eloCol]) || 0;
+      if (newElo === currentElo) continue;
+      sheet.getRange(i + 1, eloCol + 1).setValue(newElo);
+      updated.push({ title: row[titleCol], from: currentElo, to: newElo });
+    }
+    SpreadsheetApp.flush();
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, updated: updated.length, candidates: candidates, sample: updated.slice(0, 10) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    lock.releaseLock();
   }
 }
 
