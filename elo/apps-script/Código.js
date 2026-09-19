@@ -14,6 +14,10 @@ function doPost(e) {
       return handleDeleteMovie(data.title);
     }
 
+    if (data && data.type === 'tmdbMatchBatch') {
+      return handleTmdbMatchBatch(data.items || []);
+    }
+
     var items = Array.isArray(data) ? data : [data];
     // Un resultado de duelo (allowCreate ausente) solo puede actualizar
     // filas que ya existen — nunca crear una nueva. Evita que una peli
@@ -381,6 +385,12 @@ function handleSnapshot(data) {
 function doGet(e) {
   if (e && e.parameter && e.parameter.action === 'pull') {
     return handlePull();
+  }
+  if (e && e.parameter && e.parameter.action === 'pullWatchlist') {
+    return handlePullWatchlist();
+  }
+  if (e && e.parameter && e.parameter.action === 'pullTitles') {
+    return handlePullTitles();
   }
   if (e && e.parameter && e.parameter.action === 'pullHistory') {
     return handlePullHistory();
@@ -1396,6 +1406,130 @@ function handleTmdbSearchWide(query, year) {
   }
 }
 
+// Match en lote contra TMDB para el importador de watchlist (elo/watchlist.html):
+// recibe [{title, year}] y devuelve la metadata completa de cada match (misma
+// forma que handleTmdbDetails) para poder crear las filas nuevas de una vez,
+// sin pedir de a una película por vez — con ~900 pelis en un CSV de
+// Letterboxd, eso sería inviable. Solo LEE de TMDB, no toca la Sheet.
+function handleTmdbMatchBatch(items) {
+  try {
+    var apiKey = getTmdbApiKey_();
+    if (!apiKey || !items || !items.length) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: true, results: [] })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var searchRequests = items.map(function (it) {
+      var url = 'https://api.themoviedb.org/3/search/movie?api_key=' +
+        encodeURIComponent(apiKey) + '&query=' + encodeURIComponent(it.title || '') +
+        '&language=en-US&include_adult=false';
+      if (it.year) url += '&primary_release_year=' + encodeURIComponent(it.year);
+      return { url: url, muteHttpExceptions: true };
+    });
+    var searchResponses;
+    try {
+      searchResponses = UrlFetchApp.fetchAll(searchRequests);
+    } catch (e) {
+      searchResponses = [];
+    }
+    var matchedIds = items.map(function (it, i) {
+      try {
+        var json = JSON.parse(searchResponses[i].getContentText());
+        var top = (json.results || [])[0];
+        return top ? top.id : null;
+      } catch (e2) {
+        return null;
+      }
+    });
+
+    // Segunda tanda solo para las que sí matchearon: detalle + créditos,
+    // igual que handleTmdbDetails, pero todas juntas en un solo fetchAll.
+    var detailRequests = [];
+    matchedIds.forEach(function (id) {
+      if (id == null) return;
+      detailRequests.push({
+        url: 'https://api.themoviedb.org/3/movie/' + id + '?api_key=' +
+          encodeURIComponent(apiKey) + '&language=en-US',
+        muteHttpExceptions: true,
+      });
+      detailRequests.push({
+        url: 'https://api.themoviedb.org/3/movie/' + id + '/credits?api_key=' +
+          encodeURIComponent(apiKey),
+        muteHttpExceptions: true,
+      });
+    });
+    var detailResponses = [];
+    try {
+      detailResponses = detailRequests.length ? UrlFetchApp.fetchAll(detailRequests) : [];
+    } catch (e3) {
+      detailResponses = [];
+    }
+
+    var results = [];
+    var di = 0; // avanza de a 2 en detailResponses, solo cuando hubo match
+    for (var i = 0; i < items.length; i++) {
+      var id = matchedIds[i];
+      if (id == null) {
+        results.push({ title: items[i].title, year: items[i].year || '', matched: false });
+        continue;
+      }
+      var detailsResp = detailResponses[di];
+      var creditsResp = detailResponses[di + 1];
+      di += 2;
+      try {
+        var d = JSON.parse(detailsResp.getContentText());
+        var credits = creditsResp ? JSON.parse(creditsResp.getContentText()) : { crew: [], cast: [] };
+        var director = (credits.crew || [])
+          .filter(function (c) { return c.job === 'Director'; })
+          .map(function (c) { return c.name; })
+          .join(', ');
+        var genre = (d.genres || []).map(function (g) { return g.name; }).join(', ');
+        var country = (d.production_countries || []).map(function (c) { return c.name; }).join(', ');
+        var companies = (d.production_companies || [])
+          .slice(0, 3)
+          .map(function (c) { return c.name; })
+          .join(', ');
+        var collection = d.belongs_to_collection ? d.belongs_to_collection.name : '';
+        var cast = (credits.cast || [])
+          .slice(0, 5)
+          .map(function (c) { return c.name; })
+          .join(', ');
+        results.push({
+          title: d.title || items[i].title,
+          year: d.release_date ? d.release_date.substring(0, 4) : (items[i].year || ''),
+          matched: true,
+          tmdbId: id,
+          director: director,
+          genre: genre,
+          poster: d.poster_path || '',
+          country: country,
+          originalLanguage: d.original_language || '',
+          runtime: d.runtime || '',
+          overview: d.overview || '',
+          collection: collection,
+          productionCompanies: companies,
+          voteAverage: d.vote_average || '',
+          voteCount: d.vote_count || '',
+          cast: cast,
+          tagline: d.tagline || '',
+          backdrop: d.backdrop_path || '',
+          imdbId: d.imdb_id || '',
+        });
+      } catch (e4) {
+        results.push({ title: items[i].title, year: items[i].year || '', matched: false });
+      }
+    }
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, results: results })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
 // Corrige una fila cuyo id de TMDB guardado apunta a la película/serie
 // equivocada (detectado por el audit): re-pisa TODOS los campos derivados
 // de TMDB con los datos frescos del id correcto. A diferencia del sync
@@ -2009,6 +2143,93 @@ function handlePull() {
     }
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, movies: result })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Igual que handlePull pero solo con las filas rating=0 (watchlist, ver
+// add.html/cine-elo.jsx: una peli sin ver se guarda con rating 0 y nunca
+// entra al ranking normal). Para elo/watchlist.html — bajar solo esto en vez
+// del catálogo entero (~5000+ filas) hace la carga mucho más liviana.
+function handlePullWatchlist() {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var values = sheet.getDataRange().getValues();
+    var header = values[0];
+    var col = function (name) { return header.indexOf(name); };
+    var titleCol = col('movie');
+    var yearCol = col('year');
+    var ratingCol = col('rating');
+    var idCol = col('id');
+    var directorCol = col('director');
+    var genreCol = col('genre');
+    var posterCol = col('poster_path');
+    var countryCol = col('country');
+    var eloCol = col('elo_rating');
+    var gamesCol = col('elo_games');
+    var winCol = col('elo_win');
+    var lossCol = col('elo_loss');
+    var tieCol = col('elo_tie');
+
+    var result = [];
+    for (var i = 1; i < values.length; i++) {
+      var row = values[i];
+      var title = row[titleCol];
+      if (!title) continue;
+      var ratingRaw = ratingCol > -1 ? row[ratingCol] : 0;
+      var rating =
+        typeof ratingRaw === 'number'
+          ? ratingRaw
+          : parseFloat(String(ratingRaw).replace(',', '.')) || 0;
+      if (rating) continue; // ya vista, no es watchlist
+      result.push({
+        title: String(title),
+        year: yearCol > -1 ? row[yearCol] : '',
+        tmdbId: idCol > -1 ? row[idCol] : '',
+        director: directorCol > -1 ? String(row[directorCol] || '') : '',
+        genre: genreCol > -1 ? String(row[genreCol] || '') : '',
+        poster: posterCol > -1 ? String(row[posterCol] || '') : '',
+        country: countryCol > -1 ? String(row[countryCol] || '') : '',
+        elo: eloCol > -1 && row[eloCol] !== '' ? row[eloCol] : 950,
+        games: gamesCol > -1 ? row[gamesCol] || 0 : 0,
+        wins: winCol > -1 ? row[winCol] || 0 : 0,
+        losses: lossCol > -1 ? row[lossCol] || 0 : 0,
+        ties: tieCol > -1 ? row[tieCol] || 0 : 0,
+      });
+    }
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, movies: result })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Lista liviana de título+año de TODO MOVIES (vistas y watchlist) — para que
+// el importador de elo/watchlist.html pueda saltear del CSV de Letterboxd
+// las que ya están cargadas, sin bajar el catálogo completo con toda su
+// metadata solo para chequear duplicados.
+function handlePullTitles() {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var values = sheet.getDataRange().getValues();
+    var header = values[0];
+    var titleCol = header.indexOf('movie');
+    var yearCol = header.indexOf('year');
+    var result = [];
+    for (var i = 1; i < values.length; i++) {
+      var title = values[i][titleCol];
+      if (!title) continue;
+      result.push({ title: String(title), year: yearCol > -1 ? values[i][yearCol] : '' });
+    }
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, titles: result })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(

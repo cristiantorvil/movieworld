@@ -1,0 +1,820 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Watchlist — Cine Elo</title>
+<style>
+  :root {
+    --bg: #101116;
+    --card: #181a21;
+    --card-border: #2a2d38;
+    --text: #EDEAE3;
+    --muted: #8A8D98;
+    --gold: #F2C14E;
+    --gold-text: #14151A;
+    --green: #40C057;
+    --red: #F03E3E;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 60px;
+  }
+  .wrap {
+    width: 100%;
+    max-width: 720px;
+  }
+  a.back {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 13px;
+  }
+  a.back:hover { color: var(--gold); }
+  header {
+    text-align: center;
+    margin: 20px 0 24px;
+  }
+  header h1 {
+    font-size: clamp(24px, 6vw, 32px);
+    margin: 0 0 6px;
+  }
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .tab-btn {
+    flex: 1;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    color: var(--muted);
+    padding: 10px 8px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .tab-btn.active {
+    color: var(--gold-text);
+    background: var(--gold);
+    border-color: var(--gold);
+  }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .center-msg {
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+    padding: 40px 16px;
+  }
+
+  /* ── Duelo ── */
+  .duel-grid {
+    display: flex;
+    gap: 14px;
+  }
+  .duel-card {
+    flex: 1;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 14px;
+    cursor: pointer;
+    text-align: center;
+    transition: border-color 0.15s ease, transform 0.1s ease;
+  }
+  .duel-card:hover {
+    border-color: var(--gold);
+    transform: translateY(-2px);
+  }
+  .duel-card img {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
+    border-radius: 10px;
+    background: #0b0c10;
+    margin-bottom: 10px;
+  }
+  .duel-card .ph {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    border-radius: 10px;
+    background: #0b0c10;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 34px;
+  }
+  .duel-card .title {
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 2px;
+  }
+  .duel-card .year {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .duel-card .director {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+  .duel-vs {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 700;
+    width: 28px;
+  }
+  .duel-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 16px;
+  }
+  .duel-count {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .btn-ghost {
+    background: none;
+    color: var(--muted);
+    border: 1px solid var(--card-border);
+    font-size: 13px;
+    padding: 8px 14px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .btn-ghost:hover { border-color: var(--gold); color: var(--gold); }
+  .flash {
+    text-align: center;
+    font-size: 13px;
+    color: var(--green);
+    min-height: 18px;
+    margin-top: 10px;
+  }
+
+  /* ── Lista ── */
+  input[type="text"], input[type="file"] {
+    width: 100%;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-size: 14px;
+  }
+  input[type="text"]:focus { outline: none; border-color: var(--gold); }
+  .list-search { margin-bottom: 12px; }
+  .list-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+  }
+  .list-row .rank {
+    width: 24px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .list-row img, .list-row .ph-sm {
+    width: 32px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #0b0c10;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+  }
+  .list-row .info {
+    flex: 1;
+    min-width: 0;
+  }
+  .list-row .info .t {
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .list-row .info .sub {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .list-row .elo {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--gold);
+    width: 46px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+  .list-row .nudge {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+  .list-row .nudge button {
+    background: none;
+    border: 1px solid var(--card-border);
+    color: var(--muted);
+    border-radius: 4px;
+    width: 22px;
+    height: 18px;
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .list-row .nudge button:hover { border-color: var(--gold); color: var(--gold); }
+  .list-row .del {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 15px;
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 4px;
+  }
+  .list-row .del:hover { color: var(--red); }
+
+  /* ── Importar ── */
+  .import-box {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 18px;
+  }
+  .import-box p { font-size: 13px; color: var(--muted); line-height: 1.5; }
+  .import-summary {
+    font-size: 13px;
+    margin: 14px 0;
+  }
+  .import-summary b { color: var(--gold); }
+  .btn-gold {
+    width: 100%;
+    background: var(--gold);
+    color: var(--gold-text);
+    border: none;
+    font-weight: 700;
+    font-size: 15px;
+    padding: 14px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .btn-gold:disabled { opacity: 0.5; cursor: default; }
+  .progress-wrap {
+    margin-top: 14px;
+    display: none;
+  }
+  .progress-bar {
+    height: 8px;
+    background: #0b0c10;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .progress-bar .fill {
+    height: 100%;
+    background: var(--gold);
+    width: 0%;
+    transition: width 0.2s ease;
+  }
+  .progress-text {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 6px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="../index.html">← MovieWorld</a>
+    <header>
+      <h1>🍿 Watchlist</h1>
+      <p>Duelos y prioridad para lo que todavía no viste.</p>
+    </header>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="duel">⚔️ Duelo</button>
+      <button class="tab-btn" data-tab="lista">📋 Lista</button>
+      <button class="tab-btn" data-tab="importar">📥 Importar</button>
+    </div>
+
+    <div class="panel active" id="panel-duel">
+      <div id="duelArea"><p class="center-msg">Cargando watchlist…</p></div>
+    </div>
+
+    <div class="panel" id="panel-lista">
+      <input type="text" class="list-search" id="listSearch" placeholder="Buscar en la watchlist…" />
+      <div id="listArea"><p class="center-msg">Cargando…</p></div>
+    </div>
+
+    <div class="panel" id="panel-importar">
+      <div class="import-box">
+        <p>Subí el CSV exportado de Letterboxd (Configuración → Exportar datos → <code>watchlist.csv</code>). Se saltean las pelis que ya tenés cargadas y se busca poster/director en TMDB para las nuevas.</p>
+        <input type="file" id="csvInput" accept=".csv,text/csv" />
+        <div class="import-summary" id="importSummary"></div>
+        <button class="btn-gold" id="importBtn" disabled>Importar</button>
+        <div class="progress-wrap" id="progressWrap">
+          <div class="progress-bar"><div class="fill" id="progressFill"></div></div>
+          <div class="progress-text" id="progressText"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function () {
+  var SYNC_URL = "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
+  var TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w200";
+  var START_ELO = 1200;
+  var NUDGE_STEP = 15;
+  var IMPORT_CHUNK = 20;
+  var DUEL_COUNT_KEY = "cine-elo-watchlist-duel-count";
+
+  // Mismas fórmulas que cine-elo.jsx/add.html — se duplican acá a propósito
+  // (páginas standalone sin build, ver README) en vez de importar el jsx.
+  function computeInitialElo(rating, plays) {
+    var r = typeof rating === "number" ? rating : 2.5;
+    var p = typeof plays === "number" ? plays : 1;
+    var ratingBonus = (r - 2.5) * 100;
+    var playsBonus = Math.min(p - 1, 10) * 10;
+    return Math.round(START_ELO + ratingBonus + playsBonus);
+  }
+  function getKFactor(comparisons) {
+    if (comparisons < 10) return 32;
+    if (comparisons < 30) return 20;
+    return 12;
+  }
+  function expectedScore(a, b) {
+    return 1 / (1 + Math.pow(10, (b - a) / 400));
+  }
+
+  function posterUrl(path) {
+    if (!path) return "";
+    return TMDB_POSTER_BASE + (path.charAt(0) === "/" ? path : "/" + path);
+  }
+
+  function fetchJsonWithRetry(url, options, retries, timeoutMs) {
+    if (retries == null) retries = 2;
+    if (timeoutMs == null) timeoutMs = 20000;
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+    var fetchOptions = Object.assign({}, options, { signal: controller.signal });
+    return fetch(url, fetchOptions)
+      .then(function (r) { return r.json(); })
+      .finally(function () { clearTimeout(timer); })
+      .catch(function (err) {
+        if (retries <= 0) throw err;
+        return new Promise(function (resolve) { setTimeout(resolve, 500); }).then(
+          function () { return fetchJsonWithRetry(url, options, retries - 1, timeoutMs); }
+        );
+      });
+  }
+
+  function postJson(payload, allowCreate) {
+    var url = allowCreate ? SYNC_URL + "?allowCreate=1" : SYNC_URL;
+    return fetchJsonWithRetry(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  // ── Tabs ──
+  var tabBtns = document.querySelectorAll(".tab-btn");
+  var panels = {
+    duel: document.getElementById("panel-duel"),
+    lista: document.getElementById("panel-lista"),
+    importar: document.getElementById("panel-importar"),
+  };
+  tabBtns.forEach(function (btn) {
+    btn.onclick = function () {
+      tabBtns.forEach(function (b) { b.classList.remove("active"); });
+      Object.keys(panels).forEach(function (k) { panels[k].classList.remove("active"); });
+      btn.classList.add("active");
+      panels[btn.dataset.tab].classList.add("active");
+      if (btn.dataset.tab === "lista") renderList();
+    };
+  });
+
+  // ── Estado ──
+  var movies = []; // {title, year, tmdbId, director, genre, poster, country, elo, games, wins, losses, ties}
+  var duelPair = null;
+  var duelCount = Number(localStorage.getItem(DUEL_COUNT_KEY) || "0");
+
+  function byTitle(title) {
+    for (var i = 0; i < movies.length; i++) {
+      if (movies[i].title === title) return movies[i];
+    }
+    return null;
+  }
+
+  function loadWatchlist() {
+    return fetchJsonWithRetry(SYNC_URL + "?action=pullWatchlist", {}).then(function (data) {
+      if (!data.ok) throw new Error(data.error || "error desconocido");
+      movies = data.movies || [];
+    });
+  }
+
+  // ── Duelo ──
+  var duelArea = document.getElementById("duelArea");
+
+  function pickPair() {
+    if (movies.length < 2) {
+      duelPair = null;
+      duelArea.innerHTML =
+        '<p class="center-msg">Necesitás al menos 2 pelis en la watchlist para armar un duelo.' +
+        (movies.length === 0 ? " Importá tu CSV en la pestaña Importar." : "") +
+        "</p>";
+      return;
+    }
+    var i = Math.floor(Math.random() * movies.length);
+    var j;
+    do { j = Math.floor(Math.random() * movies.length); } while (j === i);
+    duelPair = [movies[i], movies[j]];
+    renderDuel();
+  }
+
+  function movieCardHtml(m) {
+    var poster = m.poster
+      ? '<img src="' + posterUrl(m.poster) + '" alt="" />'
+      : '<div class="ph">🎬</div>';
+    var director = m.director ? '<div class="director">' + escapeHtml(m.director) + "</div>" : "";
+    return (
+      '<div class="duel-card" data-title="' + escapeAttr(m.title) + '">' +
+      poster +
+      '<div class="title">' + escapeHtml(m.title) + "</div>" +
+      '<div class="year">' + (m.year || "") + "</div>" +
+      director +
+      "</div>"
+    );
+  }
+
+  function escapeHtml(s) {
+    return String(s || "").replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function escapeAttr(s) {
+    return escapeHtml(s).replace(/'/g, "&#39;");
+  }
+
+  function renderDuel() {
+    if (!duelPair) return;
+    duelArea.innerHTML =
+      '<div class="duel-grid">' +
+      movieCardHtml(duelPair[0]) +
+      '<div class="duel-vs">VS</div>' +
+      movieCardHtml(duelPair[1]) +
+      "</div>" +
+      '<div class="duel-actions">' +
+      '<span class="duel-count">Duelos jugados: ' + duelCount + "</span>" +
+      '<button class="btn-ghost" id="skipBtn">🔀 Otro par</button>' +
+      "</div>" +
+      '<p class="flash" id="flashMsg"></p>';
+    document.getElementById("skipBtn").onclick = pickPair;
+    Array.prototype.forEach.call(duelArea.querySelectorAll(".duel-card"), function (card) {
+      card.onclick = function () {
+        resolveDuel(card.dataset.title);
+      };
+    });
+  }
+
+  function resolveDuel(winnerTitle) {
+    if (!duelPair) return;
+    var winner = duelPair[0].title === winnerTitle ? duelPair[0] : duelPair[1];
+    var loser = duelPair[0].title === winnerTitle ? duelPair[1] : duelPair[0];
+
+    var expWinner = expectedScore(winner.elo, loser.elo);
+    var expLoser = expectedScore(loser.elo, winner.elo);
+    var winnerDelta = Math.round(getKFactor(winner.games) * (1 - expWinner));
+    var loserDelta = Math.round(getKFactor(loser.games) * (0 - expLoser));
+
+    winner.elo += winnerDelta;
+    winner.games += 1;
+    winner.wins += 1;
+    loser.elo += loserDelta;
+    loser.games += 1;
+    loser.losses += 1;
+
+    duelCount += 1;
+    localStorage.setItem(DUEL_COUNT_KEY, String(duelCount));
+
+    var flash = document.getElementById("flashMsg");
+    if (flash) flash.textContent = "Guardado ✓ (" + (winnerDelta >= 0 ? "+" : "") + winnerDelta + " / " + loserDelta + ")";
+
+    postJson(
+      [
+        { title: winner.title, elo: winner.elo, games: winner.games, wins: winner.wins, losses: winner.losses, ties: winner.ties || 0 },
+        { title: loser.title, elo: loser.elo, games: loser.games, wins: loser.wins, losses: loser.losses, ties: loser.ties || 0 },
+      ],
+      false
+    ).catch(function () {
+      if (flash) flash.textContent = "No se pudo sincronizar con la Sheet — probá de nuevo más tarde.";
+    });
+
+    setTimeout(pickPair, 550);
+  }
+
+  // ── Lista ──
+  var listArea = document.getElementById("listArea");
+  var listSearch = document.getElementById("listSearch");
+  listSearch.addEventListener("input", renderList);
+
+  function renderList() {
+    var q = listSearch.value.trim().toLowerCase();
+    var sorted = movies
+      .filter(function (m) { return !q || m.title.toLowerCase().indexOf(q) !== -1; })
+      .slice()
+      .sort(function (a, b) { return b.elo - a.elo; });
+
+    if (!sorted.length) {
+      listArea.innerHTML = '<p class="center-msg">' + (movies.length ? "Sin resultados." : "Watchlist vacía todavía.") + "</p>";
+      return;
+    }
+
+    listArea.innerHTML = sorted
+      .map(function (m, idx) {
+        var thumb = m.poster
+          ? '<img src="' + posterUrl(m.poster) + '" alt="" />'
+          : '<div class="ph-sm">🎬</div>';
+        return (
+          '<div class="list-row" data-title="' + escapeAttr(m.title) + '">' +
+          '<span class="rank">' + (idx + 1) + "</span>" +
+          thumb +
+          '<div class="info"><div class="t">' + escapeHtml(m.title) + '</div><div class="sub">' +
+          (m.year || "") + (m.games ? " · " + m.games + " duelo" + (m.games === 1 ? "" : "s") : "") +
+          "</div></div>" +
+          '<span class="elo">' + Math.round(m.elo) + "</span>" +
+          '<span class="nudge"><button data-dir="1">▲</button><button data-dir="-1">▼</button></span>' +
+          '<button class="del">✕</button>' +
+          "</div>"
+        );
+      })
+      .join("");
+
+    Array.prototype.forEach.call(listArea.querySelectorAll(".list-row"), function (row) {
+      var title = row.dataset.title;
+      Array.prototype.forEach.call(row.querySelectorAll(".nudge button"), function (btn) {
+        btn.onclick = function () { nudgeElo(title, Number(btn.dataset.dir) * NUDGE_STEP); };
+      });
+      row.querySelector(".del").onclick = function () { removeMovie(title); };
+    });
+  }
+
+  function nudgeElo(title, delta) {
+    var m = byTitle(title);
+    if (!m) return;
+    m.elo += delta;
+    renderList();
+    fetchJsonWithRetry(
+      SYNC_URL + "?action=setField&title=" + encodeURIComponent(title) +
+        "&col=elo_rating&value=" + encodeURIComponent(m.elo),
+      {}
+    ).catch(function () {});
+  }
+
+  function removeMovie(title) {
+    if (!confirm('Quitar "' + title + '" de la watchlist? Esto la borra de la Sheet.')) return;
+    movies = movies.filter(function (m) { return m.title !== title; });
+    renderList();
+    if (duelPair && (duelPair[0].title === title || duelPair[1].title === title)) pickPair();
+    postJson({ type: "deleteMovie", title: title }, false).catch(function () {});
+  }
+
+  // ── Importar ──
+  var csvInput = document.getElementById("csvInput");
+  var importSummary = document.getElementById("importSummary");
+  var importBtn = document.getElementById("importBtn");
+  var progressWrap = document.getElementById("progressWrap");
+  var progressFill = document.getElementById("progressFill");
+  var progressText = document.getElementById("progressText");
+
+  var pendingImport = null; // items nuevos a crear, ya deduplicados
+  var importing = false;
+
+  function parseCsv(text) {
+    var rows = [];
+    var row = [];
+    var field = "";
+    var inQuotes = false;
+    for (var i = 0; i < text.length; i++) {
+      var c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; }
+          else { inQuotes = false; }
+        } else {
+          field += c;
+        }
+      } else if (c === '"') {
+        inQuotes = true;
+      } else if (c === ",") {
+        row.push(field); field = "";
+      } else if (c === "\r") {
+        // ignorar
+      } else if (c === "\n") {
+        row.push(field); rows.push(row); row = []; field = "";
+      } else {
+        field += c;
+      }
+    }
+    if (field.length || row.length) { row.push(field); rows.push(row); }
+    return rows.filter(function (r) { return r.length > 1 || (r.length === 1 && r[0] !== ""); });
+  }
+
+  function normKey(title, year) {
+    return String(title || "").trim().toLowerCase() + "|" + String(year || "").trim();
+  }
+
+  csvInput.addEventListener("change", function () {
+    var file = csvInput.files[0];
+    if (!file) return;
+    importSummary.textContent = "Leyendo archivo…";
+    importBtn.disabled = true;
+    pendingImport = null;
+
+    var reader = new FileReader();
+    reader.onload = function () {
+      var rows = parseCsv(String(reader.result || ""));
+      if (!rows.length) {
+        importSummary.textContent = "El CSV está vacío o no se pudo leer.";
+        return;
+      }
+      var header = rows[0].map(function (h) { return h.trim().toLowerCase(); });
+      var nameIdx = header.indexOf("name");
+      var yearIdx = header.indexOf("year");
+      var uriIdx = header.findIndex(function (h) { return h.indexOf("letterboxd") !== -1; });
+      var dateIdx = header.indexOf("date");
+      if (nameIdx === -1) {
+        importSummary.textContent = 'No encuentro la columna "Name" — ¿es un export de watchlist de Letterboxd?';
+        return;
+      }
+
+      var csvItems = [];
+      var seen = {};
+      for (var i = 1; i < rows.length; i++) {
+        var r = rows[i];
+        var title = (r[nameIdx] || "").trim();
+        if (!title) continue;
+        var year = yearIdx > -1 ? (r[yearIdx] || "").trim() : "";
+        var key = normKey(title, year);
+        if (seen[key]) continue;
+        seen[key] = true;
+        csvItems.push({
+          title: title,
+          year: year,
+          dateAdded: dateIdx > -1 ? (r[dateIdx] || "").trim() : "",
+          letterboxdUrl: uriIdx > -1 ? (r[uriIdx] || "").trim() : "",
+        });
+      }
+
+      importSummary.textContent = csvItems.length + " pelis en el CSV. Comparando con tu catálogo…";
+      fetchJsonWithRetry(SYNC_URL + "?action=pullTitles", {})
+        .then(function (data) {
+          if (!data.ok) throw new Error(data.error || "error desconocido");
+          var existing = {};
+          (data.titles || []).forEach(function (t) {
+            existing[normKey(t.title, t.year)] = true;
+            existing[normKey(t.title, "")] = true; // fallback si el año no coincide exacto
+          });
+          var newItems = csvItems.filter(function (it) {
+            return !existing[normKey(it.title, it.year)] && !existing[normKey(it.title, "")];
+          });
+          pendingImport = newItems;
+          importSummary.innerHTML =
+            "<b>" + newItems.length + "</b> nuevas para importar · " +
+            (csvItems.length - newItems.length) + " ya estaban en tu catálogo.";
+          importBtn.disabled = newItems.length === 0;
+        })
+        .catch(function (err) {
+          importSummary.textContent = "No se pudo comparar con la Sheet: " + err.message;
+        });
+    };
+    reader.readAsText(file);
+  });
+
+  importBtn.onclick = function () {
+    if (!pendingImport || !pendingImport.length || importing) return;
+    importing = true;
+    importBtn.disabled = true;
+    csvInput.disabled = true;
+    progressWrap.style.display = "block";
+
+    var total = pendingImport.length;
+    var done = 0;
+    var created = 0;
+    var unmatched = 0;
+
+    function nextChunk() {
+      if (done >= total) {
+        importing = false;
+        csvInput.disabled = false;
+        progressText.textContent =
+          "Listo — " + created + " agregadas (" + unmatched + " sin match en TMDB, igual agregadas).";
+        pendingImport = null;
+        return loadWatchlist().then(function () {
+          renderList();
+          if (!duelPair) pickPair();
+        });
+      }
+      var chunk = pendingImport.slice(done, done + IMPORT_CHUNK);
+      progressText.textContent = "Buscando en TMDB " + done + "/" + total + "…";
+
+      postJson({ type: "tmdbMatchBatch", items: chunk.map(function (c) { return { title: c.title, year: c.year }; }) }, false)
+        .then(function (matchData) {
+          var results = (matchData && matchData.results) || [];
+          var payload = chunk.map(function (c, i) {
+            var m = results[i] || {};
+            if (!m.matched) unmatched++;
+            return {
+              title: m.matched ? m.title : c.title,
+              tmdbId: m.tmdbId || "",
+              year: m.year || c.year || "",
+              rating: 0,
+              plays: 0,
+              elo: computeInitialElo(0, 1),
+              games: 0,
+              wins: 0,
+              losses: 0,
+              ties: 0,
+              director: m.director || "",
+              genre: m.genre || "",
+              poster: m.poster || "",
+              country: m.country || "",
+              originalLanguage: m.originalLanguage || "",
+              runtime: m.runtime || "",
+              overview: m.overview || "",
+              collection: m.collection || "",
+              productionCompanies: m.productionCompanies || "",
+              voteAverage: m.voteAverage || "",
+              voteCount: m.voteCount || "",
+              cast: m.cast || "",
+              tagline: m.tagline || "",
+              backdrop: m.backdrop || "",
+              imdbId: m.imdbId || "",
+            };
+          });
+          progressText.textContent = "Guardando en la Sheet " + done + "/" + total + "…";
+          return postJson(payload, true);
+        })
+        .then(function (createData) {
+          created += ((createData && createData.created) || []).length;
+          done += chunk.length;
+          progressFill.style.width = Math.round((done / total) * 100) + "%";
+          return nextChunk();
+        })
+        .catch(function (err) {
+          progressText.textContent = "Error en el lote " + done + "-" + (done + chunk.length) + ": " + err.message + ". Reintentando…";
+          return new Promise(function (r) { setTimeout(r, 2000); }).then(nextChunk);
+        });
+    }
+    nextChunk();
+  };
+
+  // ── Arranque ──
+  loadWatchlist()
+    .then(function () {
+      pickPair();
+      renderList();
+    })
+    .catch(function (err) {
+      duelArea.innerHTML = '<p class="center-msg">No se pudo cargar la watchlist: ' + escapeHtml(err.message) + "</p>";
+      listArea.innerHTML = '<p class="center-msg">No se pudo cargar la watchlist.</p>';
+    });
+})();
+</script>
+</body>
+</html>
