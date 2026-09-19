@@ -1466,11 +1466,17 @@ function handleTmdbMatchBatch(items) {
       ).setMimeType(ContentService.MimeType.JSON);
     }
 
+    // OJO: a propósito NO se manda primary_release_year acá. Letterboxd y
+    // TMDB frecuentemente difieren en un año para pelis de festival/estreno
+    // lento (ej. "Quo Vadis, Aida?": 2020 en Letterboxd, 2021 en TMDB) —
+    // ese parámetro filtra EXACTO, así que una peli real quedaba sin match
+    // (resultado vacío) solo por el desfasaje de año. En cambio, se pide
+    // sin filtrar y se elige abajo el resultado cuyo año quede más cerca
+    // del de Letterboxd, con margen de un año.
     var searchRequests = items.map(function (it) {
       var url = 'https://api.themoviedb.org/3/search/movie?api_key=' +
         encodeURIComponent(apiKey) + '&query=' + encodeURIComponent(it.title || '') +
         '&language=en-US&include_adult=false';
-      if (it.year) url += '&primary_release_year=' + encodeURIComponent(it.year);
       return { url: url, muteHttpExceptions: true };
     });
     var searchResponses;
@@ -1482,8 +1488,21 @@ function handleTmdbMatchBatch(items) {
     var matchedIds = items.map(function (it, i) {
       try {
         var json = JSON.parse(searchResponses[i].getContentText());
-        var top = (json.results || [])[0];
-        return top ? top.id : null;
+        var results = json.results || [];
+        if (!results.length) return null;
+        var wantedYear = it.year ? Number(it.year) : null;
+        if (wantedYear) {
+          var best = null;
+          var bestDiff = Infinity;
+          results.forEach(function (r) {
+            var y = r.release_date ? Number(r.release_date.substring(0, 4)) : null;
+            if (!y) return;
+            var diff = Math.abs(y - wantedYear);
+            if (diff <= 1 && diff < bestDiff) { best = r; bestDiff = diff; }
+          });
+          if (best) return best.id;
+        }
+        return results[0].id;
       } catch (e2) {
         return null;
       }
