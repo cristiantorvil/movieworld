@@ -22,8 +22,26 @@ function doPost(e) {
     // Solo el alta explícita de una peli nueva manda allowCreate=1.
     var allowCreate = e && e.parameter && e.parameter.allowCreate === '1';
 
+    // Sin lock+flush, esta escritura puede perderse en silencio si otra
+    // ejecución concurrente del script pisa la Sheet al mismo tiempo (cada
+    // vez más probable con sync en segundo plano desde varias pestañas +
+    // Background Sync) — ver el mismo comentario en handleDeleteMovie.
+    var lock = LockService.getScriptLock();
+    try {
+      lock.waitLock(15000);
+    } catch (lockErr) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'La Sheet está ocupada, probá de nuevo.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    try {
+
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName('MOVIES');
+    // Ver handleDeleteMovie: un filtro activo puede tener ocultas filas
+    // que este batch necesita tocar y eso bloquea la escritura en silencio.
+    var filter = sheet.getFilter();
+    if (filter) filter.remove();
     var values = sheet.getDataRange().getValues();
     var header = values[0];
 
@@ -105,10 +123,14 @@ function doPost(e) {
       if (tieCol > -1) sheet.getRange(rowIndex, tieCol + 1).setValue(item.ties || 0);
       updated.push(item.title);
     });
+    SpreadsheetApp.flush();
 
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, updated: updated, created: created, skipped: skipped })
     ).setMimeType(ContentService.MimeType.JSON);
+    } finally {
+      lock.releaseLock();
+    }
   } catch (err) {
     return ContentService.createTextOutput(
       JSON.stringify({ ok: false, error: String(err) })
@@ -144,6 +166,80 @@ function handleDebugSheet(name) {
   }
 }
 
+// Diagnóstico puntual para el caso de "Long Way Back Home": deleteRow()
+// reporta éxito repetidas veces pero la fila sigue estando ahí. Chequea
+// protecciones (de rango y de la hoja entera), filtros y filas
+// congeladas — cualquiera de esas cosas puede bloquear una escritura sin
+// que Apps Script tire una excepción capturable.
+function handleDiagnoseRow(title) {
+  try {
+    if (!title) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'Falta title.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var values = sheet.getDataRange().getValues();
+    var titleCol = values[0].indexOf('movie');
+    var rowIndex = -1;
+    for (var i = 1; i < values.length; i++) {
+      if (String(values[i][titleCol]) === title) { rowIndex = i; break; }
+    }
+    if (rowIndex === -1) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'No se encontró "' + title + '" en la Sheet.' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var sheetRow = rowIndex + 1;
+
+    var sheetProtections = sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET);
+    var rangeProtections = sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE);
+    var protectionInfo = rangeProtections.map(function (p) {
+      var r = p.getRange();
+      return {
+        a1: r.getA1Notation(),
+        row1: r.getRow(),
+        rowN: r.getRow() + r.getNumRows() - 1,
+        coversTargetRow: sheetRow >= r.getRow() && sheetRow <= r.getRow() + r.getNumRows() - 1,
+        canEdit: p.canEdit(),
+      };
+    });
+
+    var filter = sheet.getFilter();
+    var hiddenByFilter = null;
+    try {
+      hiddenByFilter = sheet.isRowHiddenByFilter(sheetRow);
+    } catch (e) {
+      hiddenByFilter = 'error: ' + String(e);
+    }
+    var namedRanges = SpreadsheetApp.getActiveSpreadsheet().getNamedRanges().map(function (nr) {
+      return { name: nr.getName(), a1: nr.getRange().getA1Notation() };
+    });
+
+    return ContentService.createTextOutput(
+      JSON.stringify({
+        ok: true,
+        title: title,
+        sheetRow: sheetRow,
+        isSheetProtected: sheetProtections.length > 0,
+        sheetProtectionCanEdit: sheetProtections.length > 0 ? sheetProtections[0].canEdit() : null,
+        rangeProtectionsCount: rangeProtections.length,
+        rangeProtectionsCoveringRow: protectionInfo.filter(function (p) { return p.coversTargetRow; }),
+        hasFilter: !!filter,
+        hiddenByFilter: hiddenByFilter,
+        frozenRows: sheet.getFrozenRows(),
+        maxRows: sheet.getMaxRows(),
+        lastRow: sheet.getLastRow(),
+        namedRangesCount: namedRanges.length,
+      })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err), stack: err && err.stack ? String(err.stack) : null })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
 function handleCreateSheet(data) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -175,6 +271,22 @@ function handleCreateSheet(data) {
 }
 
 function handleDeleteMovie(title) {
+  // Confirmado en producción: sin lock, dos ejecuciones concurrentes de
+  // este script (cada vez más probables desde que hay sync en segundo
+  // plano, Background Sync y un refresco automático cada 20s desde varias
+  // pestañas) pueden pisarse — deleteRow() reporta éxito pero la fila
+  // sigue estando ahí, porque otra ejecución concurrente escribió su
+  // propia copia (desactualizada) de la Sheet encima. El lock serializa
+  // las ejecuciones de este script; el flush fuerza a que el borrado
+  // quede escrito de verdad antes de contestar "ok".
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (e) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: 'La Sheet está ocupada, probá de nuevo.' })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
   try {
     if (!title) {
       return ContentService.createTextOutput(
@@ -182,15 +294,46 @@ function handleDeleteMovie(title) {
       ).setMimeType(ContentService.MimeType.JSON);
     }
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
-    var values = sheet.getDataRange().getValues();
-    var titleCol = values[0].indexOf('movie');
-    for (var i = 1; i < values.length; i++) {
-      if (String(values[i][titleCol]) === title) {
-        sheet.deleteRow(i + 1);
+
+    // Causa real encontrada en producción (caso "Long Way Back Home"):
+    // deleteRow() reporta éxito sin tirar excepción, pero la fila sigue
+    // estando ahí si un filtro activo (Data > Crear un filtro) la tiene
+    // oculta en ese momento — confirmado con isRowHiddenByFilter(). Sacar
+    // el filtro (no borra datos, solo la vista/criterio) antes de tocar
+    // filas evita el problema de raíz en vez de solo mitigarlo.
+    var filter = sheet.getFilter();
+    if (filter) filter.remove();
+
+    // Además, releemos la Sheet después de cada intento y solo contestamos
+    // "ok" cuando el título de verdad ya no aparece — si sigue, reintentamos
+    // unas veces antes de rendirnos con un error real en vez de un falso
+    // positivo (red de contención por si hay otra causa además del filtro).
+    var found = false;
+    for (var attempt = 0; attempt < 4; attempt++) {
+      var values = sheet.getDataRange().getValues();
+      var titleCol = values[0].indexOf('movie');
+      var rowIndex = -1;
+      for (var i = 1; i < values.length; i++) {
+        if (String(values[i][titleCol]) === title) { rowIndex = i; break; }
+      }
+      if (rowIndex === -1) {
+        if (attempt === 0) { found = false; break; }
         return ContentService.createTextOutput(
           JSON.stringify({ ok: true, deleted: title })
         ).setMimeType(ContentService.MimeType.JSON);
       }
+      found = true;
+      sheet.deleteRow(rowIndex + 1);
+      SpreadsheetApp.flush();
+      Utilities.sleep(400);
+    }
+    if (found) {
+      return ContentService.createTextOutput(
+        JSON.stringify({
+          ok: false,
+          error: 'El borrado no se pudo confirmar después de varios intentos — probá de nuevo.',
+        })
+      ).setMimeType(ContentService.MimeType.JSON);
     }
     return ContentService.createTextOutput(
       JSON.stringify({ ok: false, error: 'No se encontró "' + title + '" en la Sheet.' })
@@ -199,6 +342,8 @@ function handleDeleteMovie(title) {
     return ContentService.createTextOutput(
       JSON.stringify({ ok: false, error: String(err) })
     ).setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    lock.releaseLock();
   }
 }
 
@@ -272,6 +417,9 @@ function doGet(e) {
   }
   if (e && e.parameter && e.parameter.action === 'debugSheet') {
     return handleDebugSheet(e.parameter.name || '');
+  }
+  if (e && e.parameter && e.parameter.action === 'diagnoseRow') {
+    return handleDiagnoseRow(e.parameter.title || '');
   }
   if (e && e.parameter && e.parameter.action === 'addColumns') {
     try {
@@ -1320,6 +1468,18 @@ function handleSearchMovies(query) {
 // Setter genérico de una sola celda por título exacto — para revertir a
 // mano un campo que un fix automático (fixTmdbMatch, etc.) pisó de más.
 function handleSetField(title, col, value) {
+  // Ver el comentario en handleDeleteMovie: sin lock+flush, una escritura
+  // acá puede perderse en silencio si otra ejecución concurrente del
+  // script pisa la Sheet al mismo tiempo (cada vez más probable con sync
+  // en segundo plano desde varias pestañas + Background Sync).
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (e) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: 'La Sheet está ocupada, probá de nuevo.' })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
   try {
     if (!title || !col) {
       return ContentService.createTextOutput(
@@ -1327,6 +1487,10 @@ function handleSetField(title, col, value) {
       ).setMimeType(ContentService.MimeType.JSON);
     }
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    // Ver handleDeleteMovie: un filtro activo puede tener oculta la fila
+    // que se quiere tocar y eso bloquea la escritura en silencio.
+    var filter = sheet.getFilter();
+    if (filter) filter.remove();
     var values = sheet.getDataRange().getValues();
     var header = values[0];
     var titleCol = header.indexOf('movie');
@@ -1346,6 +1510,7 @@ function handleSetField(title, col, value) {
       ).setMimeType(ContentService.MimeType.JSON);
     }
     sheet.getRange(rowIndex + 1, colIdx + 1).setValue(value);
+    SpreadsheetApp.flush();
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, title: title, col: col, value: value })
     ).setMimeType(ContentService.MimeType.JSON);
@@ -1353,6 +1518,8 @@ function handleSetField(title, col, value) {
     return ContentService.createTextOutput(
       JSON.stringify({ ok: false, error: String(err) })
     ).setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    lock.releaseLock();
   }
 }
 
@@ -1363,6 +1530,18 @@ function handleSetField(title, col, value) {
 // guardado de 3 campos (ej. rating + veces vista + elo inicial) tardaba
 // 10-12s en vez de los ~3-4s de una sola lectura de la Sheet.
 function handleSetFields(title, changesJson) {
+  // Ver el comentario en handleDeleteMovie: sin lock+flush, una escritura
+  // acá puede perderse en silencio si otra ejecución concurrente del
+  // script pisa la Sheet al mismo tiempo (cada vez más probable con sync
+  // en segundo plano desde varias pestañas + Background Sync).
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (e) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: 'La Sheet está ocupada, probá de nuevo.' })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
   try {
     if (!title) {
       return ContentService.createTextOutput(
@@ -1384,6 +1563,10 @@ function handleSetFields(title, changesJson) {
     }
 
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    // Ver handleDeleteMovie: un filtro activo puede tener oculta la fila
+    // que se quiere tocar y eso bloquea la escritura en silencio.
+    var filter = sheet.getFilter();
+    if (filter) filter.remove();
     var values = sheet.getDataRange().getValues();
     var header = values[0];
     var titleCol = header.indexOf('movie');
@@ -1408,6 +1591,7 @@ function handleSetFields(title, changesJson) {
       sheet.getRange(rowIndex + 1, colIdx + 1).setValue(c.value);
       applied.push({ col: c.col, value: c.value });
     });
+    SpreadsheetApp.flush();
 
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, title: title, applied: applied, failed: failed })
@@ -1416,6 +1600,8 @@ function handleSetFields(title, changesJson) {
     return ContentService.createTextOutput(
       JSON.stringify({ ok: false, error: String(err) })
     ).setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    lock.releaseLock();
   }
 }
 
