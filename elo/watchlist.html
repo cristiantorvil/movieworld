@@ -770,10 +770,37 @@
     return null;
   }
 
+  // Local-first, mismo criterio que index.html/edit.html: sin esto, cada
+  // apertura de la página esperaba a que Apps Script conteste (varios
+  // segundos, a veces más con la Sheet tan grande) antes de mostrar nada.
+  // Acá se pinta de una con lo último que se vio, y la Sheet se sincroniza
+  // solo, en segundo plano.
+  var WATCHLIST_CACHE_KEY = "cine-elo-watchlist-cache";
+
+  function readWatchlistCache() {
+    try {
+      var raw = localStorage.getItem(WATCHLIST_CACHE_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeWatchlistCache(list) {
+    try {
+      localStorage.setItem(WATCHLIST_CACHE_KEY, JSON.stringify(list));
+    } catch (e) {
+      // storage lleno o bloqueado: no es crítico, seguimos igual
+    }
+  }
+
   function loadWatchlist() {
     return fetchJsonWithRetry(SYNC_URL + "?action=pullWatchlist", {}).then(function (data) {
       if (!data.ok) throw new Error(data.error || "error desconocido");
       movies = data.movies || [];
+      writeWatchlistCache(movies);
     });
   }
 
@@ -1658,13 +1685,28 @@
   };
 
   // ── Arranque ──
+  var cachedMovies = readWatchlistCache();
+  var hadCache = !!(cachedMovies && cachedMovies.length);
+  if (hadCache) {
+    movies = cachedMovies;
+    buildFilterOptions();
+    pickGroup();
+    renderList();
+  }
+
+  // La sincronización real con la Sheet pasa siempre en segundo plano — si
+  // ya había cache, no le pisamos al usuario el duelo que está mirando ni
+  // los picks que ya hizo; la Lista y los filtros sí se refrescan solos
+  // porque no rompen nada en curso, y la watchlist queda al día para la
+  // próxima vez que se arme un duelo (nuevo grupo, "otro par", etc).
   loadWatchlist()
     .then(function () {
       buildFilterOptions();
-      pickGroup();
       renderList();
+      if (!hadCache) pickGroup();
     })
     .catch(function (err) {
+      if (hadCache) return; // nos quedamos con lo que ya se pintó del cache
       duelArea.innerHTML = '<p class="center-msg">No se pudo cargar la watchlist: ' + escapeHtml(err.message) + "</p>";
       listArea.innerHTML = '<p class="center-msg">No se pudo cargar la watchlist.</p>';
     });
