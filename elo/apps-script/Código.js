@@ -1879,6 +1879,13 @@ function handleFixTmdbMatch(title, newId) {
       sheet.getRange(rowIndex + 1, colIdx + 1).setValue(fields[col]);
       applied[col] = fields[col];
     });
+    // El título también se actualiza acá: antes solo se pisaba la metadata
+    // (poster/director/etc), así que corregir un match mal hecho (ej. un
+    // título de watchlist que había matcheado con la peli equivocada) dejaba
+    // el nombre viejo e incorrecto aunque el ID de TMDB ya estuviera bien.
+    if (d.title && d.title !== title && titleCol > -1) {
+      sheet.getRange(rowIndex + 1, titleCol + 1).setValue(d.title);
+    }
 
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, title: title, newTitle: d.title, applied: applied })

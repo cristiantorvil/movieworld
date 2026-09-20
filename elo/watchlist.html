@@ -1327,6 +1327,15 @@
           m.genre = applied.genre || m.genre;
           m.country = applied.country || m.country;
           m.originalLanguage = applied.original_language || m.originalLanguage;
+          // El backend ahora también corrige el título si estaba mal (ver
+          // handleFixTmdbMatch) — hay que reflejarlo acá y en editingTitle,
+          // que es la clave que usa renderList para saber qué panel quedó
+          // abierto (si no se actualiza, el panel se cierra solo al perder
+          // su fila de referencia).
+          if (data.newTitle && data.newTitle !== m.title) {
+            m.title = data.newTitle;
+            editingTitle = data.newTitle;
+          }
           directorInput.value = m.director;
           posterInput.value = m.poster;
           updatePreview();
