@@ -613,6 +613,10 @@
         <span class="duel-size-label">Prioridad (por elo)</span>
         <div class="duel-size-btns" id="rankFilterBtns"></div>
       </div>
+      <div class="duel-size-row" id="maxGamesFilterRow" style="display:none;">
+        <span class="duel-size-label">Máximo de duelos jugados</span>
+        <div class="duel-size-btns" id="maxGamesFilterBtns"></div>
+      </div>
       <div class="duel-size-row" id="duelSizeRow" style="display:none;">
         <span class="duel-size-label">Tamaño del duelo</span>
         <div class="duel-size-btns" id="duelSizeBtns"></div>
@@ -778,10 +782,19 @@
   // pares, en vez de armar un bracket de eliminación) ──
   var FILTERS_KEY = "cine-elo-watchlist-filters";
   var RANK_PRESETS = [10, 50, 100, 250];
-  var filters = { genre: "", decade: "", country: "", language: "", rankMax: 0 };
+  var MAX_GAMES_PRESETS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+  // maxGames: -1 = "Todas" (sin tope). No puede ser null/0 como centinela de
+  // "sin elegir" porque 0 es un valor real y elegible (0 duelos jugados).
+  var filters = { genre: "", decade: "", country: "", language: "", rankMax: 0, maxGames: -1 };
   try {
     var savedFilters = JSON.parse(localStorage.getItem(FILTERS_KEY) || "{}");
-    Object.keys(filters).forEach(function (k) { if (savedFilters[k]) filters[k] = savedFilters[k]; });
+    Object.keys(filters).forEach(function (k) {
+      if (k === "maxGames") {
+        if (typeof savedFilters[k] === "number") filters[k] = savedFilters[k];
+      } else if (savedFilters[k]) {
+        filters[k] = savedFilters[k];
+      }
+    });
   } catch (e) {}
 
   var filterGenreSel = document.getElementById("filterGenre");
@@ -793,6 +806,8 @@
   var poolCountEl = document.getElementById("poolCount");
   var rankFilterRow = document.getElementById("rankFilterRow");
   var rankFilterBtnsEl = document.getElementById("rankFilterBtns");
+  var maxGamesFilterRow = document.getElementById("maxGamesFilterRow");
+  var maxGamesFilterBtnsEl = document.getElementById("maxGamesFilterBtns");
 
   // Ranking completo por elo (de más a menos prioridad) — se recalcula cada
   // vez que hace falta en vez de cachearse, porque cambia con cada duelo.
@@ -819,6 +834,29 @@
     });
   }
   buildRankFilterButtons();
+
+  // "Máximo de duelos jugados": acota el pool a pelis con pocos (o cero)
+  // duelos, para priorizar dueleear las que todavía no jugaron nada — mismo
+  // filtro que ya existe en la pestaña Duelo de Cine Elo.
+  function buildMaxGamesFilterButtons() {
+    maxGamesFilterBtnsEl.innerHTML = "";
+    [-1].concat(MAX_GAMES_PRESETS).forEach(function (n) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "size-btn" + (filters.maxGames === n ? " active" : "");
+      btn.textContent = n === -1 ? "Todas" : String(n);
+      btn.onclick = function () {
+        filters.maxGames = n;
+        saveFilters();
+        Array.prototype.forEach.call(maxGamesFilterBtnsEl.children, function (b) { b.classList.remove("active"); });
+        btn.classList.add("active");
+        updateClearButton();
+        pickGroup();
+      };
+      maxGamesFilterBtnsEl.appendChild(btn);
+    });
+  }
+  buildMaxGamesFilterButtons();
 
   function uniqueSorted(values) {
     var set = {};
@@ -858,6 +896,7 @@
     filtersRow.style.display = movies.length ? "flex" : "none";
     duelSizeRow.style.display = movies.length ? "flex" : "none";
     rankFilterRow.style.display = movies.length ? "flex" : "none";
+    maxGamesFilterRow.style.display = movies.length ? "flex" : "none";
     quickModeRow.style.display = movies.length ? "flex" : "none";
     // Los <option> se reconstruyeron: sincronizar filters con lo que
     // realmente quedó seleccionado (por si el valor guardado ya no existe).
@@ -869,7 +908,7 @@
   }
 
   function updateClearButton() {
-    var active = filters.genre || filters.decade || filters.country || filters.language || filters.rankMax;
+    var active = filters.genre || filters.decade || filters.country || filters.language || filters.rankMax || filters.maxGames !== -1;
     clearFiltersBtn.style.display = active ? "inline-block" : "none";
   }
 
@@ -879,6 +918,9 @@
 
   function getFilteredPool() {
     var pool = movies;
+    if (filters.maxGames !== -1) {
+      pool = pool.filter(function (m) { return (m.games || 0) <= filters.maxGames; });
+    }
     if (filters.rankMax) {
       var topTitles = {};
       getRanking().slice(0, filters.rankMax).forEach(function (m) { topTitles[m.title] = true; });
@@ -919,10 +961,11 @@
   });
 
   clearFiltersBtn.onclick = function () {
-    filters = { genre: "", decade: "", country: "", language: "", rankMax: 0 };
+    filters = { genre: "", decade: "", country: "", language: "", rankMax: 0, maxGames: -1 };
     saveFilters();
     buildFilterOptions();
     buildRankFilterButtons();
+    buildMaxGamesFilterButtons();
     pickGroup();
   };
 
