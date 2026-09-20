@@ -617,6 +617,9 @@
         <span class="duel-size-label">Tamaño del duelo</span>
         <div class="duel-size-btns" id="duelSizeBtns"></div>
       </div>
+      <div class="duel-size-row" id="quickModeRow" style="display:none;">
+        <button type="button" class="size-btn" id="quickModeBtn">⚡ Modo rápido</button>
+      </div>
       <p class="pool-count" id="poolCount"></p>
       <p class="duel-instructions" id="duelInstructions"></p>
       <div id="duelArea"><p class="center-msg">Cargando watchlist…</p></div>
@@ -753,6 +756,8 @@
   var duelSize = DUEL_SIZES.indexOf(Number(localStorage.getItem(DUEL_SIZE_KEY))) !== -1
     ? Number(localStorage.getItem(DUEL_SIZE_KEY))
     : 2;
+  var QUICK_MODE_KEY = "cine-elo-watchlist-quick-mode";
+  var quickMode = localStorage.getItem(QUICK_MODE_KEY) === "true";
 
   function byTitle(title) {
     for (var i = 0; i < movies.length; i++) {
@@ -853,6 +858,7 @@
     filtersRow.style.display = movies.length ? "flex" : "none";
     duelSizeRow.style.display = movies.length ? "flex" : "none";
     rankFilterRow.style.display = movies.length ? "flex" : "none";
+    quickModeRow.style.display = movies.length ? "flex" : "none";
     // Los <option> se reconstruyeron: sincronizar filters con lo que
     // realmente quedó seleccionado (por si el valor guardado ya no existe).
     filters.genre = filterGenreSel.value;
@@ -925,6 +931,8 @@
   var duelSizeRow = document.getElementById("duelSizeRow");
   var duelSizeBtnsEl = document.getElementById("duelSizeBtns");
   var duelInstructionsEl = document.getElementById("duelInstructions");
+  var quickModeRow = document.getElementById("quickModeRow");
+  var quickModeBtn = document.getElementById("quickModeBtn");
 
   DUEL_SIZES.forEach(function (n) {
     var btn = document.createElement("button");
@@ -940,6 +948,17 @@
     };
     duelSizeBtnsEl.appendChild(btn);
   });
+
+  function renderQuickModeBtn() {
+    quickModeBtn.className = "size-btn" + (quickMode ? " active" : "");
+    quickModeBtn.textContent = "⚡ Modo rápido" + (quickMode ? " · ON" : "");
+  }
+  renderQuickModeBtn();
+  quickModeBtn.onclick = function () {
+    quickMode = !quickMode;
+    localStorage.setItem(QUICK_MODE_KEY, String(quickMode));
+    renderQuickModeBtn();
+  };
 
   function pickGroup() {
     var pool = getFilteredPool();
@@ -1123,7 +1142,13 @@
 
     postJson(payload, false).catch(function () {});
 
-    renderResult(resultRows);
+    // Modo rápido: sin pantalla de resultado, directo al siguiente duelo —
+    // mismo criterio que quickMode en cine-elo.jsx.
+    if (quickMode) {
+      pickGroup();
+    } else {
+      renderResult(resultRows);
+    }
   }
 
   // Pantalla de resultado (mismo criterio que DuelResult en cine-elo.jsx):
