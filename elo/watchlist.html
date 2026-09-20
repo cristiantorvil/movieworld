@@ -1034,6 +1034,14 @@
     if (rankingPicks.length >= duelGroup.length - 1) {
       var lastTitle = duelGroup.map(function (m) { return m.title; }).find(function (t) { return rankingPicks.indexOf(t) === -1; });
       var fullOrder = lastTitle ? rankingPicks.concat([lastTitle]) : rankingPicks;
+      // Clickear rápido puede dejar un click ya en cola (ej. en la última
+      // película, que este mismo pick recién completó solo) para cuando el
+      // navegador recién ahora llega a procesarlo — nulear duelGroup ACÁ
+      // hace que ese click en cola, al llegar, encuentre "!duelGroup" en la
+      // próxima llamada a chooseInGroup y no haga nada, en vez de reprocesar
+      // este mismo duelo ya resuelto y pisar la pantalla de resultado real
+      // con una vieja (lo que se sentía como "se pega, no deja clickear más").
+      duelGroup = null;
       resolveGroup(fullOrder);
     } else {
       renderDuel();
@@ -1045,7 +1053,6 @@
   // los deltas de elo de cada una sobre todos los pares en que participó.
   // Mismo algoritmo que resolveDuel en cine-elo.jsx.
   function resolveGroup(orderedTitles) {
-    if (!duelGroup) return;
     var ordered = orderedTitles.map(byTitle).filter(Boolean);
     if (ordered.length < 2) return;
 
