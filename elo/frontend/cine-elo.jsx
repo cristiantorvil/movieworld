@@ -525,6 +525,7 @@ function CineEloApp() {
   const [duelRankMax, setDuelRankMax] = useState(0); // 0 = sin tope
   const [duelYearMin, setDuelYearMin] = useState(null);
   const [duelYearMax, setDuelYearMax] = useState(null);
+  const [duelYearExact, setDuelYearExact] = useState(""); // "" = sin filtrar por año puntual (usa Década en su lugar)
   const [showFilters, setShowFilters] = useState(false);
   const [showModes, setShowModes] = useState(false);
   const [rankFilterDirector, setRankFilterDirector] = useState("");
@@ -1638,6 +1639,15 @@ function CineEloApp() {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [movies]);
 
+  // Años puntuales presentes en el catálogo, más reciente primero (evita
+  // scrollear un <select> larguísimo para llegar a los estrenos nuevos).
+  const yearsList = useMemo(() => {
+    if (!movies) return [];
+    const set = new Set();
+    movies.forEach((m) => { if (m.year) set.add(Number(m.year)); });
+    return [...set].sort((a, b) => b - a);
+  }, [movies]);
+
   const countriesList = useMemo(() => {
     if (!movies) return [];
     const set = new Set();
@@ -1704,7 +1714,10 @@ function CineEloApp() {
       pool = pool.filter((m) => rangeIds.has(m.id));
     }
 
-    if (
+    if (duelYearExact) {
+      const y = Number(duelYearExact);
+      pool = pool.filter((m) => Number(m.year) === y);
+    } else if (
       duelYearMin != null &&
       duelYearMax != null &&
       (duelYearMin > decadeBounds[0] || duelYearMax < decadeBounds[1])
@@ -1765,6 +1778,7 @@ function CineEloApp() {
     duelRankMax,
     duelYearMin,
     duelYearMax,
+    duelYearExact,
     decadeBounds,
     duelDirector,
     duelCountry,
@@ -2207,6 +2221,7 @@ function CineEloApp() {
     (duelRankMax > 0 && duelRankMax < ratedRanking.length) ||
     (duelYearMin != null && duelYearMin > decadeBounds[0]) ||
     (duelYearMax != null && duelYearMax < decadeBounds[1]) ||
+    duelYearExact ||
     duelGoldMin > 1 ||
     duelGoldMax < 10 ||
     duelSilverMin > 0 ||
@@ -2251,6 +2266,7 @@ function CineEloApp() {
       setDuelRankMax(0);
       setDuelYearMin(decadeBounds[0]);
       setDuelYearMax(decadeBounds[1]);
+      setDuelYearExact("");
       setDuelGoldMin(1);
       setDuelGoldMax(10);
       setDuelSilverMin(0);
@@ -2718,6 +2734,7 @@ function CineEloApp() {
                         }
                         onChange={(e) => {
                           const v = e.target.value;
+                          setDuelYearExact(""); // década y año puntual son excluyentes
                           if (v === "all") {
                             setDuelYearRange(decadeBounds[0], decadeBounds[1]);
                           } else {
@@ -2730,6 +2747,25 @@ function CineEloApp() {
                         {decadeOptions.map((d) => (
                           <option key={d} value={d}>
                             {d}s
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="filter-label">
+                      Año exacto
+                      <select
+                        className="filter-select"
+                        value={duelYearExact}
+                        onChange={(e) => {
+                          setDuelYearExact(e.target.value);
+                          setPair(null);
+                        }}
+                      >
+                        <option value="">Todos los años</option>
+                        {yearsList.map((y) => (
+                          <option key={y} value={y}>
+                            {y}
                           </option>
                         ))}
                       </select>
@@ -2779,6 +2815,7 @@ function CineEloApp() {
                           setMaxDuelosFilter(null);
                           setDuelRankRange(1, 0);
                           setDuelYearRange(decadeBounds[0], decadeBounds[1]);
+                          setDuelYearExact("");
                           setDuelGoldMin(1);
                           setDuelGoldMax(10);
                           setDuelSilverMin(0);

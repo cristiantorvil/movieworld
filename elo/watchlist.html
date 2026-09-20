@@ -605,6 +605,7 @@
       <div class="filters-row" id="filtersRow" style="display:none;">
         <select id="filterGenre"><option value="">Todos los géneros</option></select>
         <select id="filterDecade"><option value="">Todas las décadas</option></select>
+        <select id="filterYear"><option value="">Todos los años</option></select>
         <select id="filterCountry"><option value="">Todos los países</option></select>
         <select id="filterLanguage"><option value="">Todos los idiomas</option></select>
         <button class="btn-ghost" id="clearFiltersBtn" style="display:none;">limpiar filtros</button>
@@ -812,7 +813,7 @@
   var MAX_GAMES_PRESETS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
   // maxGames: -1 = "Todas" (sin tope). No puede ser null/0 como centinela de
   // "sin elegir" porque 0 es un valor real y elegible (0 duelos jugados).
-  var filters = { genre: "", decade: "", country: "", language: "", rankMax: 0, maxGames: -1 };
+  var filters = { genre: "", decade: "", year: "", country: "", language: "", rankMax: 0, maxGames: -1 };
   try {
     var savedFilters = JSON.parse(localStorage.getItem(FILTERS_KEY) || "{}");
     Object.keys(filters).forEach(function (k) {
@@ -826,6 +827,7 @@
 
   var filterGenreSel = document.getElementById("filterGenre");
   var filterDecadeSel = document.getElementById("filterDecade");
+  var filterYearSel = document.getElementById("filterYear");
   var filterCountrySel = document.getElementById("filterCountry");
   var filterLanguageSel = document.getElementById("filterLanguage");
   var filtersRow = document.getElementById("filtersRow");
@@ -909,17 +911,25 @@
     var countries = [];
     var languages = [];
     var decades = {};
+    var years = {};
     movies.forEach(function (m) {
       if (m.genre) m.genre.split(",").forEach(function (g) { genres.push(g.trim()); });
       if (m.country) m.country.split(",").forEach(function (c) { countries.push(c.trim()); });
       if (m.originalLanguage) languages.push(languageLabel(m.originalLanguage));
-      if (m.year) decades[Math.floor(Number(m.year) / 10) * 10] = true;
+      if (m.year) {
+        decades[Math.floor(Number(m.year) / 10) * 10] = true;
+        years[Number(m.year)] = true;
+      }
     });
     fillSelect(filterGenreSel, uniqueSorted(genres), filters.genre);
     fillSelect(filterCountrySel, uniqueSorted(countries), filters.country);
     fillSelect(filterLanguageSel, uniqueSorted(languages), filters.language);
     var decadeOptions = Object.keys(decades).map(Number).sort(function (a, b) { return a - b; }).map(String);
     fillSelect(filterDecadeSel, decadeOptions, filters.decade);
+    // Más reciente primero: es lo que más se busca, y evita tener que
+    // scrollear un <select> de 100+ años para llegar a los últimos estrenos.
+    var yearOptions = Object.keys(years).map(Number).sort(function (a, b) { return b - a; }).map(String);
+    fillSelect(filterYearSel, yearOptions, filters.year);
     filtersRow.style.display = movies.length ? "flex" : "none";
     duelSizeRow.style.display = movies.length ? "flex" : "none";
     rankFilterRow.style.display = movies.length ? "flex" : "none";
@@ -931,11 +941,12 @@
     filters.country = filterCountrySel.value;
     filters.language = filterLanguageSel.value;
     filters.decade = filterDecadeSel.value;
+    filters.year = filterYearSel.value;
     updateClearButton();
   }
 
   function updateClearButton() {
-    var active = filters.genre || filters.decade || filters.country || filters.language || filters.rankMax || filters.maxGames !== -1;
+    var active = filters.genre || filters.decade || filters.year || filters.country || filters.language || filters.rankMax || filters.maxGames !== -1;
     clearFiltersBtn.style.display = active ? "inline-block" : "none";
   }
 
@@ -966,7 +977,10 @@
     if (filters.language) {
       pool = pool.filter(function (m) { return languageLabel(m.originalLanguage) === filters.language; });
     }
-    if (filters.decade) {
+    if (filters.year) {
+      var y = Number(filters.year);
+      pool = pool.filter(function (m) { return Number(m.year) === y; });
+    } else if (filters.decade) {
       var d = Number(filters.decade);
       pool = pool.filter(function (m) { return m.year && Math.floor(Number(m.year) / 10) * 10 === d; });
     }
@@ -976,11 +990,21 @@
   [
     [filterGenreSel, "genre"],
     [filterDecadeSel, "decade"],
+    [filterYearSel, "year"],
     [filterCountrySel, "country"],
     [filterLanguageSel, "language"],
   ].forEach(function (pair) {
     pair[0].addEventListener("change", function () {
       filters[pair[1]] = pair[0].value;
+      // Año y década se excluyen entre sí (elegir uno específico no tiene
+      // sentido combinado con el otro) — el que se acaba de tocar gana.
+      if (pair[1] === "year" && pair[0].value) {
+        filters.decade = "";
+        filterDecadeSel.value = "";
+      } else if (pair[1] === "decade" && pair[0].value) {
+        filters.year = "";
+        filterYearSel.value = "";
+      }
       saveFilters();
       updateClearButton();
       pickGroup();
@@ -988,7 +1012,7 @@
   });
 
   clearFiltersBtn.onclick = function () {
-    filters = { genre: "", decade: "", country: "", language: "", rankMax: 0, maxGames: -1 };
+    filters = { genre: "", decade: "", year: "", country: "", language: "", rankMax: 0, maxGames: -1 };
     saveFilters();
     buildFilterOptions();
     buildRankFilterButtons();
