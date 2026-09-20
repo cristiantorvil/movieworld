@@ -462,7 +462,7 @@
     cursor: pointer;
   }
   .list-row .nudge button:hover { border-color: var(--gold); color: var(--gold); }
-  .list-row .del {
+  .list-row .del, .list-row .edit-btn {
     background: none;
     border: none;
     color: var(--muted);
@@ -472,6 +472,71 @@
     padding: 4px;
   }
   .list-row .del:hover { color: var(--red); }
+  .list-row .edit-btn:hover { color: var(--gold); }
+
+  .edit-panel {
+    background: var(--card);
+    border: 1px solid var(--gold);
+    border-radius: 10px;
+    padding: 12px;
+    margin: -2px 0 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .edit-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+  .edit-field { flex: 1; }
+  .edit-field label {
+    display: block;
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+  }
+  .edit-field input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 7px 9px;
+    color: var(--text);
+    font-size: 13px;
+  }
+  .edit-field input:focus { outline: none; border-color: var(--gold); }
+  .edit-poster-preview {
+    width: 40px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #0b0c10;
+    flex-shrink: 0;
+  }
+  .edit-btn-small {
+    background: none;
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    font-size: 12px;
+    font-weight: 700;
+    padding: 7px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .edit-btn-small:disabled { opacity: 0.5; cursor: default; }
+  .edit-save-row { display: flex; gap: 8px; align-items: center; }
+  .edit-status {
+    font-size: 11px;
+    color: var(--muted);
+    min-height: 14px;
+  }
+  .edit-status.ok { color: var(--green); }
+  .edit-status.err { color: var(--red); }
 
   /* ── Importar ── */
   .import-box {
@@ -1112,6 +1177,14 @@
   var listSearch = document.getElementById("listSearch");
   listSearch.addEventListener("input", renderList);
 
+  // Título de la fila con el panel de edición abierto (uno solo a la vez).
+  // Se edita acá en vez de mandar a edit.html porque esa página busca en una
+  // copia local del navegador (localStorage, la misma que usa Cine Elo) que
+  // no se entera de nada de lo que pasa acá — si esa copia está vieja o sin
+  // sincronizar, las pelis de la watchlist ni le aparecen. Esto habla
+  // directo con la Sheet, como el resto de watchlist.html.
+  var editingTitle = null;
+
   function renderList() {
     var q = listSearch.value.trim().toLowerCase();
     var sorted = movies
@@ -1129,7 +1202,7 @@
         var thumb = m.poster
           ? '<img src="' + posterUrl(m.poster) + '" alt="" />'
           : '<div class="ph-sm">🎬</div>';
-        return (
+        var row =
           '<div class="list-row" data-title="' + escapeAttr(m.title) + '">' +
           '<span class="rank">' + (idx + 1) + "</span>" +
           thumb +
@@ -1138,9 +1211,11 @@
           "</div></div>" +
           '<span class="elo">' + Math.round(m.elo) + "</span>" +
           '<span class="nudge"><button data-dir="1">▲</button><button data-dir="-1">▼</button></span>' +
+          '<button class="edit-btn" title="Editar poster / TMDB / director">✏️</button>' +
           '<button class="del">✕</button>' +
-          "</div>"
-        );
+          "</div>";
+        if (editingTitle === m.title) row += editPanelHtml(m);
+        return row;
       })
       .join("");
 
@@ -1150,7 +1225,12 @@
         btn.onclick = function () { nudgeElo(title, Number(btn.dataset.dir) * NUDGE_STEP); };
       });
       row.querySelector(".del").onclick = function () { removeMovie(title); };
+      row.querySelector(".edit-btn").onclick = function () {
+        editingTitle = editingTitle === title ? null : title;
+        renderList();
+      };
     });
+    wireEditPanel();
   }
 
   function nudgeElo(title, delta) {
@@ -1171,6 +1251,135 @@
     renderList();
     if (duelGroup && duelGroup.some(function (m) { return m.title === title; })) pickGroup();
     postJson({ type: "deleteMovie", title: title }, false).catch(function () {});
+  }
+
+  function editPanelHtml(m) {
+    return (
+      '<div class="edit-panel" data-title="' + escapeAttr(m.title) + '">' +
+      '<div class="edit-row">' +
+      '<div class="edit-field"><label>ID de TMDB</label><input type="number" class="edit-tmdbid" value="' + escapeAttr(m.tmdbId || "") + '" /></div>' +
+      '<button type="button" class="edit-btn-small edit-resync">🔄 Resync</button>' +
+      "</div>" +
+      '<p class="edit-status edit-resync-status"></p>' +
+      '<div class="edit-row">' +
+      (m.poster ? '<img class="edit-poster-preview" src="' + posterUrl(m.poster) + '" alt="" />' : '<div class="edit-poster-preview"></div>') +
+      '<div class="edit-field"><label>Poster path (TMDB)</label><input type="text" class="edit-poster" placeholder="/abc123.jpg" value="' + escapeAttr(m.poster || "") + '" /></div>' +
+      "</div>" +
+      '<div class="edit-field"><label>Director</label><input type="text" class="edit-director" value="' + escapeAttr(m.director || "") + '" /></div>' +
+      '<div class="edit-save-row">' +
+      '<button type="button" class="edit-btn-small edit-save">Guardar</button>' +
+      '<p class="edit-status edit-save-status"></p>' +
+      "</div>" +
+      "</div>"
+    );
+  }
+
+  function wireEditPanel() {
+    var panel = listArea.querySelector(".edit-panel");
+    if (!panel) return;
+    var title = panel.dataset.title;
+    var m = byTitle(title);
+    if (!m) return;
+
+    var tmdbIdInput = panel.querySelector(".edit-tmdbid");
+    var posterInput = panel.querySelector(".edit-poster");
+    var directorInput = panel.querySelector(".edit-director");
+    var posterPreview = panel.querySelector(".edit-poster-preview");
+    var resyncBtn = panel.querySelector(".edit-resync");
+    var resyncStatus = panel.querySelector(".edit-resync-status");
+    var saveBtn = panel.querySelector(".edit-save");
+    var saveStatus = panel.querySelector(".edit-save-status");
+
+    function updatePreview() {
+      var p = posterInput.value.trim();
+      if (p && posterPreview.tagName === "IMG") posterPreview.src = posterUrl(p);
+    }
+    posterInput.addEventListener("input", updatePreview);
+
+    resyncBtn.onclick = function () {
+      var newId = tmdbIdInput.value.trim();
+      if (!newId) {
+        resyncStatus.textContent = "Poné un ID de TMDB primero.";
+        resyncStatus.className = "edit-status err";
+        return;
+      }
+      resyncBtn.disabled = true;
+      resyncStatus.textContent = "Trayendo datos de TMDB…";
+      resyncStatus.className = "edit-status";
+      fetchJsonWithRetry(
+        SYNC_URL + "?action=fixTmdbMatch&title=" + encodeURIComponent(title) +
+          "&newId=" + encodeURIComponent(newId),
+        {}
+      )
+        .then(function (data) {
+          resyncBtn.disabled = false;
+          if (!data.ok) {
+            resyncStatus.textContent = "Error: " + (data.error || "no se pudo resincronizar");
+            resyncStatus.className = "edit-status err";
+            return;
+          }
+          resyncStatus.textContent = "Resincronizado ✓ (" + data.newTitle + ")";
+          resyncStatus.className = "edit-status ok";
+          var applied = data.applied || {};
+          m.tmdbId = applied.id != null ? applied.id : m.tmdbId;
+          m.director = applied.director || "";
+          m.poster = applied.poster_path || "";
+          m.genre = applied.genre || m.genre;
+          m.country = applied.country || m.country;
+          m.originalLanguage = applied.original_language || m.originalLanguage;
+          directorInput.value = m.director;
+          posterInput.value = m.poster;
+          updatePreview();
+          // Delay a propósito: renderList reconstruye todo el panel de cero
+          // y borraría el mensaje "Resincronizado ✓" en el mismo tick si se
+          // llamara ya mismo.
+          setTimeout(renderList, 900);
+        })
+        .catch(function () {
+          resyncBtn.disabled = false;
+          resyncStatus.textContent = "No se pudo conectar con el backend.";
+          resyncStatus.className = "edit-status err";
+        });
+    };
+
+    saveBtn.onclick = function () {
+      var newPoster = posterInput.value.trim();
+      var newDirector = directorInput.value.trim();
+      var changes = [];
+      if (newPoster !== (m.poster || "")) changes.push({ col: "poster_path", value: newPoster });
+      if (newDirector !== (m.director || "")) changes.push({ col: "director", value: newDirector });
+      if (!changes.length) {
+        saveStatus.textContent = "Sin cambios para guardar.";
+        saveStatus.className = "edit-status";
+        return;
+      }
+      saveBtn.disabled = true;
+      saveStatus.textContent = "Guardando…";
+      saveStatus.className = "edit-status";
+      fetchJsonWithRetry(
+        SYNC_URL + "?action=setFields&title=" + encodeURIComponent(title) +
+          "&changes=" + encodeURIComponent(JSON.stringify(changes)),
+        {}
+      )
+        .then(function (data) {
+          saveBtn.disabled = false;
+          if (!data.ok) {
+            saveStatus.textContent = "Error: " + (data.error || "no se pudo guardar");
+            saveStatus.className = "edit-status err";
+            return;
+          }
+          m.poster = newPoster;
+          m.director = newDirector;
+          saveStatus.textContent = "Guardado ✓";
+          saveStatus.className = "edit-status ok";
+          setTimeout(renderList, 900); // ver comentario igual en resyncBtn.onclick
+        })
+        .catch(function () {
+          saveBtn.disabled = false;
+          saveStatus.textContent = "No se pudo conectar con el backend.";
+          saveStatus.className = "edit-status err";
+        });
+    };
   }
 
   // ── Importar ──
