@@ -1414,7 +1414,31 @@
     duelCount += 1;
     localStorage.setItem(DUEL_COUNT_KEY, String(duelCount));
 
-    postJson(payload, false).catch(function () {});
+    // Mismo problema que tenía removeMovie: la mutación de arriba (elo,
+    // games, wins, losses de m directamente en movies) ya quedó aplicada en
+    // pantalla antes de saber si esto se guardó — si el POST falla (Sheet
+    // ocupada, sin conexión), sin esto el duelo se "jugaba" localmente pero
+    // nunca quedaba en la Sheet, y recién se notaba al recargar y ver que
+    // el elo volvió para atrás. Acá revertimos la mutación local y avisamos
+    // en vez de dejar que la sheet y la pantalla queden desincronizadas.
+    function revertDuelResult() {
+      resultRows.forEach(function (r) {
+        var m = byTitle(r.title);
+        if (!m) return;
+        m.elo -= totalDelta[r.title];
+        m.games -= gamesAdded[r.title];
+        m.wins -= winsAdded[r.title];
+        m.losses = m.games - m.wins;
+      });
+      duelCount -= 1;
+      localStorage.setItem(DUEL_COUNT_KEY, String(duelCount));
+      renderList();
+      renderResumen();
+      alert("No se pudo guardar ese duelo en la Sheet (Sheet ocupada o sin conexión) — el elo se revirtió acá. Probá dueleaar de nuevo.");
+    }
+    postJson(payload, false)
+      .then(function (data) { if (!data || !data.ok) revertDuelResult(); })
+      .catch(revertDuelResult);
 
     // Modo rápido: sin pantalla de resultado, directo al siguiente duelo —
     // mismo criterio que quickMode en cine-elo.jsx.
@@ -1693,15 +1717,48 @@
       SYNC_URL + "?action=setField&title=" + encodeURIComponent(title) +
         "&col=elo_rating&value=" + encodeURIComponent(m.elo),
       {}
-    ).catch(function () {});
+    )
+      .then(function (data) {
+        if (data && data.ok) return;
+        m.elo -= delta;
+        renderList();
+      })
+      .catch(function () {
+        m.elo -= delta;
+        renderList();
+      });
   }
 
   function removeMovie(title) {
     if (!confirm('Quitar "' + title + '" de la watchlist? Esto la borra de la Sheet.')) return;
+    var removed = byTitle(title);
     movies = movies.filter(function (m) { return m.title !== title; });
     renderList();
+    renderResumen();
     if (duelGroup && duelGroup.some(function (m) { return m.title === title; })) pickGroup();
-    postJson({ type: "deleteMovie", title: title }, false).catch(function () {});
+    // El borrado optimista de arriba puede mentir: si esto falla (ej. la
+    // Sheet ocupada por otra escritura concurrente) la peli quedaba afuera
+    // en pantalla sin haberse borrado de verdad en el servidor, y recién se
+    // notaba al recargar y verla "reaparecer". Si la respuesta no confirma
+    // el borrado, la restauramos acá y avisamos, en vez de tragarnos el error.
+    postJson({ type: "deleteMovie", title: title }, false)
+      .then(function (data) {
+        if (data && data.ok) return;
+        if (removed && !byTitle(title)) {
+          movies.push(removed);
+          renderList();
+          renderResumen();
+        }
+        alert('No se pudo borrar "' + title + '": ' + ((data && data.error) || "error desconocido, probá de nuevo."));
+      })
+      .catch(function () {
+        if (removed && !byTitle(title)) {
+          movies.push(removed);
+          renderList();
+          renderResumen();
+        }
+        alert('No se pudo borrar "' + title + '": no se pudo conectar con el backend, probá de nuevo.');
+      });
   }
 
   function editPanelHtml(m) {
