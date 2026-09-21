@@ -889,6 +889,123 @@
     });
   }
 
+  // ── Cola de guardados pendientes ──
+  // Mismo esquema que edit.html/add.html/index.html (Cine Elo): un intento
+  // de guardado en el momento reintentando un par de veces y avisando si
+  // falla (lo que tenía esto antes) sigue perdiendo el cambio si la pestaña
+  // se cierra o el Apps Script tarda más de lo que el navegador tolera —
+  // confirmado en producción. Acá cada cambio se anota PRIMERO en
+  // IndexedDB (no localStorage: el Service Worker de sw.js, que hace el
+  // reintento real en segundo plano vía Background Sync incluso con todas
+  // las pestañas cerradas, no tiene acceso a localStorage) y recién
+  // después se intenta mandar — si falla, sigue en la cola y Background
+  // Sync / el intervalo de abajo / la próxima carga de página lo
+  // reintentan solos, sin que el usuario tenga que hacer nada ni ver un
+  // error por una falla transitoria. Misma base "cine-elo-db" que las
+  // otras tres páginas, así que cualquiera puede drenar lo que dejó otra.
+  var IDB_NAME = "cine-elo-db";
+  var IDB_STORE = "pendingSync";
+
+  function idbOpen() {
+    return new Promise(function (resolve, reject) {
+      var req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = function () {
+        req.result.createObjectStore(IDB_STORE, { keyPath: "id" });
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+
+  function enqueuePendingSync(item) {
+    item.id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    return idbOpen().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).put(item);
+        tx.oncomplete = function () { resolve(item.id); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+
+  function readPendingSync() {
+    return idbOpen().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, "readonly");
+        var req = tx.objectStore(IDB_STORE).getAll();
+        req.onsuccess = function () { resolve(req.result || []); };
+        req.onerror = function () { reject(req.error); };
+      });
+    });
+  }
+
+  function removePendingSync(id) {
+    return idbOpen().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).delete(id);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+
+  function requestBackgroundSync() {
+    if (!("serviceWorker" in navigator) || !("SyncManager" in window)) return;
+    navigator.serviceWorker.ready
+      .then(function (reg) { return reg.sync.register("flush-pending-sync"); })
+      .catch(function () {});
+  }
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(function () {});
+  }
+
+  function syncPendingItem(item) {
+    if (item.type === "setFields") {
+      return fetchJsonWithRetry(
+        SYNC_URL + "?action=setFields&title=" + encodeURIComponent(item.title) +
+          "&changes=" + encodeURIComponent(JSON.stringify(item.changes))
+      );
+    }
+    if (item.type === "deleteMovie") {
+      return postJson({ type: "deleteMovie", title: item.title }, false);
+    }
+    return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
+  }
+
+  // Encola ANTES de intentar mandarlo, e intenta mandarlo ya mismo — si
+  // eso falla queda en la cola sin avisarle a nadie (mismo trato
+  // silencioso que edit.html): Background Sync, el intervalo de abajo o
+  // la próxima carga de cualquiera de las cuatro páginas lo reintentan.
+  function syncDurable(item) {
+    enqueuePendingSync(item).then(function (pendingId) {
+      requestBackgroundSync();
+      syncPendingItem(item)
+        .then(function (data) {
+          if (data && data.ok) removePendingSync(pendingId);
+        })
+        .catch(function (err) {
+          console.error("Sync en segundo plano falló (queda pendiente, Background Sync reintentará):", item, err);
+        });
+    });
+  }
+
+  function flushPendingSync() {
+    readPendingSync().then(function (queue) {
+      queue.forEach(function (item) {
+        syncPendingItem(item)
+          .then(function (data) {
+            if (data && data.ok) removePendingSync(item.id);
+          })
+          .catch(function () {});
+      });
+    });
+  }
+  flushPendingSync();
+  setInterval(flushPendingSync, 20000);
+
   // ── Tabs ──
   var tabBtns = document.querySelectorAll(".tab-btn");
   var panels = {
@@ -1416,39 +1533,29 @@
     newRanking.forEach(function (m, idx) { newRankByTitle[m.title] = idx + 1; });
     resultRows.forEach(function (r) { r.newRank = newRankByTitle[r.title] || 0; });
 
-    var payload = resultRows.map(function (r) {
-      var m = byTitle(r.title);
-      return { title: m.title, elo: m.elo, games: m.games, wins: m.wins, losses: m.losses, ties: m.ties || 0 };
-    });
-
     duelCount += 1;
     localStorage.setItem(DUEL_COUNT_KEY, String(duelCount));
 
-    // Mismo problema que tenía removeMovie: la mutación de arriba (elo,
-    // games, wins, losses de m directamente en movies) ya quedó aplicada en
-    // pantalla antes de saber si esto se guardó — si el POST falla (Sheet
-    // ocupada, sin conexión), sin esto el duelo se "jugaba" localmente pero
-    // nunca quedaba en la Sheet, y recién se notaba al recargar y ver que
-    // el elo volvió para atrás. Acá revertimos la mutación local y avisamos
-    // en vez de dejar que la sheet y la pantalla queden desincronizadas.
-    function revertDuelResult() {
-      resultRows.forEach(function (r) {
-        var m = byTitle(r.title);
-        if (!m) return;
-        m.elo -= totalDelta[r.title];
-        m.games -= gamesAdded[r.title];
-        m.wins -= winsAdded[r.title];
-        m.losses = m.games - m.wins;
+    // Un item por película en la cola durable (mismo setFields que usa
+    // edit.html) — sobrevive a que esta pestaña se cierre o el Apps Script
+    // tarde de más, y no hace falta revertir nada en pantalla ni avisar:
+    // si el intento inmediato falla, sigue pendiente y se termina de
+    // guardar solo (Background Sync, el intervalo, o la próxima carga de
+    // cualquiera de las cuatro páginas).
+    resultRows.forEach(function (r) {
+      var m = byTitle(r.title);
+      if (!m) return;
+      syncDurable({
+        type: "setFields",
+        title: m.title,
+        changes: [
+          { col: "elo_rating", value: m.elo },
+          { col: "elo_games", value: m.games },
+          { col: "elo_win", value: m.wins },
+          { col: "elo_loss", value: m.losses },
+        ],
       });
-      duelCount -= 1;
-      localStorage.setItem(DUEL_COUNT_KEY, String(duelCount));
-      renderList();
-      renderResumen();
-      alert("No se pudo guardar ese duelo en la Sheet (Sheet ocupada o sin conexión) — el elo se revirtió acá. Probá dueleaar de nuevo.");
-    }
-    postJson(payload, false)
-      .then(function (data) { if (!data || !data.ok) revertDuelResult(); })
-      .catch(revertDuelResult);
+    });
 
     // Modo rápido: sin pantalla de resultado, directo al siguiente duelo —
     // mismo criterio que quickMode en cine-elo.jsx.
@@ -1730,52 +1837,22 @@
     if (!m) return;
     m.elo += delta;
     renderList();
-    fetchJsonWithRetry(
-      SYNC_URL + "?action=setField&title=" + encodeURIComponent(title) +
-        "&col=elo_rating&value=" + encodeURIComponent(m.elo),
-      {}
-    )
-      .then(function (data) {
-        if (data && data.ok) return;
-        m.elo -= delta;
-        renderList();
-      })
-      .catch(function () {
-        m.elo -= delta;
-        renderList();
-      });
+    syncDurable({ type: "setFields", title: title, changes: [{ col: "elo_rating", value: m.elo }] });
   }
 
   function removeMovie(title) {
     if (!confirm('Quitar "' + title + '" de la watchlist? Esto la borra de la Sheet.')) return;
-    var removed = byTitle(title);
     movies = movies.filter(function (m) { return m.title !== title; });
     renderList();
     renderResumen();
     if (duelGroup && duelGroup.some(function (m) { return m.title === title; })) pickGroup();
-    // El borrado optimista de arriba puede mentir: si esto falla (ej. la
-    // Sheet ocupada por otra escritura concurrente) la peli quedaba afuera
-    // en pantalla sin haberse borrado de verdad en el servidor, y recién se
-    // notaba al recargar y verla "reaparecer". Si la respuesta no confirma
-    // el borrado, la restauramos acá y avisamos, en vez de tragarnos el error.
-    postJson({ type: "deleteMovie", title: title }, false)
-      .then(function (data) {
-        if (data && data.ok) return;
-        if (removed && !byTitle(title)) {
-          movies.push(removed);
-          renderList();
-          renderResumen();
-        }
-        alert('No se pudo borrar "' + title + '": ' + ((data && data.error) || "error desconocido, probá de nuevo."));
-      })
-      .catch(function () {
-        if (removed && !byTitle(title)) {
-          movies.push(removed);
-          renderList();
-          renderResumen();
-        }
-        alert('No se pudo borrar "' + title + '": no se pudo conectar con el backend, probá de nuevo.');
-      });
+    // Encolado durable en vez del intento suelto de antes: si el borrado
+    // inmediato falla (Sheet ocupada, sin conexión), sigue pendiente y se
+    // reintenta solo hasta confirmarse — sin mostrar error ni, sobre todo,
+    // sin restaurar la peli en pantalla (sabemos que el usuario la quiere
+    // afuera porque recién lo confirmó). El backend ya trata borrar algo
+    // que ya no está como éxito, así que un reintento nunca falla en falso.
+    syncDurable({ type: "deleteMovie", title: title });
   }
 
   function editPanelHtml(m) {
@@ -1901,32 +1978,16 @@
         saveStatus.className = "edit-status";
         return;
       }
-      saveBtn.disabled = true;
-      saveStatus.textContent = "Guardando…";
-      saveStatus.className = "edit-status";
-      fetchJsonWithRetry(
-        SYNC_URL + "?action=setFields&title=" + encodeURIComponent(title) +
-          "&changes=" + encodeURIComponent(JSON.stringify(changes)),
-        {}
-      )
-        .then(function (data) {
-          saveBtn.disabled = false;
-          if (!data.ok) {
-            saveStatus.textContent = "Error: " + (data.error || "no se pudo guardar");
-            saveStatus.className = "edit-status err";
-            return;
-          }
-          m.poster = newPoster;
-          m.director = newDirector;
-          saveStatus.textContent = "Guardado ✓";
-          saveStatus.className = "edit-status ok";
-          setTimeout(renderList, 900); // ver comentario igual en resyncBtn.onclick
-        })
-        .catch(function () {
-          saveBtn.disabled = false;
-          saveStatus.textContent = "No se pudo conectar con el backend.";
-          saveStatus.className = "edit-status err";
-        });
+      // Optimista como en edit.html: se muestra guardado de una y se
+      // encola durable — si el intento en el momento falla, sigue
+      // pendiente y se termina de guardar solo, sin que haya que
+      // quedarse mirando esta pantalla ni reintentar a mano.
+      m.poster = newPoster;
+      m.director = newDirector;
+      saveStatus.textContent = "Guardado ✓";
+      saveStatus.className = "edit-status ok";
+      setTimeout(renderList, 900); // ver comentario igual en resyncBtn.onclick
+      syncDurable({ type: "setFields", title: title, changes: changes });
     };
 
     var ratingSel = panel.querySelector(".edit-rating");
@@ -1959,36 +2020,17 @@
         { col: "elo_win", value: 0 },
         { col: "elo_loss", value: 0 },
       ];
-      markWatchedBtn.disabled = true;
-      watchedStatus.textContent = "Guardando…";
-      watchedStatus.className = "edit-status";
-      fetchJsonWithRetry(
-        SYNC_URL + "?action=setFields&title=" + encodeURIComponent(title) +
-          "&changes=" + encodeURIComponent(JSON.stringify(changes)),
-        {}
-      )
-        .then(function (data) {
-          if (!data.ok) {
-            markWatchedBtn.disabled = false;
-            watchedStatus.textContent = "Error: " + (data.error || "no se pudo guardar");
-            watchedStatus.className = "edit-status err";
-            return;
-          }
-          // Ya no es watchlist (tiene rating): sale del pool local, mismo
-          // criterio que removeMovie — el backend ya la excluye sola de
-          // pullWatchlist (ver handlePullWatchlist: "if (rating) continue").
-          movies = movies.filter(function (x) { return x.title !== title; });
-          editingTitle = null;
-          buildFilterOptions();
-          renderList();
-          renderResumen();
-          if (duelGroup && duelGroup.some(function (x) { return x.title === title; })) pickGroup();
-        })
-        .catch(function () {
-          markWatchedBtn.disabled = false;
-          watchedStatus.textContent = "No se pudo conectar con el backend.";
-          watchedStatus.className = "edit-status err";
-        });
+      // Optimista + cola durable, mismo criterio que el resto de la
+      // página: ya no es watchlist (tiene rating), sale del pool local ya
+      // mismo — el backend la excluye sola de pullWatchlist en cuanto el
+      // guardado llegue (ver handlePullWatchlist: "if (rating) continue").
+      movies = movies.filter(function (x) { return x.title !== title; });
+      editingTitle = null;
+      buildFilterOptions();
+      renderList();
+      renderResumen();
+      if (duelGroup && duelGroup.some(function (x) { return x.title === title; })) pickGroup();
+      syncDurable({ type: "setFields", title: title, changes: changes });
     };
   }
 

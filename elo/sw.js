@@ -62,6 +62,13 @@ function syncItem(item) {
       body: JSON.stringify([item.payload]),
     }).then(function (r) { return r.json(); });
   }
+  if (item.type === "deleteMovie") {
+    return fetch(SYNC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ type: "deleteMovie", title: item.title }),
+    }).then(function (r) { return r.json(); });
+  }
   return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
 }
 
