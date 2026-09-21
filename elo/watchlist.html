@@ -1074,10 +1074,60 @@
     }
   }
 
+  // Un cambio recién encolado (ver syncDurable) puede tardar en llegar de
+  // verdad a la Sheet — con la cola durable, más que antes: ya no se
+  // reintenta ahí mismo y se avisa si falla, se deja pendiente y listo. Si
+  // en el medio se recarga la página, este pull trae lo que la Sheet
+  // TODAVÍA tiene (sin el cambio pendiente todavía aplicado) y sin esto
+  // pisaría movies entero, resucitando una peli recién borrada o una
+  // marcada como vista que un instante después vuelve a aparecer en la
+  // watchlist. Acá se reaplican los pendientes sobre lo que trajo el pull
+  // antes de usarlo, así lo que se ve siempre refleja el último cambio del
+  // usuario aunque la Sheet todavía no lo tenga.
+  var SETFIELDS_COL_TO_LOCAL_KEY = {
+    elo_rating: "elo",
+    elo_games: "games",
+    elo_win: "wins",
+    elo_loss: "losses",
+    director: "director",
+    poster_path: "poster",
+  };
+
+  function reconcileWithPendingQueue(list) {
+    return readPendingSync().then(function (queue) {
+      var deletedTitles = {};
+      var fieldsByTitle = {};
+      queue.forEach(function (item) {
+        if (item.type === "deleteMovie") {
+          deletedTitles[item.title] = true;
+        } else if (item.type === "setFields") {
+          var f = fieldsByTitle[item.title] || (fieldsByTitle[item.title] = {});
+          item.changes.forEach(function (c) { f[c.col] = c.value; });
+        }
+      });
+      return list
+        .filter(function (m) { return !deletedTitles[m.title]; })
+        // Un rating pendiente > 0 es "Marcar como vista": esa peli está
+        // dejando de ser watchlist, mismo criterio que el borrado de arriba.
+        .filter(function (m) { var f = fieldsByTitle[m.title]; return !(f && f.rating); })
+        .map(function (m) {
+          var f = fieldsByTitle[m.title];
+          if (!f) return m;
+          var patched = Object.assign({}, m);
+          Object.keys(SETFIELDS_COL_TO_LOCAL_KEY).forEach(function (col) {
+            if (f[col] !== undefined) patched[SETFIELDS_COL_TO_LOCAL_KEY[col]] = f[col];
+          });
+          return patched;
+        });
+    }).catch(function () { return list; }); // IndexedDB bloqueado o algo raro: mejor mostrar el pull tal cual que no mostrar nada
+  }
+
   function loadWatchlist() {
     return fetchJsonWithRetry(SYNC_URL + "?action=pullWatchlist", {}).then(function (data) {
       if (!data.ok) throw new Error(data.error || "error desconocido");
-      movies = data.movies || [];
+      return reconcileWithPendingQueue(data.movies || []);
+    }).then(function (reconciled) {
+      movies = reconciled;
       writeWatchlistCache(movies);
     });
   }
