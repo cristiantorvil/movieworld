@@ -425,6 +425,18 @@
     flex: 1;
     min-width: 0;
   }
+  .list-row-main {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+    border-radius: 8px;
+    padding: 2px 4px;
+    margin: -2px -4px;
+  }
+  .list-row-main:hover { background: rgba(242, 193, 78, 0.08); }
   .list-row .info .t {
     font-size: 13px;
     font-weight: 600;
@@ -530,6 +542,29 @@
   }
   .edit-btn-small:disabled { opacity: 0.5; cursor: default; }
   .edit-save-row { display: flex; gap: 8px; align-items: center; }
+  .edit-watched-block {
+    border-top: 1px dashed var(--card-border);
+    padding-top: 10px;
+    margin-top: 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .edit-watched-block .hint {
+    font-size: 11px;
+    color: var(--muted);
+    margin: 0;
+    line-height: 1.4;
+  }
+  .edit-watched-block select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 7px 9px;
+    color: var(--text);
+    font-size: 13px;
+  }
   .edit-status {
     font-size: 11px;
     color: var(--muted);
@@ -743,14 +778,19 @@
     lista: document.getElementById("panel-lista"),
     importar: document.getElementById("panel-importar"),
   };
+  // Extraída de los onclick de las tabs para poder cambiar de pestaña
+  // también desde código (ej. al elegir "duelear esta" desde la Lista).
+  function switchTab(tab) {
+    tabBtns.forEach(function (b) { b.classList.remove("active"); });
+    Object.keys(panels).forEach(function (k) { panels[k].classList.remove("active"); });
+    Array.prototype.forEach.call(tabBtns, function (b) {
+      if (b.dataset.tab === tab) b.classList.add("active");
+    });
+    panels[tab].classList.add("active");
+    if (tab === "lista") renderList();
+  }
   tabBtns.forEach(function (btn) {
-    btn.onclick = function () {
-      tabBtns.forEach(function (b) { b.classList.remove("active"); });
-      Object.keys(panels).forEach(function (k) { panels[k].classList.remove("active"); });
-      btn.classList.add("active");
-      panels[btn.dataset.tab].classList.add("active");
-      if (btn.dataset.tab === "lista") renderList();
-    };
+    btn.onclick = function () { switchTab(btn.dataset.tab); };
   });
 
   // ── Estado ──
@@ -1313,6 +1353,12 @@
 
   function renderList() {
     var q = listSearch.value.trim().toLowerCase();
+    // Ranking sobre TODA la watchlist (sin filtrar por búsqueda) para que el
+    // número de cada fila sea su posición real — antes se recalculaba sobre
+    // el resultado filtrado y arrancaba de nuevo en 1 con cada búsqueda.
+    var rankByTitle = {};
+    getRanking().forEach(function (m, idx) { rankByTitle[m.title] = idx + 1; });
+
     var sorted = movies
       .filter(function (m) { return !q || m.title.toLowerCase().indexOf(q) !== -1; })
       .slice()
@@ -1324,17 +1370,19 @@
     }
 
     listArea.innerHTML = sorted
-      .map(function (m, idx) {
+      .map(function (m) {
         var thumb = m.poster
           ? '<img src="' + posterUrl(m.poster) + '" alt="" />'
           : '<div class="ph-sm">🎬</div>';
         var row =
           '<div class="list-row" data-title="' + escapeAttr(m.title) + '">' +
-          '<span class="rank">' + (idx + 1) + "</span>" +
+          '<span class="rank">' + (rankByTitle[m.title] || "") + "</span>" +
+          '<div class="list-row-main" data-title="' + escapeAttr(m.title) + '" title="Tocar para duelear esta película">' +
           thumb +
           '<div class="info"><div class="t">' + escapeHtml(m.title) + '</div><div class="sub">' +
           (m.year || "") + (m.games ? " · " + m.games + " duelo" + (m.games === 1 ? "" : "s") : "") +
           "</div></div>" +
+          "</div>" +
           '<span class="elo">' + Math.round(m.elo) + "</span>" +
           '<span class="nudge"><button data-dir="1">▲</button><button data-dir="-1">▼</button></span>' +
           '<button class="edit-btn" title="Editar poster / TMDB / director">✏️</button>' +
@@ -1355,8 +1403,33 @@
         editingTitle = editingTitle === title ? null : title;
         renderList();
       };
+      var mainEl = row.querySelector(".list-row-main");
+      if (mainEl) mainEl.onclick = function () { startDuelWith(title); };
     });
     wireEditPanel();
+  }
+
+  // Arma un duelo forzando esta película como una de las participantes (el
+  // resto se sortea del resto de la watchlist, mismo criterio de sorteo sin
+  // reposición que pickGroup) y salta a la pestaña Duelo para jugarlo.
+  function startDuelWith(title) {
+    var m = byTitle(title);
+    if (!m || movies.length < 2) return;
+    var others = movies.filter(function (x) { return x.title !== title; });
+    var shuffled = others.slice();
+    for (var i = shuffled.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = shuffled[i]; shuffled[i] = shuffled[j]; shuffled[j] = tmp;
+    }
+    var n = Math.min(duelSize, movies.length) - 1;
+    duelGroup = [m].concat(shuffled.slice(0, n));
+    rankingPicks = [];
+    duelInstructionsEl.textContent = duelGroup.length === 2
+      ? "Elegí cuál querés ver primero."
+      : "Tocalas en orden: de la que más ganas tenés de ver a la que menos.";
+    poolCountEl.textContent = "Duelo armado desde la búsqueda (" + duelGroup.length + " películas)";
+    switchTab("duel");
+    renderDuel();
   }
 
   function nudgeElo(title, delta) {
@@ -1395,6 +1468,20 @@
       '<div class="edit-save-row">' +
       '<button type="button" class="edit-btn-small edit-save">Guardar</button>' +
       '<p class="edit-status edit-save-status"></p>' +
+      "</div>" +
+      '<div class="edit-watched-block">' +
+      '<div class="edit-row">' +
+      '<div class="edit-field"><label>Tu rating (ya la viste)</label><select class="edit-rating">' +
+      '<option value="">Elegí un rating…</option>' +
+      ["0.5", "1", "1.5", "2", "2.5", "3", "3.5", "4", "4.5", "5"].map(function (v) {
+        return '<option value="' + v + '">★ ' + v + "</option>";
+      }).join("") +
+      "</select></div>" +
+      '<div class="edit-field"><label>Veces vista</label><input type="number" class="edit-plays" min="1" value="1" /></div>' +
+      "</div>" +
+      '<p class="hint">Pisa el Elo de watchlist (' + Math.round(m.elo) + ", " + m.games + " duelo" + (m.games === 1 ? "" : "s") + ') con uno nuevo calculado a partir de tu rating, y arranca los duelos de nuevo en 0 — el elo/duelos que juntó como "por ver" no dice nada de qué tan buena es, ya vista.</p>' +
+      '<button type="button" class="edit-btn-small edit-mark-watched">✅ Marcar como vista</button>' +
+      '<p class="edit-status edit-watched-status"></p>' +
       "</div>" +
       "</div>"
     );
@@ -1513,6 +1600,67 @@
           saveBtn.disabled = false;
           saveStatus.textContent = "No se pudo conectar con el backend.";
           saveStatus.className = "edit-status err";
+        });
+    };
+
+    var ratingSel = panel.querySelector(".edit-rating");
+    var playsInput = panel.querySelector(".edit-plays");
+    var markWatchedBtn = panel.querySelector(".edit-mark-watched");
+    var watchedStatus = panel.querySelector(".edit-watched-status");
+
+    markWatchedBtn.onclick = function () {
+      var ratingValue = ratingSel.value;
+      if (!ratingValue) {
+        watchedStatus.textContent = "Elegí un rating primero.";
+        watchedStatus.className = "edit-status err";
+        return;
+      }
+      var rating = Number(ratingValue);
+      var plays = Math.max(Number(playsInput.value) || 1, 1);
+      var newElo = computeInitialElo(rating, plays);
+      if (!confirm(
+        'Marcar "' + title + '" como vista con ' + rating + ' estrellas?\n\n' +
+        "Elo nuevo: " + newElo + " (arrancando de cero)\n" +
+        "Duelos: " + m.games + " → 0 (se pierden los de watchlist)"
+      )) {
+        return;
+      }
+      var changes = [
+        { col: "rating", value: rating },
+        { col: "diary_count", value: plays },
+        { col: "elo_rating", value: newElo },
+        { col: "elo_games", value: 0 },
+        { col: "elo_win", value: 0 },
+        { col: "elo_loss", value: 0 },
+      ];
+      markWatchedBtn.disabled = true;
+      watchedStatus.textContent = "Guardando…";
+      watchedStatus.className = "edit-status";
+      fetchJsonWithRetry(
+        SYNC_URL + "?action=setFields&title=" + encodeURIComponent(title) +
+          "&changes=" + encodeURIComponent(JSON.stringify(changes)),
+        {}
+      )
+        .then(function (data) {
+          if (!data.ok) {
+            markWatchedBtn.disabled = false;
+            watchedStatus.textContent = "Error: " + (data.error || "no se pudo guardar");
+            watchedStatus.className = "edit-status err";
+            return;
+          }
+          // Ya no es watchlist (tiene rating): sale del pool local, mismo
+          // criterio que removeMovie — el backend ya la excluye sola de
+          // pullWatchlist (ver handlePullWatchlist: "if (rating) continue").
+          movies = movies.filter(function (x) { return x.title !== title; });
+          editingTitle = null;
+          buildFilterOptions();
+          renderList();
+          if (duelGroup && duelGroup.some(function (x) { return x.title === title; })) pickGroup();
+        })
+        .catch(function () {
+          markWatchedBtn.disabled = false;
+          watchedStatus.textContent = "No se pudo conectar con el backend.";
+          watchedStatus.className = "edit-status err";
         });
     };
   }
