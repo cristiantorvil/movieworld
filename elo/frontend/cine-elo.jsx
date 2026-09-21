@@ -531,6 +531,9 @@ function CineEloApp() {
   const [rankFilterDirector, setRankFilterDirector] = useState("");
   const [rankFilterGenre, setRankFilterGenre] = useState("");
   const [rankFilterDecade, setRankFilterDecade] = useState("all");
+  // Corto = 40 min o menos (mismo corte que usa la Academia para "Short
+  // Film" — el runtime de TMDB no siempre lo marca como género aparte).
+  const [rankFilterShorts, setRankFilterShorts] = useState(false);
   const [showRankFilters, setShowRankFilters] = useState(false);
   const [syncUrl, setSyncUrl] = useState(DEFAULT_SYNC_URL);
   const [syncUrlInput, setSyncUrlInput] = useState(DEFAULT_SYNC_URL);
@@ -1383,6 +1386,9 @@ function CineEloApp() {
   const summaryStats = useMemo(() => {
     if (!movies || ratedRanking.length === 0) return null;
 
+    const top10 = ratedRanking.slice(0, 10);
+    const bottom10 = ratedRanking.slice(Math.max(ratedRanking.length - 10, 0)).reverse(); // peor primero
+
     const withDiff = ratedRanking
       .filter((m) => m.comparisons >= 10)
       .map((m) => {
@@ -1447,6 +1453,8 @@ function CineEloApp() {
       ratedRanking.reduce((s, m) => s + m.elo, 0) / ratedRanking.length;
 
     return {
+      top10,
+      bottom10,
       eloLovesMore,
       youLoveMore,
       mostDueled,
@@ -1691,11 +1699,14 @@ function CineEloApp() {
       const d = Number(rankFilterDecade);
       list = list.filter((m) => m.year && Math.floor(m.year / 10) * 10 === d);
     }
+    if (rankFilterShorts) {
+      list = list.filter((m) => m.runtime > 0 && m.runtime <= 40);
+    }
     return list;
-  }, [ranking, rankFilterDirector, rankFilterGenre, rankFilterDecade]);
+  }, [ranking, rankFilterDirector, rankFilterGenre, rankFilterDecade, rankFilterShorts]);
 
   const hasRankFilters =
-    rankFilterDirector || rankFilterGenre || rankFilterDecade !== "all";
+    rankFilterDirector || rankFilterGenre || rankFilterDecade !== "all" || rankFilterShorts;
 
   const duelPool = useMemo(() => {
     if (!movies) return [];
@@ -3043,6 +3054,15 @@ function CineEloApp() {
                       </select>
                     </label>
 
+                    <label className="filter-label filter-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={rankFilterShorts}
+                        onChange={(e) => setRankFilterShorts(e.target.checked)}
+                      />
+                      Solo cortos (40 min o menos)
+                    </label>
+
                     {hasRankFilters && (
                       <button
                         className="skip"
@@ -3050,6 +3070,7 @@ function CineEloApp() {
                           setRankFilterDirector("");
                           setRankFilterGenre("");
                           setRankFilterDecade("all");
+                          setRankFilterShorts(false);
                         }}
                       >
                         limpiar filtros
@@ -3441,6 +3462,26 @@ function CineEloApp() {
               </div>
             ) : (
               <div className="summary-grid">
+                <div className="summary-card">
+                  <p className="summary-card-title">Top 10</p>
+                  <p className="summary-card-sub">las de mayor Elo</p>
+                  <SummaryList
+                    onDuel={duelSpecificMovie}
+                    items={summaryStats.top10}
+                    render={(m) => `${Math.round(m.elo)}`}
+                  />
+                </div>
+
+                <div className="summary-card">
+                  <p className="summary-card-title">Bottom 10</p>
+                  <p className="summary-card-sub">las de menor Elo</p>
+                  <SummaryList
+                    onDuel={duelSpecificMovie}
+                    items={summaryStats.bottom10}
+                    render={(m) => `${Math.round(m.elo)}`}
+                  />
+                </div>
+
                 <div className="summary-card">
                   <p className="summary-card-title">📉 Infravaloradas</p>
                   <p className="summary-card-sub">
