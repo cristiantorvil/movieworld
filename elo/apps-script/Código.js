@@ -340,7 +340,6 @@ function handleDeleteMovie(title) {
     // "ok" cuando el título de verdad ya no aparece — si sigue, reintentamos
     // unas veces antes de rendirnos con un error real en vez de un falso
     // positivo (red de contención por si hay otra causa además del filtro).
-    var found = false;
     for (var attempt = 0; attempt < 4; attempt++) {
       var values = sheet.getDataRange().getValues();
       var titleCol = values[0].indexOf('movie');
@@ -349,26 +348,29 @@ function handleDeleteMovie(title) {
         if (String(values[i][titleCol]) === title) { rowIndex = i; break; }
       }
       if (rowIndex === -1) {
-        if (attempt === 0) { found = false; break; }
+        // Ya no está — sea porque este mismo intento recién la borró, o
+        // porque ya no estaba desde antes de este pedido (doble click,
+        // pedido repetido tras un timeout, etc.): el objetivo de "borrar
+        // esta peli" ya está cumplido en cualquiera de los dos casos, así
+        // que este endpoint contesta ok:true siempre — no solo cuando fue
+        // este mismo intento el que la borró (attempt > 0). Antes devolvía
+        // error si nunca la encontraba, lo que un cliente que revierte su
+        // borrado optimista al ver ok:false (ver watchlist.html) interpreta
+        // como "no se pudo borrar" y la vuelve a mostrar en un loop, aunque
+        // la peli ya no esté — nunca vuelve a estar "ya borrada" en éxito.
         return ContentService.createTextOutput(
           JSON.stringify({ ok: true, deleted: title })
         ).setMimeType(ContentService.MimeType.JSON);
       }
-      found = true;
       sheet.deleteRow(rowIndex + 1);
       SpreadsheetApp.flush();
       Utilities.sleep(400);
     }
-    if (found) {
-      return ContentService.createTextOutput(
-        JSON.stringify({
-          ok: false,
-          error: 'El borrado no se pudo confirmar después de varios intentos — probá de nuevo.',
-        })
-      ).setMimeType(ContentService.MimeType.JSON);
-    }
     return ContentService.createTextOutput(
-      JSON.stringify({ ok: false, error: 'No se encontró "' + title + '" en la Sheet.' })
+      JSON.stringify({
+        ok: false,
+        error: 'El borrado no se pudo confirmar después de varios intentos — probá de nuevo.',
+      })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(
