@@ -392,11 +392,18 @@
   }
   input[type="text"]:focus { outline: none; border-color: var(--gold); }
   .list-search { margin-bottom: 12px; }
+  .list-controls-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
   .list-shorts-label {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-bottom: 12px;
     font-size: 12px;
     color: var(--muted);
     cursor: pointer;
@@ -767,10 +774,13 @@
 
     <div class="panel" id="panel-lista">
       <input type="text" class="list-search" id="listSearch" placeholder="Buscar en la watchlist…" />
-      <label class="list-shorts-label">
-        <input type="checkbox" id="listShortsOnly" />
-        Solo cortos (40 min o menos)
-      </label>
+      <div class="list-controls-row">
+        <label class="list-shorts-label">
+          <input type="checkbox" id="listShortsOnly" />
+          Solo cortos (40 min o menos)
+        </label>
+        <button type="button" class="btn-ghost" id="listReverseBtn">↓ Mejores primero</button>
+      </div>
       <div id="listArea"><p class="center-msg">Cargando…</p></div>
     </div>
 
@@ -1506,8 +1516,15 @@
   var listArea = document.getElementById("listArea");
   var listSearch = document.getElementById("listSearch");
   var listShortsOnly = document.getElementById("listShortsOnly");
+  var listReverseBtn = document.getElementById("listReverseBtn");
+  var listReversed = false;
   listSearch.addEventListener("input", renderList);
   listShortsOnly.addEventListener("change", renderList);
+  listReverseBtn.onclick = function () {
+    listReversed = !listReversed;
+    listReverseBtn.textContent = listReversed ? "↑ Peores primero" : "↓ Mejores primero";
+    renderList();
+  };
 
   // Título de la fila con el panel de edición abierto (uno solo a la vez).
   // Se edita acá en vez de mandar a edit.html porque esa página busca en una
@@ -1530,7 +1547,7 @@
       .filter(function (m) { return !q || m.title.toLowerCase().indexOf(q) !== -1; })
       .filter(function (m) { return !shortsOnly || (m.runtime > 0 && m.runtime <= 40); })
       .slice()
-      .sort(function (a, b) { return b.elo - a.elo; });
+      .sort(function (a, b) { return listReversed ? a.elo - b.elo : b.elo - a.elo; });
 
     if (!sorted.length) {
       listArea.innerHTML = '<p class="center-msg">' + (movies.length ? "Sin resultados." : "Watchlist vacía todavía.") + "</p>";

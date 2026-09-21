@@ -534,6 +534,7 @@ function CineEloApp() {
   // Corto = 40 min o menos (mismo corte que usa la Academia para "Short
   // Film" — el runtime de TMDB no siempre lo marca como género aparte).
   const [rankFilterShorts, setRankFilterShorts] = useState(false);
+  const [rankReversed, setRankReversed] = useState(false);
   const [showRankFilters, setShowRankFilters] = useState(false);
   const [syncUrl, setSyncUrl] = useState(DEFAULT_SYNC_URL);
   const [syncUrlInput, setSyncUrlInput] = useState(DEFAULT_SYNC_URL);
@@ -1702,8 +1703,14 @@ function CineEloApp() {
     if (rankFilterShorts) {
       list = list.filter((m) => m.runtime > 0 && m.runtime <= 40);
     }
+    // .slice() a propósito: reverse() muta in-place, y "list" puede seguir
+    // siendo la misma referencia que "ranking" si no se aplicó ningún otro
+    // filtro arriba — sin el slice esto invertiría el ranking global.
+    if (rankReversed) {
+      list = list.slice().reverse();
+    }
     return list;
-  }, [ranking, rankFilterDirector, rankFilterGenre, rankFilterDecade, rankFilterShorts]);
+  }, [ranking, rankFilterDirector, rankFilterGenre, rankFilterDecade, rankFilterShorts, rankReversed]);
 
   const hasRankFilters =
     rankFilterDirector || rankFilterGenre || rankFilterDecade !== "all" || rankFilterShorts;
@@ -3011,16 +3018,24 @@ function CineEloApp() {
                   style={{ marginBottom: "12px", width: "100%" }}
                 />
 
-                <button
-                  className={
-                    "filters-toggle" + (hasRankFilters ? " active" : "")
-                  }
-                  onClick={() => setShowRankFilters((v) => !v)}
-                  style={{ marginBottom: "12px" }}
-                >
-                  Filtros{hasRankFilters ? " · activos" : ""}{" "}
-                  {showRankFilters ? "▲" : "▼"}
-                </button>
+                <div style={{ display: "flex", gap: "8px", marginBottom: "12px", flexWrap: "wrap" }}>
+                  <button
+                    className={
+                      "filters-toggle" + (hasRankFilters ? " active" : "")
+                    }
+                    onClick={() => setShowRankFilters((v) => !v)}
+                  >
+                    Filtros{hasRankFilters ? " · activos" : ""}{" "}
+                    {showRankFilters ? "▲" : "▼"}
+                  </button>
+                  <button
+                    className={"filters-toggle" + (rankReversed ? " active" : "")}
+                    onClick={() => setRankReversed((v) => !v)}
+                    title="Invertir el orden para ver el fondo de la tabla"
+                  >
+                    {rankReversed ? "↑ Peores primero" : "↓ Mejores primero"}
+                  </button>
+                </div>
 
                 {showRankFilters && (
                   <div className="filters-panel">
