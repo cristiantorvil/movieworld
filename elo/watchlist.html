@@ -919,6 +919,14 @@
 
   function enqueuePendingSync(item) {
     item.id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    // El id lleva timestamp pero NO es ordenable como string (el prefijo
+    // random va primero) — sin un campo aparte, reconcileWithPendingQueue
+    // no tiene forma de saber cuál de dos pendientes para la misma peli es
+    // el más nuevo, y a veces terminaba aplicando el viejo encima (el
+    // elo/rank "se reseteaba" en pantalla cada tanto, sobre todo con el
+    // pool chico del filtro Bottom, donde la misma peli entra en varios
+    // duelos seguidos antes de que el primer guardado llegue a la Sheet).
+    item.ts = Date.now();
     return idbOpen().then(function (db) {
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(IDB_STORE, "readwrite");
@@ -1097,6 +1105,13 @@
     return readPendingSync().then(function (queue) {
       var deletedTitles = {};
       var fieldsByTitle = {};
+      // Más viejo primero: si hay dos pendientes de setFields para la misma
+      // peli (dos duelos seguidos sin sincronizar todavía), el forEach de
+      // abajo va pisando f[col] en orden — con esto el último en aplicarse
+      // es siempre el más nuevo. item.ts puede faltar en algo que haya
+      // quedado encolado con una versión vieja del código: fallback a 0
+      // (va primero, nunca pisa a uno con ts real).
+      queue = queue.slice().sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
       queue.forEach(function (item) {
         if (item.type === "deleteMovie") {
           deletedTitles[item.title] = true;
