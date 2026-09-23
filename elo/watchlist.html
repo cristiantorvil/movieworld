@@ -1062,7 +1062,9 @@
   // Heights" distintas en la watchlist) eran indistinguibles al clickear,
   // y sus deltas de elo se pisaban entre sí en el mismo diccionario.
   function movieKey(m) {
-    return m.tmdbId ? ("id:" + m.tmdbId) : ("title:" + m.title);
+    // title+year (no solo título) para el fallback: dos pelis sin tmdbId
+    // pero con años distintos no deberían colisionar tampoco.
+    return m.tmdbId ? ("id:" + m.tmdbId) : ("title:" + m.title + "|" + (m.year || ""));
   }
   function byKey(key) {
     for (var i = 0; i < movies.length; i++) {

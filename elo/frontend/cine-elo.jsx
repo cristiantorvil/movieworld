@@ -399,6 +399,15 @@ function mergeSheetIntoMovies(localMovies, sheetMovies) {
       META_FIELDS.forEach(({ key }) => {
         merged[key] = existing[key] || m[key];
       });
+      // title/year: la Sheet es la fuente de verdad ahora que el match es
+      // por tmdbId — antes esto nunca se actualizaba acá (solo META_FIELDS
+      // y elo/rating/plays), así que una limpieza de título hecha del lado
+      // del backend (ej. sacar el "(AÑO)" pegado al nombre) nunca llegaba a
+      // un navegador que ya tenía esa peli en su caché local: quedaba
+      // mostrando el título viejo para siempre, aunque la Sheet ya
+      // estuviera arreglada.
+      merged.title = existing.title || m.title;
+      merged.year = existing.year || m.year;
       merged.rating = existing.rating != null ? existing.rating : m.rating;
       merged.plays = existing.plays != null ? existing.plays : m.plays;
       merged.elo = existing.elo;
@@ -1116,14 +1125,21 @@ function CineEloApp() {
           // Navegador sin progreso local: antes de arrancar de cero, intentamos
           // traer el progreso real desde el Sheet, para no pisarlo con valores
           // en blanco en el próximo sync.
-          let sheetProgress = new Map();
+          // tmdbId primero (identificador primario, no ambiguo entre pelis
+          // homónimas como "Wuthering Heights"), title solo de fallback
+          // para filas de la Sheet que todavía no tienen tmdbId.
+          let sheetById = new Map();
+          let sheetByTitle = new Map();
           try {
             const pullRes = await fetch(
               `${DEFAULT_SYNC_URL}?action=pull`
             );
             const pullData = await pullRes.json();
             if (pullData && pullData.ok && Array.isArray(pullData.movies)) {
-              pullData.movies.forEach((m) => sheetProgress.set(m.title, m));
+              pullData.movies.forEach((m) => {
+                if (m.tmdbId) sheetById.set(String(m.tmdbId), m);
+                else sheetByTitle.set(m.title, m);
+              });
             }
           } catch (e) {
             // sin conexión o el script todavía no tiene el endpoint nuevo:
@@ -1131,14 +1147,19 @@ function CineEloApp() {
           }
 
           const seeded = SEED_MOVIES.map(([title, year, rating, plays, director, genre, poster, tmdbId]) => {
-            const existing = sheetProgress.get(title);
+            const existing = tmdbId ? sheetById.get(String(tmdbId)) : sheetByTitle.get(title);
             // El catálogo baked-in (SEED_MOVIES) solo trae estos 4 campos —
             // el resto de META_FIELDS no tiene fallback ahí, solo en el Sheet.
             const seedFallback = { director, genre, poster, tmdbId };
             const movie = {
               id: uid(),
-              title,
-              year,
+              // El título/año del catálogo baked-in puede estar viejo (ej.
+              // con el sufijo "(AÑO)" que ya se limpió del lado del Sheet,
+              // pero SEED_MOVIES es un snapshot congelado de cuando se
+              // generó el bundle) — preferimos lo que diga la Sheet ahora,
+              // que es la fuente de verdad.
+              title: (existing && existing.title) || title,
+              year: (existing && existing.year) || year,
               rating: existing && existing.rating != null ? existing.rating : rating,
               plays: existing && existing.plays != null ? existing.plays : plays,
               elo:
@@ -1158,11 +1179,22 @@ function CineEloApp() {
           });
 
           // Películas que existen en el Sheet pero no en el catálogo base
-          // (agregadas a mano directo en el Sheet, o desde otro dispositivo)
-          const seedTitles = new Set(SEED_MOVIES.map((s) => s[0]));
+          // (agregadas a mano directo en el Sheet, o desde otro dispositivo).
+          // tmdbId primero, título solo para las del catálogo base que nunca
+          // tuvieron tmdbId asignado.
+          const seedTmdbIds = new Set(
+            SEED_MOVIES.filter((s) => s[7]).map((s) => String(s[7]))
+          );
+          const seedTitlesNoId = new Set(
+            SEED_MOVIES.filter((s) => !s[7]).map((s) => s[0])
+          );
           const extras = [];
-          sheetProgress.forEach((sm, title) => {
-            if (seedTitles.has(title)) return;
+          const visitExtra = (sm, titleKey) => {
+            const covered = sm.tmdbId
+              ? seedTmdbIds.has(String(sm.tmdbId))
+              : seedTitlesNoId.has(titleKey);
+            if (covered) return;
+            const title = sm.title || titleKey;
             const movie = {
               id: uid(),
               title,
@@ -1180,7 +1212,9 @@ function CineEloApp() {
               movie[key] = sm[key] || (numeric ? null : "");
             });
             extras.push(movie);
-          });
+          };
+          sheetById.forEach((sm) => visitExtra(sm, sm.title));
+          sheetByTitle.forEach((sm, title) => visitExtra(sm, title));
 
           setMovies([...seeded, ...extras]);
         }
