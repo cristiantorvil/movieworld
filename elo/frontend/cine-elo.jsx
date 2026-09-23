@@ -126,7 +126,7 @@ function fetchWithTimeout(url, options, timeoutMs = 10000) {
 function syncPendingItem(item) {
   if (item.type === "setFields") {
     return fetchWithTimeout(
-      `${DEFAULT_SYNC_URL}?action=setFields&title=${encodeURIComponent(item.title)}&changes=${encodeURIComponent(JSON.stringify(item.changes))}`
+      `${DEFAULT_SYNC_URL}?action=setFields&tmdbId=${encodeURIComponent(item.tmdbId || "")}&title=${encodeURIComponent(item.title || "")}&year=${encodeURIComponent(item.year || "")}&changes=${encodeURIComponent(JSON.stringify(item.changes))}`
     );
   }
   if (item.type === "create") {
@@ -364,17 +364,35 @@ function mergeSheetIntoMovies(localMovies, sheetMovies) {
     return { merged: localMovies, updatedCount: 0, newCount: 0, skipped: true };
   }
 
-  const sheetMap = new Map(sheetMovies.map((m) => [m.title, m]));
-  const localTitles = new Set(localMovies.map((m) => m.title));
+  // tmdbId es el identificador primario — dos películas con el mismo título
+  // (ej. "Wuthering Heights" 1939/2011) tienen tmdbId distinto y no deben
+  // pisarse entre sí. title solo es fallback para filas sin tmdbId todavía
+  // (watchlist agregada a mano, nunca matcheada a TMDB).
+  const sheetById = new Map(
+    sheetMovies.filter((m) => m.tmdbId).map((m) => [String(m.tmdbId), m])
+  );
+  const sheetByTitle = new Map(
+    sheetMovies.filter((m) => !m.tmdbId).map((m) => [m.title, m])
+  );
+  const localIds = new Set(
+    localMovies.filter((m) => m.tmdbId).map((m) => String(m.tmdbId))
+  );
+  const localTitlesNoId = new Set(
+    localMovies.filter((m) => !m.tmdbId).map((m) => m.title)
+  );
+  function findSheetMatch(m) {
+    if (m.tmdbId) return sheetById.get(String(m.tmdbId));
+    return sheetByTitle.get(m.title);
+  }
   let updatedCount = 0;
 
   // El pull siempre trae el estado completo del Sheet, así que una peli
   // local que ya no aparece ahí fue borrada directamente en el Sheet
   // (fuera de la app) y hay que sacarla de la caché local también.
   const next = localMovies
-    .filter((m) => sheetMap.has(m.title))
+    .filter((m) => !!findSheetMatch(m))
     .map((m) => {
-      const existing = sheetMap.get(m.title);
+      const existing = findSheetMatch(m);
       if (existing.elo == null) return m;
       updatedCount++;
       const merged = { ...m };
@@ -391,7 +409,9 @@ function mergeSheetIntoMovies(localMovies, sheetMovies) {
 
   const newOnes = [];
   sheetMovies.forEach((sm) => {
-    if (!sm.title || localTitles.has(sm.title)) return;
+    if (!sm.title) return;
+    const already = sm.tmdbId ? localIds.has(String(sm.tmdbId)) : localTitlesNoId.has(sm.title);
+    if (already) return;
     const movie = {
       id: uid(),
       title: sm.title,
@@ -1530,13 +1550,22 @@ function CineEloApp() {
           const res = await fetch(`${syncUrl}?action=pullHistory`);
           const data = await res.json();
           if (data && data.ok && Array.isArray(data.snapshots)) {
-            const titleToId = new Map(movies.map((m) => [m.title, m.id]));
+            // tmdbId primero (identificador primario) — title es fallback
+            // para snapshots viejos guardados antes de que tmdbId viajara en
+            // cada entrada de HISTORY, y para películas homónimas evita
+            // mapear 2 filas de historial distintas al mismo id local.
+            const idByTmdb = new Map(
+              movies.filter((m) => m.tmdbId).map((m) => [String(m.tmdbId), m.id])
+            );
+            const idByTitle = new Map(
+              movies.filter((m) => !m.tmdbId).map((m) => [m.title, m.id])
+            );
             const converted = data.snapshots
               .map((snap) => ({
                 t: snap.t,
                 ranks: snap.entries
                   .map((e) => {
-                    const id = titleToId.get(e.title);
+                    const id = (e.tmdbId && idByTmdb.get(String(e.tmdbId))) || idByTitle.get(e.title);
                     if (!id) return null;
                     return [id, e.rank, e.elo, e.tmdbId || ""];
                   })
@@ -1912,10 +1941,6 @@ function CineEloApp() {
     e.preventDefault();
     const title = newTitle.trim();
     if (!title) return;
-    if (movies.some((m) => m.title.toLowerCase() === title.toLowerCase())) {
-      setError("Esa peli ya está en la lista.");
-      return;
-    }
     setError("");
 
     let tmdbId = newTmdbId.trim();
@@ -1952,6 +1977,23 @@ function CineEloApp() {
       setTmdbLookupBusy(false);
     }
 
+    // Dedupe por tmdbId (identificador primario) recién ahora que ya lo
+    // resolvimos — así 2 películas homónimas con distinto tmdbId (ej.
+    // "Wuthering Heights" 1939 vs 2011) no se bloquean entre sí. Fallback a
+    // título exacto SOLO si ni la nueva ni ninguna existente tienen tmdbId
+    // (TMDB no encontró nada para ninguna de las dos).
+    const isDuplicate = tmdbId
+      ? movies.some((m) => String(m.tmdbId) === String(tmdbId))
+      : movies.some((m) => !m.tmdbId && m.title.toLowerCase() === title.toLowerCase());
+    if (isDuplicate) {
+      setError(
+        tmdbId
+          ? "Esa peli (mismo TMDB ID) ya está en la lista."
+          : "Esa peli ya está en la lista (sin TMDB ID para desambiguar)."
+      );
+      return;
+    }
+
     const newMovie = {
       id: uid(),
       title,
@@ -1986,7 +2028,12 @@ function CineEloApp() {
       const res = await fetch(syncUrl, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ type: "deleteMovie", title: movie.title }),
+        body: JSON.stringify({
+          type: "deleteMovie",
+          tmdbId: movie.tmdbId || "",
+          title: movie.title,
+          year: movie.year,
+        }),
       });
       const data = await res.json();
       if (!data || !data.ok) {
@@ -2305,6 +2352,8 @@ function CineEloApp() {
   // llegue al Sheet aunque se cierre la pestaña.
   const saveMovieRating = useCallback((movie, newRating) => {
     const title = movie.title;
+    const tmdbId = movie.tmdbId || "";
+    const year = movie.year;
     const changes = [];
     if (newRating !== Number(movie.rating || 0)) {
       changes.push({ col: "rating", value: newRating });
@@ -2330,9 +2379,9 @@ function CineEloApp() {
       )
     );
 
-    enqueuePendingSync({ type: "setFields", title, changes }).then((pendingId) => {
+    enqueuePendingSync({ type: "setFields", tmdbId, title, year, changes }).then((pendingId) => {
       requestBackgroundSync();
-      syncPendingItem({ type: "setFields", title, changes })
+      syncPendingItem({ type: "setFields", tmdbId, title, year, changes })
         .then((data) => {
           if (data && data.ok) removePendingSync(pendingId);
         })
@@ -4250,7 +4299,7 @@ function SummaryList({ items, render, onDuel }) {
           </button>
           <a
             className="summary-row-edit"
-            href={`edit.html?title=${encodeURIComponent(m.title)}`}
+            href={`edit.html?tmdbId=${encodeURIComponent(m.tmdbId || "")}&title=${encodeURIComponent(m.title)}`}
             target="_blank"
             rel="noreferrer"
             title="Editar esta película"
@@ -4367,7 +4416,7 @@ function RankingList({ ranking, filterText, globalRanking, projectedRating, onDu
                   </button>
                   <a
                     className="rank-edit"
-                    href={`edit.html?title=${encodeURIComponent(m.title)}`}
+                    href={`edit.html?tmdbId=${encodeURIComponent(m.tmdbId || "")}&title=${encodeURIComponent(m.title)}`}
                     target="_blank"
                     rel="noreferrer"
                     title="Editar esta película"

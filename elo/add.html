@@ -436,13 +436,27 @@
   }
 
   function syncPendingItem(item) {
+    // Esta cola es compartida (misma IndexedDB "cine-elo-db") entre las 4
+    // páginas — un item "setFields"/"deleteMovie" puede haber sido encolado
+    // desde edit.html/watchlist.html y drenado desde acá si ambas pestañas
+    // están abiertas, así que este handler tiene que soportar todos los
+    // tipos igual, no solo "create".
     if (item.type === "setFields") {
       return fetchJsonWithRetry(
         SYNC_URL +
-          "?action=setFields&title=" + encodeURIComponent(item.title) +
+          "?action=setFields&tmdbId=" + encodeURIComponent(item.tmdbId || "") +
+          "&title=" + encodeURIComponent(item.title || "") +
+          "&year=" + encodeURIComponent(item.year || "") +
           "&changes=" + encodeURIComponent(JSON.stringify(item.changes)),
         {}
       );
+    }
+    if (item.type === "deleteMovie") {
+      return fetchJsonWithRetry(SYNC_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ type: "deleteMovie", tmdbId: item.tmdbId || "", title: item.title, year: item.year }),
+      });
     }
     if (item.type === "create") {
       return fetchJsonWithRetry(SYNC_URL + "?allowCreate=1", {
@@ -650,7 +664,12 @@
     // por la inestabilidad de Apps Script) pasa en segundo plano, sin que
     // el usuario tenga que esperarlo.
     var localMovies = readLocalMovies() || [];
-    var existingIdx = localMovies.findIndex(function (m) { return m.title === current.title; });
+    // tmdbId es el identificador primario: dos pelis homónimas con distinto
+    // tmdbId (ej. "Wuthering Heights" 1939 vs 2011) no deben pisarse entre
+    // sí. Fallback a título exacto solo si ninguna de las dos tiene tmdbId.
+    var existingIdx = current.tmdbId
+      ? localMovies.findIndex(function (m) { return String(m.tmdbId) === String(current.tmdbId); })
+      : localMovies.findIndex(function (m) { return !m.tmdbId && m.title === current.title; });
     var localMovie = {
       id: existingIdx !== -1 ? localMovies[existingIdx].id : uid(),
       title: current.title,

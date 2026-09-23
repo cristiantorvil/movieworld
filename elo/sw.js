@@ -48,10 +48,15 @@ function idbRemove(id) {
 }
 
 function syncItem(item) {
+  // tmdbId es el identificador primario en el backend (title+year quedan de
+  // fallback ahí) — items viejos ya en IndexedDB sin tmdbId simplemente
+  // mandan "" acá, que el backend interpreta como "no viene id".
   if (item.type === "setFields") {
     return fetch(
       SYNC_URL +
-        "?action=setFields&title=" + encodeURIComponent(item.title) +
+        "?action=setFields&tmdbId=" + encodeURIComponent(item.tmdbId || "") +
+        "&title=" + encodeURIComponent(item.title || "") +
+        "&year=" + encodeURIComponent(item.year || "") +
         "&changes=" + encodeURIComponent(JSON.stringify(item.changes))
     ).then(function (r) { return r.json(); });
   }
@@ -66,7 +71,7 @@ function syncItem(item) {
     return fetch(SYNC_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ type: "deleteMovie", title: item.title }),
+      body: JSON.stringify({ type: "deleteMovie", tmdbId: item.tmdbId || "", title: item.title, year: item.year }),
     }).then(function (r) { return r.json(); });
   }
   return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));

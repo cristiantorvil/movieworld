@@ -11,7 +11,7 @@ function doPost(e) {
     }
 
     if (data && data.type === 'deleteMovie') {
-      return handleDeleteMovie(data.title);
+      return handleDeleteMovie(data.tmdbId || '', data.title || '', data.year || '', data.row || null);
     }
 
     if (data && data.type === 'tmdbMatchBatch') {
@@ -50,6 +50,8 @@ function doPost(e) {
     var header = values[0];
 
     var titleCol = header.indexOf('movie');
+    var idCol = header.indexOf('id');
+    var yearColBatch = header.indexOf('year');
     var eloCol = header.indexOf('elo_rating');
     var gamesCol = header.indexOf('elo_games');
     var winCol = header.indexOf('elo_win');
@@ -81,9 +83,22 @@ function doPost(e) {
       { col: header.indexOf('imdb_id'), key: 'imdbId' },
     ].filter(function (f) { return f.col > -1; });
 
-    var titleToRow = {};
+    // Índice primario por tmdbId (columna `id`); título+año queda como
+    // fallback SOLO para las filas que todavía no tienen tmdbId asignado
+    // (watchlist agregada a mano, nunca matcheada a TMDB) — nunca por
+    // título solo, que es justo lo que pisaba filas homónimas entre sí
+    // (dos "Wuthering Heights" con años distintos se resolvían siempre a
+    // la misma fila porque `titleToRow` solo podía quedarse con una).
+    var idToRow = {};
+    var titleYearToRow = {};
     for (var i = 1; i < values.length; i++) {
-      titleToRow[values[i][titleCol]] = i + 1;
+      var rowId = idCol > -1 ? String(values[i][idCol] || '').trim() : '';
+      if (rowId) {
+        idToRow[rowId] = i + 1;
+      } else {
+        var rowYear = yearColBatch > -1 ? String(values[i][yearColBatch] || '') : '';
+        titleYearToRow[values[i][titleCol] + '|' + rowYear] = i + 1;
+      }
     }
 
     var updated = [];
@@ -101,7 +116,14 @@ function doPost(e) {
     // add.html, etc.) fallaran en cadena con "La Sheet está ocupada".
     var newRows = [];
     var newTitles = [];
-    var pendingIndex = {}; // título -> índice en newRows, para no duplicar de alta un mismo título repetido dentro del mismo batch
+    // key = tmdbId (si el item lo trae) o title|year (fallback) -> índice en
+    // newRows, para no duplicar de alta la misma peli repetida en un batch.
+    var pendingIndex = {};
+
+    function keyForItem(item) {
+      var id = String(item.tmdbId || '').trim();
+      return id ? ('id:' + id) : ('title:' + item.title + '|' + (item.year || ''));
+    }
 
     function buildNewRow(item) {
       var row = new Array(header.length).fill('');
@@ -118,20 +140,22 @@ function doPost(e) {
     }
 
     items.forEach(function (item) {
-      var rowIndex = titleToRow[item.title];
+      var itemId = String(item.tmdbId || '').trim();
+      var rowIndex = itemId ? idToRow[itemId] : titleYearToRow[item.title + '|' + (item.year || '')];
 
       if (!rowIndex) {
         if (!allowCreate) {
           skipped.push(item.title);
           return;
         }
-        if (pendingIndex.hasOwnProperty(item.title)) {
-          // Mismo título repetido dos veces en este batch: nos quedamos con
+        var key = keyForItem(item);
+        if (pendingIndex.hasOwnProperty(key)) {
+          // Misma peli repetida dos veces en este batch: nos quedamos con
           // la versión más nueva en vez de encolar una fila de más.
-          newRows[pendingIndex[item.title]] = buildNewRow(item);
+          newRows[pendingIndex[key]] = buildNewRow(item);
           return;
         }
-        pendingIndex[item.title] = newRows.length;
+        pendingIndex[key] = newRows.length;
         newRows.push(buildNewRow(item));
         newTitles.push(item.title);
         return;
@@ -203,25 +227,26 @@ function handleDebugSheet(name) {
 // protecciones (de rango y de la hoja entera), filtros y filas
 // congeladas — cualquiera de esas cosas puede bloquear una escritura sin
 // que Apps Script tire una excepción capturable.
-function handleDiagnoseRow(title) {
+function handleDiagnoseRow(tmdbId, title, year) {
   try {
-    if (!title) {
+    if (!tmdbId && !title) {
       return ContentService.createTextOutput(
-        JSON.stringify({ ok: false, error: 'Falta title.' })
+        JSON.stringify({ ok: false, error: 'Falta tmdbId o title.' })
       ).setMimeType(ContentService.MimeType.JSON);
     }
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
     var values = sheet.getDataRange().getValues();
-    var titleCol = values[0].indexOf('movie');
-    var rowIndex = -1;
-    for (var i = 1; i < values.length; i++) {
-      if (String(values[i][titleCol]) === title) { rowIndex = i; break; }
-    }
-    if (rowIndex === -1) {
+    var header = values[0];
+    var found = findMovieRowByTmdbId_(values, header, tmdbId, title, year);
+    if (found.rowIndex === -1) {
       return ContentService.createTextOutput(
-        JSON.stringify({ ok: false, error: 'No se encontró "' + title + '" en la Sheet.' })
+        JSON.stringify({
+          ok: false,
+          error: movieNotFoundError_(found, tmdbId, title, year),
+        })
       ).setMimeType(ContentService.MimeType.JSON);
     }
+    var rowIndex = found.rowIndex;
     var sheetRow = rowIndex + 1;
 
     var sheetProtections = sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET);
@@ -302,7 +327,14 @@ function handleCreateSheet(data) {
   }
 }
 
-function handleDeleteMovie(title) {
+// `row` (opcional, 1-based, número real de fila de la Sheet) es un
+// escape hatch de administración para el caso en que 2 filas comparten
+// tmdbId Y title Y year (duplicado real de datos, ej. "A Summer's Tale" con
+// apóstrofe recto vs. tipográfico) — ahí ni tmdbId ni title+year alcanzan
+// para desambiguar, así que se apunta directo a la fila ya identificada a
+// mano (ej. vía findDuplicateTmdbIds). No lo usa ningún cliente, solo yo
+// desde curl para limpiezas puntuales.
+function handleDeleteMovie(tmdbId, title, year, row) {
   // Confirmado en producción: sin lock, dos ejecuciones concurrentes de
   // este script (cada vez más probables desde que hay sync en segundo
   // plano, Background Sync y un refresco automático cada 20s desde varias
@@ -320,9 +352,9 @@ function handleDeleteMovie(title) {
     ).setMimeType(ContentService.MimeType.JSON);
   }
   try {
-    if (!title) {
+    if (!tmdbId && !title && !row) {
       return ContentService.createTextOutput(
-        JSON.stringify({ ok: false, error: 'Falta el título a borrar.' })
+        JSON.stringify({ ok: false, error: 'Falta tmdbId, title o row a borrar.' })
       ).setMimeType(ContentService.MimeType.JSON);
     }
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
@@ -336,17 +368,47 @@ function handleDeleteMovie(title) {
     var filter = sheet.getFilter();
     if (filter) filter.remove();
 
+    // Borrado por `row`: BUG YA CORREGIDO — antes esto reusaba el loop de
+    // reintentos de abajo, que en cada vuelta releía `row` como índice fijo
+    // y volvía a borrar esa MISMA posición, que después de la primera vez
+    // ya era una fila distinta (todo lo de abajo se corre para arriba) —
+    // terminaba borrando 4 filas en cascada en vez de 1. Acá es un intento
+    // único: se lee el contenido de esa fila ANTES de borrar (para
+    // devolverlo y poder confirmar a ojo qué se borró) y se borra una sola
+    // vez, sin loop.
+    if (row) {
+      var valuesForRow = sheet.getDataRange().getValues();
+      var titleColForRow = valuesForRow[0].indexOf('movie');
+      var idColForRow = valuesForRow[0].indexOf('id');
+      var yearColForRow = valuesForRow[0].indexOf('year');
+      var rowIdx = row - 1;
+      if (rowIdx < 1 || rowIdx >= valuesForRow.length) {
+        return ContentService.createTextOutput(
+          JSON.stringify({ ok: false, error: 'Fila ' + row + ' fuera de rango.' })
+        ).setMimeType(ContentService.MimeType.JSON);
+      }
+      var deletedRow = {
+        row: row,
+        title: valuesForRow[rowIdx][titleColForRow],
+        year: valuesForRow[rowIdx][yearColForRow],
+        tmdbId: valuesForRow[rowIdx][idColForRow],
+      };
+      sheet.deleteRow(row);
+      SpreadsheetApp.flush();
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: true, deletedRow: deletedRow })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
     // Además, releemos la Sheet después de cada intento y solo contestamos
-    // "ok" cuando el título de verdad ya no aparece — si sigue, reintentamos
+    // "ok" cuando la fila de verdad ya no aparece — si sigue, reintentamos
     // unas veces antes de rendirnos con un error real en vez de un falso
     // positivo (red de contención por si hay otra causa además del filtro).
     for (var attempt = 0; attempt < 4; attempt++) {
       var values = sheet.getDataRange().getValues();
-      var titleCol = values[0].indexOf('movie');
-      var rowIndex = -1;
-      for (var i = 1; i < values.length; i++) {
-        if (String(values[i][titleCol]) === title) { rowIndex = i; break; }
-      }
+      var header = values[0];
+      var found = findMovieRowByTmdbId_(values, header, tmdbId, title, year);
+      var rowIndex = found.rowIndex;
       if (rowIndex === -1) {
         // Ya no está — sea porque este mismo intento recién la borró, o
         // porque ya no estaba desde antes de este pedido (doble click,
@@ -358,8 +420,16 @@ function handleDeleteMovie(title) {
         // borrado optimista al ver ok:false (ver watchlist.html) interpreta
         // como "no se pudo borrar" y la vuelve a mostrar en un loop, aunque
         // la peli ya no esté — nunca vuelve a estar "ya borrada" en éxito.
+        // Excepción: `ambiguous` sí es un error real — hay 2+ filas
+        // candidatas (mismo tmdbId duplicado, o mismo title+year sin
+        // tmdbId), sería una apuesta a ciegas borrar cualquiera de las dos.
+        if (found.ambiguous) {
+          return ContentService.createTextOutput(
+            JSON.stringify({ ok: false, error: movieNotFoundError_(found, tmdbId, title, year) + ' No se borra ninguna.' })
+          ).setMimeType(ContentService.MimeType.JSON);
+        }
         return ContentService.createTextOutput(
-          JSON.stringify({ ok: true, deleted: title })
+          JSON.stringify({ ok: true, deleted: tmdbId || title })
         ).setMimeType(ContentService.MimeType.JSON);
       }
       sheet.deleteRow(rowIndex + 1);
@@ -435,13 +505,30 @@ function doGet(e) {
     return handleTmdbSearchWide(e.parameter.query || '', e.parameter.year || '');
   }
   if (e && e.parameter && e.parameter.action === 'fixTmdbMatch') {
-    return handleFixTmdbMatch(e.parameter.title || '', e.parameter.newId || '');
+    return handleFixTmdbMatch(
+      e.parameter.tmdbId || '',
+      e.parameter.newId || '',
+      e.parameter.title || '',
+      e.parameter.year || '',
+      e.parameter.row ? Number(e.parameter.row) : null
+    );
   }
   if (e && e.parameter && e.parameter.action === 'setField') {
-    return handleSetField(e.parameter.title || '', e.parameter.col || '', e.parameter.value || '');
+    return handleSetField(
+      e.parameter.tmdbId || '',
+      e.parameter.col || '',
+      e.parameter.value || '',
+      e.parameter.title || '',
+      e.parameter.year || ''
+    );
   }
   if (e && e.parameter && e.parameter.action === 'setFields') {
-    return handleSetFields(e.parameter.title || '', e.parameter.changes || '[]');
+    return handleSetFields(
+      e.parameter.tmdbId || '',
+      e.parameter.changes || '[]',
+      e.parameter.title || '',
+      e.parameter.year || ''
+    );
   }
   if (e && e.parameter && e.parameter.action === 'searchMovies') {
     return handleSearchMovies(e.parameter.query || '');
@@ -462,7 +549,13 @@ function doGet(e) {
     return handleDebugSheet(e.parameter.name || '');
   }
   if (e && e.parameter && e.parameter.action === 'diagnoseRow') {
-    return handleDiagnoseRow(e.parameter.title || '');
+    return handleDiagnoseRow(e.parameter.tmdbId || '', e.parameter.title || '', e.parameter.year || '');
+  }
+  if (e && e.parameter && e.parameter.action === 'cleanTitleYearSuffix') {
+    return handleCleanTitleYearSuffix(e.parameter.dryRun === 'true');
+  }
+  if (e && e.parameter && e.parameter.action === 'findDuplicateTmdbIds') {
+    return handleFindDuplicateTmdbIds();
   }
   if (e && e.parameter && e.parameter.action === 'addColumns') {
     try {
@@ -1151,6 +1244,87 @@ function _prepararHojaAuditoria_() {
   sheet.getRange(1, 1, 1, 13).setFontWeight('bold');
 }
 
+// Identificador primario de una fila de MOVIES: tmdbId (columna `id`). Si no
+// hay tmdbId (fila vieja, todavía sin matchear a TMDB), cae a title+year —
+// nunca a título solo, porque eso es justo lo que rompía con películas
+// homónimas (ej. "Wuthering Heights" 1939/1992/2011): dos filas con el mismo
+// título pisándose en cualquier búsqueda/edición/borrado por texto exacto.
+// `values`/`header` ya leídos por el caller (evita releer la Sheet acá).
+// Devuelve { rowIndex, matchedBy } (rowIndex = índice en `values`, no fila de
+// sheet — sumar 1 para sheetRow) o { rowIndex: -1 } si no encuentra nada, o
+// { rowIndex: -1, ambiguous: true } si el fallback title+year tiene más de un
+// candidato (no arriesga un match a ciegas).
+function findMovieRowByTmdbId_(values, header, tmdbId, fallbackTitle, fallbackYear) {
+  var idCol = header.indexOf('id');
+  var titleCol = header.indexOf('movie');
+  var yearCol = header.indexOf('year');
+
+  var id = String(tmdbId || '').trim();
+  if (id && idCol > -1) {
+    var idMatches = [];
+    for (var i = 1; i < values.length; i++) {
+      if (String(values[i][idCol] || '').trim() === id) idMatches.push(i);
+    }
+    if (idMatches.length === 1) {
+      return { rowIndex: idMatches[0], matchedBy: 'tmdbId' };
+    }
+    if (idMatches.length > 1) {
+      // Confirmado en producción (ver findDuplicateTmdbIds/incidente
+      // "Roof Sex"): dos filas distintas a veces terminan con el mismo
+      // tmdbId por error. Si el caller también mandó title+year, lo usamos
+      // para desempatar entre las filas candidatas en vez de operar a
+      // ciegas sobre la primera.
+      if (fallbackTitle) {
+        var narrowed = idMatches.filter(function (idx) {
+          var titleOk = String(values[idx][titleCol]) === String(fallbackTitle);
+          var yearOk = !fallbackYear || yearCol === -1 ||
+            String(values[idx][yearCol] || '') === String(fallbackYear);
+          return titleOk && yearOk;
+        });
+        if (narrowed.length === 1) {
+          return { rowIndex: narrowed[0], matchedBy: 'tmdbId+title+year' };
+        }
+      }
+      return { rowIndex: -1, ambiguous: true, duplicateTmdbId: true, duplicateRows: idMatches.map(function (idx) { return idx + 1; }) };
+    }
+    // tmdbId presente pero no encontrado: no caemos a título automáticamente
+    // acá — eso escondería un tmdbId viejo/inválido detrás de un match por
+    // texto potencialmente equivocado si hay 2 pelis con ese título.
+  }
+
+  if (!id && fallbackTitle) {
+    var title = String(fallbackTitle);
+    var year = fallbackYear != null && fallbackYear !== '' ? String(fallbackYear) : null;
+    var candidate = -1;
+    for (var j = 1; j < values.length; j++) {
+      if (String(values[j][titleCol]) !== title) continue;
+      if (year && yearCol > -1 && String(values[j][yearCol] || '') !== year) continue;
+      if (candidate !== -1) {
+        return { rowIndex: -1, ambiguous: true };
+      }
+      candidate = j;
+    }
+    if (candidate !== -1) return { rowIndex: candidate, matchedBy: 'title+year' };
+  }
+
+  return { rowIndex: -1 };
+}
+
+// Mensaje de error compartido por los 5 handlers que usan
+// findMovieRowByTmdbId_ — distingue el caso de tmdbId duplicado (dato roto
+// en la Sheet, requiere revisión manual) del caso de título+año ambiguo sin
+// tmdbId, del caso de simplemente no encontrar nada.
+function movieNotFoundError_(found, tmdbId, title, year) {
+  if (found.duplicateTmdbId) {
+    return 'tmdbId="' + tmdbId + '" está repetido en ' + found.duplicateRows.length +
+      ' filas de la Sheet (filas ' + found.duplicateRows.join(', ') + ') y title/year no alcanzó para desambiguar — revisar a mano.';
+  }
+  if (found.ambiguous) {
+    return 'Más de una fila matchea "' + title + '" (' + year + ') sin tmdbId para desambiguar.';
+  }
+  return 'No se encontró tmdbId="' + tmdbId + '" / title="' + title + '" en la Sheet.';
+}
+
 function _normTitle_(t) {
   return String(t || '')
     .toLowerCase()
@@ -1668,7 +1842,7 @@ function handleSearchMovies(query) {
 
 // Setter genérico de una sola celda por título exacto — para revertir a
 // mano un campo que un fix automático (fixTmdbMatch, etc.) pisó de más.
-function handleSetField(title, col, value) {
+function handleSetField(tmdbId, col, value, title, year) {
   // Ver el comentario en handleDeleteMovie: sin lock+flush, una escritura
   // acá puede perderse en silencio si otra ejecución concurrente del
   // script pisa la Sheet al mismo tiempo (cada vez más probable con sync
@@ -1682,9 +1856,9 @@ function handleSetField(title, col, value) {
     ).setMimeType(ContentService.MimeType.JSON);
   }
   try {
-    if (!title || !col) {
+    if ((!tmdbId && !title) || !col) {
       return ContentService.createTextOutput(
-        JSON.stringify({ ok: false, error: 'Faltan title o col.' })
+        JSON.stringify({ ok: false, error: 'Faltan tmdbId/title o col.' })
       ).setMimeType(ContentService.MimeType.JSON);
     }
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
@@ -1694,26 +1868,26 @@ function handleSetField(title, col, value) {
     if (filter) filter.remove();
     var values = sheet.getDataRange().getValues();
     var header = values[0];
-    var titleCol = header.indexOf('movie');
     var colIdx = header.indexOf(col);
     if (colIdx === -1) {
       return ContentService.createTextOutput(
         JSON.stringify({ ok: false, error: 'No existe la columna "' + col + '".' })
       ).setMimeType(ContentService.MimeType.JSON);
     }
-    var rowIndex = -1;
-    for (var i = 1; i < values.length; i++) {
-      if (String(values[i][titleCol]) === title) { rowIndex = i; break; }
-    }
-    if (rowIndex === -1) {
+    var found = findMovieRowByTmdbId_(values, header, tmdbId, title, year);
+    if (found.rowIndex === -1) {
       return ContentService.createTextOutput(
-        JSON.stringify({ ok: false, error: 'No se encontró "' + title + '" en la Sheet.' })
+        JSON.stringify({
+          ok: false,
+          error: movieNotFoundError_(found, tmdbId, title, year),
+        })
       ).setMimeType(ContentService.MimeType.JSON);
     }
+    var rowIndex = found.rowIndex;
     sheet.getRange(rowIndex + 1, colIdx + 1).setValue(value);
     SpreadsheetApp.flush();
     return ContentService.createTextOutput(
-      JSON.stringify({ ok: true, title: title, col: col, value: value })
+      JSON.stringify({ ok: true, tmdbId: tmdbId, title: title, col: col, value: value })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(
@@ -1730,7 +1904,7 @@ function handleSetField(title, col, value) {
 // guardaba antes con una llamada a setField por campo cambiado, y con eso un
 // guardado de 3 campos (ej. rating + veces vista + elo inicial) tardaba
 // 10-12s en vez de los ~3-4s de una sola lectura de la Sheet.
-function handleSetFields(title, changesJson) {
+function handleSetFields(tmdbId, changesJson, title, year) {
   // Ver el comentario en handleDeleteMovie: sin lock+flush, una escritura
   // acá puede perderse en silencio si otra ejecución concurrente del
   // script pisa la Sheet al mismo tiempo (cada vez más probable con sync
@@ -1744,9 +1918,9 @@ function handleSetFields(title, changesJson) {
     ).setMimeType(ContentService.MimeType.JSON);
   }
   try {
-    if (!title) {
+    if (!tmdbId && !title) {
       return ContentService.createTextOutput(
-        JSON.stringify({ ok: false, error: 'Falta title.' })
+        JSON.stringify({ ok: false, error: 'Faltan tmdbId o title.' })
       ).setMimeType(ContentService.MimeType.JSON);
     }
     var changes;
@@ -1770,16 +1944,16 @@ function handleSetFields(title, changesJson) {
     if (filter) filter.remove();
     var values = sheet.getDataRange().getValues();
     var header = values[0];
-    var titleCol = header.indexOf('movie');
-    var rowIndex = -1;
-    for (var i = 1; i < values.length; i++) {
-      if (String(values[i][titleCol]) === title) { rowIndex = i; break; }
-    }
-    if (rowIndex === -1) {
+    var found = findMovieRowByTmdbId_(values, header, tmdbId, title, year);
+    if (found.rowIndex === -1) {
       return ContentService.createTextOutput(
-        JSON.stringify({ ok: false, error: 'No se encontró "' + title + '" en la Sheet.' })
+        JSON.stringify({
+          ok: false,
+          error: movieNotFoundError_(found, tmdbId, title, year),
+        })
       ).setMimeType(ContentService.MimeType.JSON);
     }
+    var rowIndex = found.rowIndex;
 
     var applied = [];
     var failed = [];
@@ -1806,11 +1980,20 @@ function handleSetFields(title, changesJson) {
   }
 }
 
-function handleFixTmdbMatch(title, newId) {
+// Identificamos la fila por el tmdbId VIEJO que el cliente ya tiene cargado
+// (el que se está corrigiendo) — con title+year como fallback solo para
+// filas que nunca tuvieron ningún tmdbId. Nunca por título solo: sería
+// ambiguo con películas homónimas, y es justo el tipo de match que esta
+// función existe para arreglar, no para repetir.
+// `row` (opcional, 1-based) — mismo escape hatch de administración que
+// handleDeleteMovie, para el caso de 2 filas con tmdbId Y title Y year
+// compartidos (ej. 2 películas DISTINTAS que terminaron con el mismo tmdbId
+// por error: ahí ni siquiera title+year alcanza para saber cuál corregir).
+function handleFixTmdbMatch(tmdbId, newId, title, year, row) {
   try {
-    if (!title || !newId) {
+    if ((!tmdbId && !title && !row) || !newId) {
       return ContentService.createTextOutput(
-        JSON.stringify({ ok: false, error: 'Faltan title o newId.' })
+        JSON.stringify({ ok: false, error: 'Faltan tmdbId/title/row o newId.' })
       ).setMimeType(ContentService.MimeType.JSON);
     }
     var apiKey = getTmdbApiKey_();
@@ -1823,15 +2006,18 @@ function handleFixTmdbMatch(title, newId) {
     var values = sheet.getDataRange().getValues();
     var header = values[0];
     var titleCol = header.indexOf('movie');
-    var rowIndex = -1;
-    for (var i = 1; i < values.length; i++) {
-      if (String(values[i][titleCol]) === title) { rowIndex = i; break; }
-    }
-    if (rowIndex === -1) {
+    var found = row
+      ? { rowIndex: row - 1 <= values.length - 1 ? row - 1 : -1 }
+      : findMovieRowByTmdbId_(values, header, tmdbId, title, year);
+    if (found.rowIndex === -1) {
       return ContentService.createTextOutput(
-        JSON.stringify({ ok: false, error: 'No se encontró "' + title + '" en la Sheet.' })
+        JSON.stringify({
+          ok: false,
+          error: row ? ('Fila ' + row + ' fuera de rango.') : movieNotFoundError_(found, tmdbId, title, year),
+        })
       ).setMimeType(ContentService.MimeType.JSON);
     }
+    var rowIndex = found.rowIndex;
 
     var detUrl = 'https://api.themoviedb.org/3/movie/' + encodeURIComponent(newId) +
       '?api_key=' + encodeURIComponent(apiKey) + '&language=en-US';
@@ -1885,12 +2071,16 @@ function handleFixTmdbMatch(title, newId) {
     // (poster/director/etc), así que corregir un match mal hecho (ej. un
     // título de watchlist que había matcheado con la peli equivocada) dejaba
     // el nombre viejo e incorrecto aunque el ID de TMDB ya estuviera bien.
-    if (d.title && d.title !== title && titleCol > -1) {
+    // Comparamos contra el título ACTUAL de la fila (no el `title` que
+    // mandó el cliente, que ahora puede venir vacío si identificó la fila
+    // solo por tmdbId) para no reescribirlo en cada resync sin necesidad.
+    var currentTitle = titleCol > -1 ? String(values[rowIndex][titleCol] || '') : '';
+    if (d.title && d.title !== currentTitle && titleCol > -1) {
       sheet.getRange(rowIndex + 1, titleCol + 1).setValue(d.title);
     }
 
     return ContentService.createTextOutput(
-      JSON.stringify({ ok: true, title: title, newTitle: d.title, applied: applied })
+      JSON.stringify({ ok: true, tmdbId: newId, oldTmdbId: tmdbId, title: currentTitle, newTitle: d.title, applied: applied })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(
@@ -2300,14 +2490,116 @@ function handlePullTitles() {
     var header = values[0];
     var titleCol = header.indexOf('movie');
     var yearCol = header.indexOf('year');
+    var idCol = header.indexOf('id');
     var result = [];
     for (var i = 1; i < values.length; i++) {
       var title = values[i][titleCol];
       if (!title) continue;
-      result.push({ title: String(title), year: yearCol > -1 ? values[i][yearCol] : '' });
+      result.push({
+        title: String(title),
+        year: yearCol > -1 ? values[i][yearCol] : '',
+        // tmdbId: dedupe autoritativo para el importador de watchlist.html —
+        // el title+year de arriba es solo un pre-filtro barato, no siempre
+        // alcanza (dos años levemente distintos para la misma peli real).
+        id: idCol > -1 ? String(values[i][idCol] || '') : '',
+      });
     }
     return ContentService.createTextOutput(
       JSON.stringify({ ok: true, titles: result })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Limpieza one-off: saca cualquier sufijo " (AÑO)" pegado al final del
+// título en MOVIES — workaround manual de cuando el título era la única
+// forma de desambiguar películas homónimas (ya no hace falta con tmdbId
+// como identificador primario). En loop porque se confirmó al menos un caso
+// con el sufijo duplicado dos veces ("... (2004) (2004)"). dryRun=true solo
+// reporta los cambios sin escribir — correr así primero siempre.
+function handleCleanTitleYearSuffix(dryRun) {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var values = sheet.getDataRange().getValues();
+    var header = values[0];
+    var titleCol = header.indexOf('movie');
+    var yearCol = header.indexOf('year');
+    var SUFFIX_RE = /\s*\(\d{4}\)\s*$/;
+
+    var changes = [];
+    var column = [];
+    for (var i = 1; i < values.length; i++) {
+      var raw = String(values[i][titleCol] || '');
+      var cleaned = raw;
+      while (SUFFIX_RE.test(cleaned)) {
+        cleaned = cleaned.replace(SUFFIX_RE, '');
+      }
+      cleaned = cleaned.trim();
+      if (cleaned !== raw && cleaned) {
+        changes.push({
+          row: i + 1,
+          before: raw,
+          after: cleaned,
+          year: yearCol > -1 ? values[i][yearCol] : null,
+        });
+      }
+      column.push([cleaned || raw]);
+    }
+
+    if (!dryRun && changes.length > 0) {
+      sheet.getRange(2, titleCol + 1, column.length, 1).setValues(column);
+      SpreadsheetApp.flush();
+    }
+
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, dryRun: !!dryRun, changedCount: changes.length, changes: changes })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Solo-lectura: agrupa MOVIES por tmdbId y devuelve los que se repiten en
+// más de una fila. Verificación previa a confiar en tmdbId como identificador
+// primario — ya hubo un incidente real (ver undoRoofSexMistake más arriba)
+// de un fix automático que matcheaba solo por tmdbId y pisó una fila
+// distinta porque dos filas locales compartían el mismo id por error. No
+// corrige nada solo, solo reporta para revisión manual.
+function handleFindDuplicateTmdbIds() {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var values = sheet.getDataRange().getValues();
+    var header = values[0];
+    var titleCol = header.indexOf('movie');
+    var yearCol = header.indexOf('year');
+    var idCol = header.indexOf('id');
+    if (idCol === -1) {
+      return ContentService.createTextOutput(
+        JSON.stringify({ ok: false, error: 'No existe la columna "id".' })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    var byId = {};
+    for (var i = 1; i < values.length; i++) {
+      var id = String(values[i][idCol] || '').trim();
+      if (!id) continue;
+      if (!byId[id]) byId[id] = [];
+      byId[id].push({
+        row: i + 1,
+        title: String(values[i][titleCol] || ''),
+        year: yearCol > -1 ? values[i][yearCol] : null,
+      });
+    }
+    var duplicates = Object.keys(byId)
+      .filter(function (id) { return byId[id].length > 1; })
+      .map(function (id) { return { tmdbId: id, rows: byId[id] }; });
+
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: true, duplicateCount: duplicates.length, duplicates: duplicates })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(

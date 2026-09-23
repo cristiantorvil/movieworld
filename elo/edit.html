@@ -519,12 +519,24 @@
   }
 
   function syncPendingItem(item) {
+    // Cola compartida (misma IndexedDB "cine-elo-db") entre las 4 páginas —
+    // soporta todos los tipos, no solo los que encola esta página, por si
+    // se drena acá un item que vino de otra pestaña.
     if (item.type === "setFields") {
       return fetchJsonWithRetry(
         SYNC_URL +
-          "?action=setFields&title=" + encodeURIComponent(item.title) +
+          "?action=setFields&tmdbId=" + encodeURIComponent(item.tmdbId || "") +
+          "&title=" + encodeURIComponent(item.title || "") +
+          "&year=" + encodeURIComponent(item.year || "") +
           "&changes=" + encodeURIComponent(JSON.stringify(item.changes))
       );
+    }
+    if (item.type === "deleteMovie") {
+      return fetch(SYNC_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ type: "deleteMovie", tmdbId: item.tmdbId || "", title: item.title, year: item.year }),
+      }).then(function (r) { return r.json(); });
     }
     if (item.type === "create") {
       return fetch(SYNC_URL + "?allowCreate=1", {
@@ -883,8 +895,14 @@
     resyncStatus.textContent = "Trayendo datos de TMDB…";
     resyncStatus.className = "field-status";
     fetchJsonWithRetry(
+      // Identificamos la fila por el tmdbId VIEJO que ya teníamos cargado
+      // (current.tmdbId, no el valor del input que puede venir editado a
+      // mano con el id correcto) — title/year quedan de fallback para una
+      // fila que todavía no tenía ningún tmdbId.
       SYNC_URL +
-        "?action=fixTmdbMatch&title=" + encodeURIComponent(current.title) +
+        "?action=fixTmdbMatch&tmdbId=" + encodeURIComponent(current.tmdbId || "") +
+        "&title=" + encodeURIComponent(current.title) +
+        "&year=" + encodeURIComponent(current.year || "") +
         "&newId=" + encodeURIComponent(newId)
     )
       .then(function (data) {
@@ -974,6 +992,8 @@
     }
 
     var title = current.title;
+    var tmdbId = current.tmdbId || "";
+    var year = current.year;
 
     // Local-first, igual que los duelos: guardamos ya mismo en el mismo
     // localStorage que usa index.html (así la próxima búsqueda ve el
@@ -981,7 +1001,11 @@
     // mostramos "Guardado ✓" de una — la sincronización real al Sheet pasa
     // en segundo plano, sin bloquear ni frenar a este usuario.
     if (moviesIndexCache) {
-      var idx = moviesIndexCache.findIndex(function (m) { return m.title === title; });
+      // tmdbId primero: dos pelis homónimas en la cache local no deben
+      // pisarse (ej. "Wuthering Heights" 1939 vs 2011).
+      var idx = tmdbId
+        ? moviesIndexCache.findIndex(function (m) { return String(m.tmdbId) === String(tmdbId); })
+        : moviesIndexCache.findIndex(function (m) { return !m.tmdbId && m.title === title; });
       if (idx !== -1) {
         changes.forEach(function (c) {
           var key = COL_TO_LOCAL_KEY[c.col];
@@ -1011,9 +1035,9 @@
     // la página, el cambio sigue anotado en IndexedDB. requestBackgroundSync
     // hace que el navegador lo reintente solo en cuanto haya conexión,
     // aunque se cierren todas las pestañas de Cine Elo.
-    enqueuePendingSync({ type: "setFields", title: title, changes: changes }).then(function (pendingId) {
+    enqueuePendingSync({ type: "setFields", tmdbId: tmdbId, title: title, year: year, changes: changes }).then(function (pendingId) {
       requestBackgroundSync();
-      syncPendingItem({ type: "setFields", title: title, changes: changes })
+      syncPendingItem({ type: "setFields", tmdbId: tmdbId, title: title, year: year, changes: changes })
         .then(function (data) {
           if (data && data.ok) removePendingSync(pendingId);
         })
@@ -1023,22 +1047,30 @@
     });
   };
 
-  // Si llegamos con ?title=... (ej. desde un link "editar" en Cine Elo),
-  // buscamos ese título y, si hay un match exacto, lo seleccionamos de una
-  // en vez de obligar a tipear y hacer click.
+  // Si llegamos con ?tmdbId=...&title=... (ej. desde un link "editar" en
+  // Cine Elo), seleccionamos esa fila exacta de una en vez de obligar a
+  // tipear y hacer click. tmdbId primero (identificador primario, no
+  // ambiguo entre pelis homónimas); title queda de fallback para links
+  // viejos o marcadores guardados sin tmdbId en la URL.
   function autoSelectFromUrl() {
     var params = new URLSearchParams(window.location.search);
+    var wantedTmdbId = params.get("tmdbId");
     var wantedTitle = params.get("title");
-    if (!wantedTitle) {
+    if (!wantedTmdbId && !wantedTitle) {
       searchInput.focus();
       return;
     }
-    searchInput.value = wantedTitle;
+    searchInput.value = wantedTitle || "";
     hintEl.textContent = "Buscando…";
     getMoviesIndex()
       .then(function (movies) {
-        var results = filterMovies(movies, wantedTitle);
-        var exact = results.find(function (r) { return r.title === wantedTitle; });
+        var exact = wantedTmdbId
+          ? movies.find(function (r) { return String(r.tmdbId) === String(wantedTmdbId); })
+          : null;
+        var results = wantedTitle ? filterMovies(movies, wantedTitle) : [];
+        if (!exact && wantedTitle) {
+          exact = results.find(function (r) { return r.title === wantedTitle; });
+        }
         if (exact) {
           select(exact);
         } else {

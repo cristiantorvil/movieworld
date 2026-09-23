@@ -973,12 +973,14 @@
   function syncPendingItem(item) {
     if (item.type === "setFields") {
       return fetchJsonWithRetry(
-        SYNC_URL + "?action=setFields&title=" + encodeURIComponent(item.title) +
+        SYNC_URL + "?action=setFields&tmdbId=" + encodeURIComponent(item.tmdbId || "") +
+          "&title=" + encodeURIComponent(item.title || "") +
+          "&year=" + encodeURIComponent(item.year || "") +
           "&changes=" + encodeURIComponent(JSON.stringify(item.changes))
       );
     }
     if (item.type === "deleteMovie") {
-      return postJson({ type: "deleteMovie", title: item.title }, false);
+      return postJson({ type: "deleteMovie", tmdbId: item.tmdbId || "", title: item.title, year: item.year }, false);
     }
     return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
   }
@@ -1049,9 +1051,22 @@
   var QUICK_MODE_KEY = "cine-elo-watchlist-quick-mode";
   var quickMode = localStorage.getItem(QUICK_MODE_KEY) === "true";
 
-  function byTitle(title) {
+  // Clave de identidad compartida por películas locales Y items de la cola
+  // pendiente (ambos tienen los mismos campos tmdbId/title) — tmdbId es el
+  // identificador primario, título+"title:" queda de fallback SOLO para
+  // filas sin tmdbId asignado todavía. Se usa en TODO lo que antes
+  // indexaba/comparaba por título solo: el motor de duelos (rankingPicks,
+  // data-key de las cards, los diccionarios de elo corriendo), el render de
+  // Lista/Resumen, y el panel de edición inline. Sin esto, 2 pelis
+  // homónimas en el mismo grupo de duelo (posible con 3 "Wuthering
+  // Heights" distintas en la watchlist) eran indistinguibles al clickear,
+  // y sus deltas de elo se pisaban entre sí en el mismo diccionario.
+  function movieKey(m) {
+    return m.tmdbId ? ("id:" + m.tmdbId) : ("title:" + m.title);
+  }
+  function byKey(key) {
     for (var i = 0; i < movies.length; i++) {
-      if (movies[i].title === title) return movies[i];
+      if (movieKey(movies[i]) === key) return movies[i];
     }
     return null;
   }
@@ -1103,8 +1118,8 @@
 
   function reconcileWithPendingQueue(list) {
     return readPendingSync().then(function (queue) {
-      var deletedTitles = {};
-      var fieldsByTitle = {};
+      var deletedKeys = {};
+      var fieldsByKey = {};
       // Más viejo primero: si hay dos pendientes de setFields para la misma
       // peli (dos duelos seguidos sin sincronizar todavía), el forEach de
       // abajo va pisando f[col] en orden — con esto el último en aplicarse
@@ -1113,20 +1128,21 @@
       // (va primero, nunca pisa a uno con ts real).
       queue = queue.slice().sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
       queue.forEach(function (item) {
+        var key = movieKey(item);
         if (item.type === "deleteMovie") {
-          deletedTitles[item.title] = true;
+          deletedKeys[key] = true;
         } else if (item.type === "setFields") {
-          var f = fieldsByTitle[item.title] || (fieldsByTitle[item.title] = {});
+          var f = fieldsByKey[key] || (fieldsByKey[key] = {});
           item.changes.forEach(function (c) { f[c.col] = c.value; });
         }
       });
       return list
-        .filter(function (m) { return !deletedTitles[m.title]; })
+        .filter(function (m) { return !deletedKeys[movieKey(m)]; })
         // Un rating pendiente > 0 es "Marcar como vista": esa peli está
         // dejando de ser watchlist, mismo criterio que el borrado de arriba.
-        .filter(function (m) { var f = fieldsByTitle[m.title]; return !(f && f.rating); })
+        .filter(function (m) { var f = fieldsByKey[movieKey(m)]; return !(f && f.rating); })
         .map(function (m) {
-          var f = fieldsByTitle[m.title];
+          var f = fieldsByKey[movieKey(m)];
           if (!f) return m;
           var patched = Object.assign({}, m);
           Object.keys(SETFIELDS_COL_TO_LOCAL_KEY).forEach(function (col) {
@@ -1331,9 +1347,9 @@
       var slice = filters.rankDir === "bottom"
         ? ranking.slice(Math.max(ranking.length - filters.rankMax, 0))
         : ranking.slice(0, filters.rankMax);
-      var topTitles = {};
-      slice.forEach(function (m) { topTitles[m.title] = true; });
-      pool = pool.filter(function (m) { return topTitles[m.title]; });
+      var topKeys = {};
+      slice.forEach(function (m) { topKeys[movieKey(m)] = true; });
+      pool = pool.filter(function (m) { return topKeys[movieKey(m)]; });
     }
     if (filters.genre) {
       pool = pool.filter(function (m) {
@@ -1467,7 +1483,7 @@
     var pickedClass = pickIndex != null ? " picked" : "";
     var rankBadge = rank != null ? '<span class="rank-badge">#' + rank + "</span>" : "";
     return (
-      '<div class="duel-card' + pickedClass + '" data-title="' + escapeAttr(m.title) + '">' +
+      '<div class="duel-card' + pickedClass + '" data-key="' + escapeAttr(movieKey(m)) + '">' +
       badge +
       poster +
       rankBadge +
@@ -1493,8 +1509,9 @@
     var ranking = getRanking();
     var cardsHtml = duelGroup
       .map(function (m) {
-        var idx = rankingPicks.indexOf(m.title);
-        var rank = ranking.findIndex(function (r) { return r.title === m.title; }) + 1;
+        var key = movieKey(m);
+        var idx = rankingPicks.indexOf(key);
+        var rank = ranking.findIndex(function (r) { return movieKey(r) === key; }) + 1;
         return movieCardHtml(m, idx === -1 ? null : idx + 1, rank);
       })
       .join(isPair ? '<div class="duel-vs">VS</div>' : "");
@@ -1508,17 +1525,17 @@
     document.getElementById("skipBtn").onclick = pickGroup;
     Array.prototype.forEach.call(duelArea.querySelectorAll(".duel-card:not(.picked)"), function (card) {
       card.onclick = function () {
-        chooseInGroup(card.dataset.title);
+        chooseInGroup(card.dataset.key);
       };
     });
   }
 
-  function chooseInGroup(title) {
-    if (!duelGroup || rankingPicks.indexOf(title) !== -1) return;
-    rankingPicks.push(title);
+  function chooseInGroup(key) {
+    if (!duelGroup || rankingPicks.indexOf(key) !== -1) return;
+    rankingPicks.push(key);
     if (rankingPicks.length >= duelGroup.length - 1) {
-      var lastTitle = duelGroup.map(function (m) { return m.title; }).find(function (t) { return rankingPicks.indexOf(t) === -1; });
-      var fullOrder = lastTitle ? rankingPicks.concat([lastTitle]) : rankingPicks;
+      var lastKey = duelGroup.map(movieKey).find(function (k) { return rankingPicks.indexOf(k) === -1; });
+      var fullOrder = lastKey ? rankingPicks.concat([lastKey]) : rankingPicks;
       // Clickear rápido puede dejar un click ya en cola (ej. en la última
       // película, que este mismo pick recién completó solo) para cuando el
       // navegador recién ahora llega a procesarlo — nulear duelGroup ACÁ
@@ -1537,56 +1554,64 @@
   // cada una peor ubicada — un grupo de 4 son 6 comparaciones — y se suman
   // los deltas de elo de cada una sobre todos los pares en que participó.
   // Mismo algoritmo que resolveDuel en cine-elo.jsx.
-  function resolveGroup(orderedTitles) {
-    var ordered = orderedTitles.map(byTitle).filter(Boolean);
+  function resolveGroup(orderedKeys) {
+    var ordered = orderedKeys.map(byKey).filter(Boolean);
     if (ordered.length < 2) return;
+
+    // Todo lo de acá abajo está keyed por movieKey (tmdbId, no título) — un
+    // grupo de duelo puede tener 2 pelis homónimas (ej. 2 de las 3
+    // "Wuthering Heights" de la watchlist cayendo juntas por azar), y con
+    // título como clave sus elo/games corrían mezclados en el mismo slot.
 
     // Posición en el ranking ANTES de tocar ningún elo — para poder mostrar
     // "#viejo → #nuevo" en la pantalla de resultado.
     var oldRanking = getRanking();
-    var oldRankByTitle = {};
-    oldRanking.forEach(function (m, idx) { oldRankByTitle[m.title] = idx + 1; });
+    var oldRankByKey = {};
+    oldRanking.forEach(function (m, idx) { oldRankByKey[movieKey(m)] = idx + 1; });
 
     var eloRunning = {};
     var gamesRunning = {};
-    ordered.forEach(function (m) { eloRunning[m.title] = m.elo; gamesRunning[m.title] = m.games; });
+    ordered.forEach(function (m) { var k = movieKey(m); eloRunning[k] = m.elo; gamesRunning[k] = m.games; });
     var totalDelta = {};
     var winsAdded = {};
     var gamesAdded = {};
-    ordered.forEach(function (m) { totalDelta[m.title] = 0; winsAdded[m.title] = 0; gamesAdded[m.title] = 0; });
+    ordered.forEach(function (m) { var k = movieKey(m); totalDelta[k] = 0; winsAdded[k] = 0; gamesAdded[k] = 0; });
 
     for (var i = 0; i < ordered.length; i++) {
       for (var j = i + 1; j < ordered.length; j++) {
         var a = ordered[i]; // le gana a b en este par
         var b = ordered[j];
-        var eloA = eloRunning[a.title];
-        var eloB = eloRunning[b.title];
+        var ka = movieKey(a);
+        var kb = movieKey(b);
+        var eloA = eloRunning[ka];
+        var eloB = eloRunning[kb];
         var expA = expectedScore(eloA, eloB);
         var expB = expectedScore(eloB, eloA);
-        var deltaA = Math.round(getKFactor(gamesRunning[a.title]) * (1 - expA));
-        var deltaB = Math.round(getKFactor(gamesRunning[b.title]) * (0 - expB));
-        eloRunning[a.title] += deltaA;
-        eloRunning[b.title] += deltaB;
-        gamesRunning[a.title] += 1;
-        gamesRunning[b.title] += 1;
-        totalDelta[a.title] += deltaA;
-        totalDelta[b.title] += deltaB;
-        winsAdded[a.title] += 1;
-        gamesAdded[a.title] += 1;
-        gamesAdded[b.title] += 1;
+        var deltaA = Math.round(getKFactor(gamesRunning[ka]) * (1 - expA));
+        var deltaB = Math.round(getKFactor(gamesRunning[kb]) * (0 - expB));
+        eloRunning[ka] += deltaA;
+        eloRunning[kb] += deltaB;
+        gamesRunning[ka] += 1;
+        gamesRunning[kb] += 1;
+        totalDelta[ka] += deltaA;
+        totalDelta[kb] += deltaB;
+        winsAdded[ka] += 1;
+        gamesAdded[ka] += 1;
+        gamesAdded[kb] += 1;
       }
     }
 
     var resultRows = ordered.map(function (m, idx) {
+      var k = movieKey(m);
       var oldElo = m.elo;
-      m.elo += totalDelta[m.title];
-      m.games += gamesAdded[m.title];
-      m.wins += winsAdded[m.title];
+      m.elo += totalDelta[k];
+      m.games += gamesAdded[k];
+      m.wins += winsAdded[k];
       m.losses = m.games - m.wins;
       return {
-        title: m.title, poster: m.poster, place: idx + 1,
-        oldElo: oldElo, newElo: m.elo, delta: totalDelta[m.title],
-        oldRank: oldRankByTitle[m.title] || 0,
+        key: k, title: m.title, tmdbId: m.tmdbId, year: m.year, poster: m.poster, place: idx + 1,
+        oldElo: oldElo, newElo: m.elo, delta: totalDelta[k],
+        oldRank: oldRankByKey[k] || 0,
       };
     });
 
@@ -1594,9 +1619,9 @@
     // de este grupo), así que se calcula recién ahora que ya se aplicaron
     // los deltas sobre el array real de movies.
     var newRanking = getRanking();
-    var newRankByTitle = {};
-    newRanking.forEach(function (m, idx) { newRankByTitle[m.title] = idx + 1; });
-    resultRows.forEach(function (r) { r.newRank = newRankByTitle[r.title] || 0; });
+    var newRankByKey = {};
+    newRanking.forEach(function (m, idx) { newRankByKey[movieKey(m)] = idx + 1; });
+    resultRows.forEach(function (r) { r.newRank = newRankByKey[r.key] || 0; });
 
     duelCount += 1;
     localStorage.setItem(DUEL_COUNT_KEY, String(duelCount));
@@ -1608,11 +1633,13 @@
     // guardar solo (Background Sync, el intervalo, o la próxima carga de
     // cualquiera de las cuatro páginas).
     resultRows.forEach(function (r) {
-      var m = byTitle(r.title);
+      var m = byKey(r.key);
       if (!m) return;
       syncDurable({
         type: "setFields",
+        tmdbId: m.tmdbId || "",
         title: m.title,
+        year: m.year,
         changes: [
           { col: "elo_rating", value: m.elo },
           { col: "elo_games", value: m.games },
@@ -1704,15 +1731,15 @@
   // no se entera de nada de lo que pasa acá — si esa copia está vieja o sin
   // sincronizar, las pelis de la watchlist ni le aparecen. Esto habla
   // directo con la Sheet, como el resto de watchlist.html.
-  var editingTitle = null;
+  var editingKey = null;
 
   function renderList() {
     var q = listSearch.value.trim().toLowerCase();
     // Ranking sobre TODA la watchlist (sin filtrar por búsqueda) para que el
     // número de cada fila sea su posición real — antes se recalculaba sobre
     // el resultado filtrado y arrancaba de nuevo en 1 con cada búsqueda.
-    var rankByTitle = {};
-    getRanking().forEach(function (m, idx) { rankByTitle[m.title] = idx + 1; });
+    var rankByKey = {};
+    getRanking().forEach(function (m, idx) { rankByKey[movieKey(m)] = idx + 1; });
 
     var shortsOnly = listShortsOnly.checked;
     var sorted = movies
@@ -1728,13 +1755,14 @@
 
     listArea.innerHTML = sorted
       .map(function (m) {
+        var key = movieKey(m);
         var thumb = m.poster
           ? '<img src="' + posterUrl(m.poster) + '" alt="" />'
           : '<div class="ph-sm">🎬</div>';
         var row =
-          '<div class="list-row" data-title="' + escapeAttr(m.title) + '">' +
-          '<span class="rank">' + (rankByTitle[m.title] || "") + "</span>" +
-          '<div class="list-row-main" data-title="' + escapeAttr(m.title) + '" title="Tocar para duelear esta película">' +
+          '<div class="list-row" data-key="' + escapeAttr(key) + '">' +
+          '<span class="rank">' + (rankByKey[key] || "") + "</span>" +
+          '<div class="list-row-main" data-key="' + escapeAttr(key) + '" title="Tocar para duelear esta película">' +
           thumb +
           '<div class="info"><div class="t">' + escapeHtml(m.title) + '</div><div class="sub">' +
           (m.year || "") + (m.games ? " · " + m.games + " duelo" + (m.games === 1 ? "" : "s") : "") +
@@ -1745,23 +1773,23 @@
           '<button class="edit-btn" title="Editar poster / TMDB / director">✏️</button>' +
           '<button class="del">✕</button>' +
           "</div>";
-        if (editingTitle === m.title) row += editPanelHtml(m);
+        if (editingKey === key) row += editPanelHtml(m);
         return row;
       })
       .join("");
 
     Array.prototype.forEach.call(listArea.querySelectorAll(".list-row"), function (row) {
-      var title = row.dataset.title;
+      var key = row.dataset.key;
       Array.prototype.forEach.call(row.querySelectorAll(".nudge button"), function (btn) {
-        btn.onclick = function () { nudgeElo(title, Number(btn.dataset.dir) * NUDGE_STEP); };
+        btn.onclick = function () { nudgeElo(key, Number(btn.dataset.dir) * NUDGE_STEP); };
       });
-      row.querySelector(".del").onclick = function () { removeMovie(title); };
+      row.querySelector(".del").onclick = function () { removeMovie(key); };
       row.querySelector(".edit-btn").onclick = function () {
-        editingTitle = editingTitle === title ? null : title;
+        editingKey = editingKey === key ? null : key;
         renderList();
       };
       var mainEl = row.querySelector(".list-row-main");
-      if (mainEl) mainEl.onclick = function () { startDuelWith(title); };
+      if (mainEl) mainEl.onclick = function () { startDuelWith(key); };
     });
     wireEditPanel();
   }
@@ -1769,10 +1797,10 @@
   // Arma un duelo forzando esta película como una de las participantes (el
   // resto se sortea del resto de la watchlist, mismo criterio de sorteo sin
   // reposición que pickGroup) y salta a la pestaña Duelo para jugarlo.
-  function startDuelWith(title) {
-    var m = byTitle(title);
+  function startDuelWith(key) {
+    var m = byKey(key);
     if (!m || movies.length < 2) return;
-    var others = movies.filter(function (x) { return x.title !== title; });
+    var others = movies.filter(function (x) { return movieKey(x) !== key; });
     var shuffled = others.slice();
     for (var i = shuffled.length - 1; i > 0; i--) {
       var j = Math.floor(Math.random() * (i + 1));
@@ -1836,10 +1864,10 @@
         return (
           '<li class="summary-row">' +
           thumb +
-          '<button type="button" class="summary-row-title" data-title="' + escapeAttr(m.title) + '" title="Duelear esta película">' +
+          '<button type="button" class="summary-row-title" data-key="' + escapeAttr(movieKey(m)) + '" title="Duelear esta película">' +
           escapeHtml(m.title) +
           "</button>" +
-          '<a class="summary-row-edit" href="edit.html?title=' + encodeURIComponent(m.title) + '" target="_blank" rel="noreferrer" title="Editar esta película">✏️</a>' +
+          '<a class="summary-row-edit" href="edit.html?tmdbId=' + encodeURIComponent(m.tmdbId || "") + '&title=' + encodeURIComponent(m.title) + '" target="_blank" rel="noreferrer" title="Editar esta película">✏️</a>' +
           '<span class="summary-row-value">' + renderValue(m) + "</span>" +
           "</li>"
         );
@@ -1893,36 +1921,38 @@
       "</div>";
 
     Array.prototype.forEach.call(resumenArea.querySelectorAll(".summary-row-title"), function (btn) {
-      btn.onclick = function () { startDuelWith(btn.dataset.title); };
+      btn.onclick = function () { startDuelWith(btn.dataset.key); };
     });
   }
 
-  function nudgeElo(title, delta) {
-    var m = byTitle(title);
+  function nudgeElo(key, delta) {
+    var m = byKey(key);
     if (!m) return;
     m.elo += delta;
     renderList();
-    syncDurable({ type: "setFields", title: title, changes: [{ col: "elo_rating", value: m.elo }] });
+    syncDurable({ type: "setFields", tmdbId: m.tmdbId || "", title: m.title, year: m.year, changes: [{ col: "elo_rating", value: m.elo }] });
   }
 
-  function removeMovie(title) {
-    if (!confirm('Quitar "' + title + '" de la watchlist? Esto la borra de la Sheet.')) return;
-    movies = movies.filter(function (m) { return m.title !== title; });
+  function removeMovie(key) {
+    var m = byKey(key);
+    if (!m) return;
+    if (!confirm('Quitar "' + m.title + '" de la watchlist? Esto la borra de la Sheet.')) return;
+    movies = movies.filter(function (x) { return movieKey(x) !== key; });
     renderList();
     renderResumen();
-    if (duelGroup && duelGroup.some(function (m) { return m.title === title; })) pickGroup();
+    if (duelGroup && duelGroup.some(function (x) { return movieKey(x) === key; })) pickGroup();
     // Encolado durable en vez del intento suelto de antes: si el borrado
     // inmediato falla (Sheet ocupada, sin conexión), sigue pendiente y se
     // reintenta solo hasta confirmarse — sin mostrar error ni, sobre todo,
     // sin restaurar la peli en pantalla (sabemos que el usuario la quiere
     // afuera porque recién lo confirmó). El backend ya trata borrar algo
     // que ya no está como éxito, así que un reintento nunca falla en falso.
-    syncDurable({ type: "deleteMovie", title: title });
+    syncDurable({ type: "deleteMovie", tmdbId: m.tmdbId || "", title: m.title, year: m.year });
   }
 
   function editPanelHtml(m) {
     return (
-      '<div class="edit-panel" data-title="' + escapeAttr(m.title) + '">' +
+      '<div class="edit-panel" data-key="' + escapeAttr(movieKey(m)) + '">' +
       '<div class="edit-row">' +
       '<div class="edit-field"><label>ID de TMDB</label><input type="number" class="edit-tmdbid" value="' + escapeAttr(m.tmdbId || "") + '" /></div>' +
       '<button type="button" class="edit-btn-small edit-resync">🔄 Resync</button>' +
@@ -1958,8 +1988,8 @@
   function wireEditPanel() {
     var panel = listArea.querySelector(".edit-panel");
     if (!panel) return;
-    var title = panel.dataset.title;
-    var m = byTitle(title);
+    var key = panel.dataset.key;
+    var m = byKey(key);
     if (!m) return;
 
     var tmdbIdInput = panel.querySelector(".edit-tmdbid");
@@ -1988,7 +2018,11 @@
       resyncStatus.textContent = "Trayendo datos de TMDB…";
       resyncStatus.className = "edit-status";
       fetchJsonWithRetry(
-        SYNC_URL + "?action=fixTmdbMatch&title=" + encodeURIComponent(title) +
+        // tmdbId VIEJO (m.tmdbId, antes de este resync) identifica la fila —
+        // title/year quedan de fallback para una fila sin tmdbId todavía.
+        SYNC_URL + "?action=fixTmdbMatch&tmdbId=" + encodeURIComponent(m.tmdbId || "") +
+          "&title=" + encodeURIComponent(m.title) +
+          "&year=" + encodeURIComponent(m.year || "") +
           "&newId=" + encodeURIComponent(newId),
         {}
       )
@@ -2009,14 +2043,14 @@
           m.country = applied.country || m.country;
           m.originalLanguage = applied.original_language || m.originalLanguage;
           // El backend ahora también corrige el título si estaba mal (ver
-          // handleFixTmdbMatch) — hay que reflejarlo acá y en editingTitle,
-          // que es la clave que usa renderList para saber qué panel quedó
-          // abierto (si no se actualiza, el panel se cierra solo al perder
-          // su fila de referencia).
+          // handleFixTmdbMatch) — hay que reflejarlo acá y en editingKey
+          // (que combina tmdbId+title), que es la clave que usa renderList
+          // para saber qué panel quedó abierto (si no se actualiza, el
+          // panel se cierra solo al perder su fila de referencia).
           if (data.newTitle && data.newTitle !== m.title) {
             m.title = data.newTitle;
-            editingTitle = data.newTitle;
           }
+          editingKey = movieKey(m);
           directorInput.value = m.director;
           posterInput.value = m.poster;
           updatePreview();
@@ -2052,7 +2086,7 @@
       saveStatus.textContent = "Guardado ✓";
       saveStatus.className = "edit-status ok";
       setTimeout(renderList, 900); // ver comentario igual en resyncBtn.onclick
-      syncDurable({ type: "setFields", title: title, changes: changes });
+      syncDurable({ type: "setFields", tmdbId: m.tmdbId || "", title: m.title, year: m.year, changes: changes });
     };
 
     var ratingSel = panel.querySelector(".edit-rating");
@@ -2071,7 +2105,7 @@
       var plays = Math.max(Number(playsInput.value) || 1, 1);
       var newElo = computeInitialElo(rating, plays);
       if (!confirm(
-        'Marcar "' + title + '" como vista con ' + rating + ' estrellas?\n\n' +
+        'Marcar "' + m.title + '" como vista con ' + rating + ' estrellas?\n\n' +
         "Elo nuevo: " + newElo + " (arrancando de cero)\n" +
         "Duelos: " + m.games + " → 0 (se pierden los de watchlist)"
       )) {
@@ -2089,13 +2123,13 @@
       // página: ya no es watchlist (tiene rating), sale del pool local ya
       // mismo — el backend la excluye sola de pullWatchlist en cuanto el
       // guardado llegue (ver handlePullWatchlist: "if (rating) continue").
-      movies = movies.filter(function (x) { return x.title !== title; });
-      editingTitle = null;
+      movies = movies.filter(function (x) { return movieKey(x) !== key; });
+      editingKey = null;
       buildFilterOptions();
       renderList();
       renderResumen();
-      if (duelGroup && duelGroup.some(function (x) { return x.title === title; })) pickGroup();
-      syncDurable({ type: "setFields", title: title, changes: changes });
+      if (duelGroup && duelGroup.some(function (x) { return movieKey(x) === key; })) pickGroup();
+      syncDurable({ type: "setFields", tmdbId: m.tmdbId || "", title: m.title, year: m.year, changes: changes });
     };
   }
 
@@ -2108,6 +2142,7 @@
   var progressText = document.getElementById("progressText");
 
   var pendingImport = null; // items nuevos a crear, ya deduplicados
+  var pendingExistingIds = null; // tmdbId ya presentes en la Sheet — dedupe autoritativo final
   var importing = false;
 
   function parseCsv(text) {
@@ -2190,15 +2225,25 @@
       fetchJsonWithRetry(SYNC_URL + "?action=pullTitles", {})
         .then(function (data) {
           if (!data.ok) throw new Error(data.error || "error desconocido");
+          // Pre-filtro barato por title+year (como antes, reduce candidatos
+          // sin gastar llamadas a TMDB): un match exacto acá es case ya
+          // resuelto. Lo que NO atrapa (mismo tmdbId real con año/formato
+          // levemente distinto entre Letterboxd y la Sheet) lo agarra el
+          // filtro autoritativo por tmdbId más abajo, después de
+          // tmdbMatchBatch — sin gastar llamadas extra, mismo tamaño de
+          // lote que antes.
           var existing = {};
+          var existingIds = {};
           (data.titles || []).forEach(function (t) {
             existing[normKey(t.title, t.year)] = true;
             existing[normKey(t.title, "")] = true; // fallback si el año no coincide exacto
+            if (t.id) existingIds[String(t.id)] = true;
           });
           var newItems = csvItems.filter(function (it) {
             return !existing[normKey(it.title, it.year)] && !existing[normKey(it.title, "")];
           });
           pendingImport = newItems;
+          pendingExistingIds = existingIds;
           importSummary.innerHTML =
             "<b>" + newItems.length + "</b> nuevas para importar · " +
             (csvItems.length - newItems.length) + " ya estaban en tu catálogo.";
@@ -2222,14 +2267,17 @@
     var done = 0;
     var created = 0;
     var unmatched = 0;
+    var alreadyExists = 0;
 
     function nextChunk() {
       if (done >= total) {
         importing = false;
         csvInput.disabled = false;
         progressText.textContent =
-          "Listo — " + created + " agregadas (" + unmatched + " sin match en TMDB, igual agregadas).";
+          "Listo — " + created + " agregadas (" + unmatched + " sin match en TMDB, igual agregadas" +
+          (alreadyExists ? ("; " + alreadyExists + " ya estaban por tmdbId") : "") + ").";
         pendingImport = null;
+        pendingExistingIds = null;
         return loadWatchlist().then(function () {
           buildFilterOptions();
           renderList();
@@ -2243,39 +2291,52 @@
       postJson({ type: "tmdbMatchBatch", items: chunk.map(function (c) { return { title: c.title, year: c.year }; }) }, false)
         .then(function (matchData) {
           var results = (matchData && matchData.results) || [];
-          var payload = chunk.map(function (c, i) {
-            var m = results[i] || {};
-            if (!m.matched) unmatched++;
-            return {
-              title: m.matched ? m.title : c.title,
-              tmdbId: m.tmdbId || "",
-              year: m.year || c.year || "",
-              rating: 0,
-              plays: 0,
-              elo: computeWatchlistElo(m.voteAverage, m.voteCount),
-              games: 0,
-              wins: 0,
-              losses: 0,
-              ties: 0,
-              director: m.director || "",
-              genre: m.genre || "",
-              poster: m.poster || "",
-              country: m.country || "",
-              originalLanguage: m.originalLanguage || "",
-              runtime: m.runtime || "",
-              overview: m.overview || "",
-              collection: m.collection || "",
-              productionCompanies: m.productionCompanies || "",
-              voteAverage: m.voteAverage || "",
-              voteCount: m.voteCount || "",
-              cast: m.cast || "",
-              tagline: m.tagline || "",
-              backdrop: m.backdrop || "",
-              imdbId: m.imdbId || "",
-            };
-          });
+          var payload = chunk
+            .map(function (c, i) {
+              var m = results[i] || {};
+              if (!m.matched) unmatched++;
+              return {
+                title: m.matched ? m.title : c.title,
+                tmdbId: m.tmdbId || "",
+                year: m.year || c.year || "",
+                rating: 0,
+                plays: 0,
+                elo: computeWatchlistElo(m.voteAverage, m.voteCount),
+                games: 0,
+                wins: 0,
+                losses: 0,
+                ties: 0,
+                director: m.director || "",
+                genre: m.genre || "",
+                poster: m.poster || "",
+                country: m.country || "",
+                originalLanguage: m.originalLanguage || "",
+                runtime: m.runtime || "",
+                overview: m.overview || "",
+                collection: m.collection || "",
+                productionCompanies: m.productionCompanies || "",
+                voteAverage: m.voteAverage || "",
+                voteCount: m.voteCount || "",
+                cast: m.cast || "",
+                tagline: m.tagline || "",
+                backdrop: m.backdrop || "",
+                imdbId: m.imdbId || "",
+              };
+            })
+            // Filtro autoritativo final: el pre-filtro por title+year de
+            // arriba no atrapa una peli que ya está en la Sheet con un año
+            // formateado distinto al del CSV de Letterboxd (festival vs.
+            // estreno, por ejemplo) — acá, con el tmdbId real ya resuelto
+            // por tmdbMatchBatch, se descarta cualquiera que ya exista.
+            .filter(function (item) {
+              if (item.tmdbId && pendingExistingIds && pendingExistingIds[String(item.tmdbId)]) {
+                alreadyExists++;
+                return false;
+              }
+              return true;
+            });
           progressText.textContent = "Guardando en la Sheet " + done + "/" + total + "…";
-          return postJson(payload, true);
+          return payload.length ? postJson(payload, true) : Promise.resolve({ ok: true, created: [] });
         })
         .then(function (createData) {
           created += ((createData && createData.created) || []).length;
