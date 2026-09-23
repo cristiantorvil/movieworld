@@ -1745,7 +1745,10 @@ function CineEloApp() {
   }, [movies]);
 
   const filteredRanking = useMemo(() => {
-    let list = ranking;
+    // Solo vistas: el Ranking es "qué tan buena es, comparada con las
+    // demás que ya viste" — una de la watchlist nunca entró a un duelo
+    // real, tiene el elo inicial congelado, y solo confundía mezclada acá.
+    let list = ratedRanking;
     if (rankFilterDirector) {
       list = list.filter((m) => m.director === rankFilterDirector);
     }
@@ -1767,13 +1770,13 @@ function CineEloApp() {
       list = list.filter((m) => m.runtime > 0 && m.runtime <= 40);
     }
     // .slice() a propósito: reverse() muta in-place, y "list" puede seguir
-    // siendo la misma referencia que "ranking" si no se aplicó ningún otro
-    // filtro arriba — sin el slice esto invertiría el ranking global.
+    // siendo la misma referencia que "ratedRanking" si no se aplicó ningún
+    // otro filtro arriba — sin el slice esto invertiría el ranking global.
     if (rankReversed) {
       list = list.slice().reverse();
     }
     return list;
-  }, [ranking, rankFilterDirector, rankFilterGenre, rankFilterDecade, rankFilterShorts, rankReversed]);
+  }, [ratedRanking, rankFilterDirector, rankFilterGenre, rankFilterDecade, rankFilterShorts, rankReversed]);
 
   const hasRankFilters =
     rankFilterDirector || rankFilterGenre || rankFilterDecade !== "all" || rankFilterShorts;
@@ -3185,7 +3188,7 @@ function CineEloApp() {
                   <RankingList
                     ranking={filteredRanking}
                     filterText={debouncedFilterText}
-                    globalRanking={ranking}
+                    globalRanking={ratedRanking}
                     projectedRating={projectedRating}
                     onDuel={duelSpecificMovie}
                   />
