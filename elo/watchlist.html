@@ -2355,30 +2355,29 @@
   };
 
   // ── Arranque ──
+  // Antes esto pintaba el cache local de una (duelos/elo de la última
+  // visita) y recién lo reemplazaba cuando terminaba el pull real en
+  // segundo plano — se veían pelis con "0 duelos" u otros datos viejos por
+  // un momento hasta que la Sheet respondía. Siempre se espera el pull real
+  // antes de mostrar nada (queda "Cargando watchlist…" hasta entonces); el
+  // cache solo se usa como respaldo si el pull falla (sin conexión, etc).
   var cachedMovies = readWatchlistCache();
-  var hadCache = !!(cachedMovies && cachedMovies.length);
-  if (hadCache) {
-    movies = cachedMovies;
-    buildFilterOptions();
-    pickGroup();
-    renderList();
-    renderResumen();
-  }
-
-  // La sincronización real con la Sheet pasa siempre en segundo plano — si
-  // ya había cache, no le pisamos al usuario el duelo que está mirando ni
-  // los picks que ya hizo; la Lista y los filtros sí se refrescan solos
-  // porque no rompen nada en curso, y la watchlist queda al día para la
-  // próxima vez que se arme un duelo (nuevo grupo, "otro par", etc).
   loadWatchlist()
     .then(function () {
       buildFilterOptions();
+      pickGroup();
       renderList();
       renderResumen();
-      if (!hadCache) pickGroup();
     })
     .catch(function (err) {
-      if (hadCache) return; // nos quedamos con lo que ya se pintó del cache
+      if (cachedMovies && cachedMovies.length) {
+        movies = cachedMovies;
+        buildFilterOptions();
+        pickGroup();
+        renderList();
+        renderResumen();
+        return;
+      }
       duelArea.innerHTML = '<p class="center-msg">No se pudo cargar la watchlist: ' + escapeHtml(err.message) + "</p>";
       listArea.innerHTML = '<p class="center-msg">No se pudo cargar la watchlist.</p>';
     });
