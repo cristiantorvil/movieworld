@@ -1002,18 +1002,24 @@
     });
   }
 
+  // Devuelve una promesa que espera a que TODOS los intentos terminen —
+  // el arranque de más abajo la espera antes de pedir el pull inicial, para
+  // no traer un valor viejo de la Sheet si justo hay un guardado pendiente
+  // de otra pestaña (edit.html, add.html) todavía sin entregar.
   function flushPendingSync() {
-    readPendingSync().then(function (queue) {
-      queue.forEach(function (item) {
-        syncPendingItem(item)
-          .then(function (data) {
-            if (data && data.ok) removePendingSync(item.id);
-          })
-          .catch(function () {});
-      });
+    return readPendingSync().then(function (queue) {
+      return Promise.all(
+        queue.map(function (item) {
+          return syncPendingItem(item)
+            .then(function (data) {
+              if (data && data.ok) removePendingSync(item.id);
+            })
+            .catch(function () {});
+        })
+      );
     });
   }
-  flushPendingSync();
+  var initialFlush = flushPendingSync();
   setInterval(flushPendingSync, 20000);
 
   // ── Tabs ──
@@ -2362,7 +2368,14 @@
   // antes de mostrar nada (queda "Cargando watchlist…" hasta entonces); el
   // cache solo se usa como respaldo si el pull falla (sin conexión, etc).
   var cachedMovies = readWatchlistCache();
-  loadWatchlist()
+  // Con timeout: IndexedDB puede tardar de más o no resolver nunca en
+  // algunos navegadores/contextos — sin esto, esperar el flush colgaba la
+  // carga entera en "Cargando watchlist…" para siempre.
+  Promise.race([
+    initialFlush.catch(function () {}),
+    new Promise(function (resolve) { setTimeout(resolve, 3000); }),
+  ])
+    .then(loadWatchlist)
     .then(function () {
       buildFilterOptions();
       pickGroup();

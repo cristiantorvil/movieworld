@@ -144,17 +144,30 @@ function syncPendingItem(item) {
 // Safari/iPhone, o mientras ese registro todavía no disparó). No bloquea
 // nada ni se le avisa al usuario — mismo trato silencioso que la
 // sincronización de un duelo.
+//
+// Devuelve una promesa que espera a que TODOS los intentos terminen (éxito
+// o no) — el efecto de carga de abajo la espera antes de pedir el pull
+// inicial. Sin esto, un guardado reciente desde watchlist.html/edit.html
+// que todavía estuviera en la cola (ej. "Marcar como vista" recién hecho,
+// esta misma pestaña recién abierta) podía perderse en el pull: el pull
+// corría en paralelo, traía el valor VIEJO de la Sheet (el guardado nuevo
+// todavía no había llegado), y como nada volvía a pedir el pull después de
+// que el flush sí lo entregara, la app se quedaba mostrando rating/elo
+// viejo hasta el próximo reload — se veía como si "abrir Cine Elo
+// revirtiera" el cambio recién hecho en otra pestaña.
 function flushPendingSync() {
-  readPendingSync().then((queue) => {
-    queue.forEach((item) => {
-      syncPendingItem(item)
-        .then((data) => {
-          if (data && data.ok) removePendingSync(item.id);
-        })
-        .catch(() => {
-          // sigue en la cola: se reintenta la próxima vez.
-        });
-    });
+  return readPendingSync().then((queue) => {
+    return Promise.all(
+      queue.map((item) =>
+        syncPendingItem(item)
+          .then((data) => {
+            if (data && data.ok) removePendingSync(item.id);
+          })
+          .catch(() => {
+            // sigue en la cola: se reintenta la próxima vez.
+          })
+      )
+    );
   });
 }
 
@@ -1047,6 +1060,19 @@ function CineEloApp() {
   useEffect(() => {
     (async () => {
       try {
+        // Esperar a que se entregue cualquier guardado pendiente (ej. un
+        // "Marcar como vista" hecho en watchlist.html hace un segundo,
+        // todavía en la cola de esta misma pestaña) ANTES de pedir el pull
+        // de acá abajo — si el pull corriera primero, podría traer el
+        // valor viejo de la Sheet y esta pantalla se quedaría mostrándolo
+        // sin que nada la refresque después. Con timeout: IndexedDB puede
+        // tardar de más o directamente no resolver nunca en algunos
+        // navegadores/contextos — sin esto, la carga entera se colgaba en
+        // "Cargando…" para siempre si ese flush no terminaba.
+        await Promise.race([
+          migrateOldPendingSync().then(flushPendingSync).catch(() => {}),
+          new Promise((resolve) => setTimeout(resolve, 3000)),
+        ]);
         const res = await window.storage.get(STORAGE_KEY, false);
         if (res && res.value) {
           const saved = JSON.parse(res.value);
