@@ -290,7 +290,21 @@
     </div>
   </div>
 
-<script>
+<script type="module">
+import {
+  computeInitialElo,
+  readPendingSync,
+  enqueuePendingSync,
+  removePendingSync,
+  migrateOldPendingSync,
+  registerServiceWorker,
+  requestBackgroundSync,
+  fetchJsonWithRetry,
+  syncPendingItem,
+  flushPendingSync,
+  FLUSH_INTERVAL_MS,
+} from "./frontend/shared-engine.js";
+
 // Pantalla de error amigable ante cualquier excepción no capturada (mismo
 // criterio que el ErrorBoundary de Cine Elo/index.html). Va afuera del IIFE
 // de abajo a propósito, para cubrir errores incluso antes de que corra.
@@ -357,171 +371,17 @@
   // que sin esto un guardado en segundo plano podría quedar esperando para
   // siempre. keepalive evita que el navegador lo cancele si el usuario
   // navega a otra página (ej. "← MovieWorld") antes de que termine.
-  function fetchJsonWithRetry(url, options, retries, timeoutMs) {
-    if (retries == null) retries = 2;
-    if (timeoutMs == null) timeoutMs = 10000;
-    var controller = new AbortController();
-    var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
-    var fetchOptions = Object.assign({}, options, { signal: controller.signal, keepalive: true });
-    return fetch(url, fetchOptions)
-      .then(function (r) { return r.json(); })
-      .finally(function () { clearTimeout(timer); })
-      .catch(function (err) {
-        if (retries <= 0) throw err;
-        return new Promise(function (resolve) { setTimeout(resolve, 500); }).then(
-          function () { return fetchJsonWithRetry(url, options, retries - 1, timeoutMs); }
-        );
-      });
-  }
-
-  // Igual que en edit.html: keepalive es "mejor esfuerzo" (no sobrevive a
-  // cerrar el navegador entero, ni a un cuelgue más largo de lo que
-  // tolera). Esta cola es la garantía real — vive en IndexedDB (no
-  // localStorage) porque el Service Worker (sw.js) que la reintenta en
-  // segundo plano vía Background Sync, incluso con todas las pestañas
-  // cerradas, no tiene acceso a localStorage. Misma base que edit.html.
-  var IDB_NAME = "cine-elo-db";
-  var IDB_STORE = "pendingSync";
-
-  function idbOpen() {
-    return new Promise(function (resolve, reject) {
-      var req = indexedDB.open(IDB_NAME, 1);
-      req.onupgradeneeded = function () {
-        req.result.createObjectStore(IDB_STORE, { keyPath: "id" });
-      };
-      req.onsuccess = function () { resolve(req.result); };
-      req.onerror = function () { reject(req.error); };
-    });
-  }
-
-  function enqueuePendingSync(item) {
-    item.id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-    return idbOpen().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        var tx = db.transaction(IDB_STORE, "readwrite");
-        tx.objectStore(IDB_STORE).put(item);
-        tx.oncomplete = function () { resolve(item.id); };
-        tx.onerror = function () { reject(tx.error); };
-      });
-    });
-  }
-
-  function readPendingSync() {
-    return idbOpen().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        var tx = db.transaction(IDB_STORE, "readonly");
-        var req = tx.objectStore(IDB_STORE).getAll();
-        req.onsuccess = function () { resolve(req.result || []); };
-        req.onerror = function () { reject(req.error); };
-      });
-    });
-  }
-
-  function removePendingSync(id) {
-    return idbOpen().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        var tx = db.transaction(IDB_STORE, "readwrite");
-        tx.objectStore(IDB_STORE).delete(id);
-        tx.oncomplete = function () { resolve(); };
-        tx.onerror = function () { reject(tx.error); };
-      });
-    });
-  }
-
-  // Guardados de una versión anterior (antes de migrar a IndexedDB) pueden
-  // haber quedado en el localStorage viejo — los movemos una sola vez para
-  // no perderlos.
-  function migrateOldPendingSync() {
-    try {
-      var raw = localStorage.getItem("cine-elo-pending-sync");
-      if (!raw) return Promise.resolve();
-      var items = JSON.parse(raw) || [];
-      localStorage.removeItem("cine-elo-pending-sync");
-      return Promise.all(items.map(function (item) {
-        delete item.id;
-        return enqueuePendingSync(item);
-      }));
-    } catch (e) {
-      return Promise.resolve(); // nada que migrar o storage bloqueado
-    }
-  }
-
-  // Le pide al navegador que reintente en segundo plano vía Service
-  // Worker — incluso con TODAS las pestañas de Cine Elo cerradas, en
-  // cuanto haya conexión. Si el navegador no soporta Background Sync
-  // (ej. Safari/iPhone) no hace nada acá: igual queda el reintento al
-  // abrir cualquier página y el intervalo de abajo como red de contención.
-  function requestBackgroundSync() {
-    if (!("serviceWorker" in navigator) || !("SyncManager" in window)) return;
-    navigator.serviceWorker.ready
-      .then(function (reg) { return reg.sync.register("flush-pending-sync"); })
-      .catch(function () {});
-  }
-
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(function () {});
-  }
-
-  function syncPendingItem(item) {
-    // Esta cola es compartida (misma IndexedDB "cine-elo-db") entre las 4
-    // páginas — un item "setFields"/"deleteMovie" puede haber sido encolado
-    // desde edit.html/watchlist.html y drenado desde acá si ambas pestañas
-    // están abiertas, así que este handler tiene que soportar todos los
-    // tipos igual, no solo "create".
-    if (item.type === "setFields") {
-      return fetchJsonWithRetry(
-        SYNC_URL +
-          "?action=setFields&tmdbId=" + encodeURIComponent(item.tmdbId || "") +
-          "&title=" + encodeURIComponent(item.title || "") +
-          "&year=" + encodeURIComponent(item.year || "") +
-          "&changes=" + encodeURIComponent(JSON.stringify(item.changes)),
-        {}
-      );
-    }
-    if (item.type === "deleteMovie") {
-      return fetchJsonWithRetry(SYNC_URL, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ type: "deleteMovie", tmdbId: item.tmdbId || "", title: item.title, year: item.year }),
-      });
-    }
-    if (item.type === "create") {
-      return fetchJsonWithRetry(SYNC_URL + "?allowCreate=1", {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify([item.payload]),
-      });
-    }
-    return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
-  }
-
-  // Se llama al cargar la página, cada vez que se encola un guardado
-  // nuevo, y cada FLUSH_INTERVAL_MS mientras esta pestaña siga abierta
-  // (red de contención para navegadores sin Background Sync). No bloquea
-  // nada ni se le avisa al usuario, mismo trato silencioso que la
-  // sincronización de un duelo.
-  function flushPendingSync() {
-    readPendingSync().then(function (queue) {
-      queue.forEach(function (item) {
-        syncPendingItem(item)
-          .then(function (data) {
-            if (data && data.ok) removePendingSync(item.id);
-          })
-          .catch(function () {
-            // sigue en la cola: se reintenta la próxima vez.
-          });
-      });
-    });
-  }
-
-  var FLUSH_INTERVAL_MS = 20000;
+  // fetchJsonWithRetry/IDB pendingSync/syncPendingItem/flushPendingSync/
+  // START_ELO/computeInitialElo: ver elo/frontend/shared-engine.js
+  // (importado arriba) — antes se duplicaban acá y en
+  // cine-elo.jsx/edit.html/watchlist.html.
+  registerServiceWorker("sw.js");
   setInterval(flushPendingSync, FLUSH_INTERVAL_MS);
 
   function posterUrl(path) {
     if (!path) return "";
     return TMDB_POSTER_BASE + (path.charAt(0) === "/" ? path : "/" + path);
   }
-  var START_ELO = 1200;
   var META_FIELD_KEYS = [
     "director", "genre", "poster", "country", "originalLanguage",
     "runtime", "overview", "collection", "productionCompanies",
@@ -547,14 +407,6 @@
 
   var current = null; // detalles de TMDB de la peli elegida
   var searchTimer = null;
-
-  function computeInitialElo(rating, plays) {
-    var r = typeof rating === "number" ? rating : 2.5;
-    var p = typeof plays === "number" ? plays : 1;
-    var ratingBonus = (r - 2.5) * 100;
-    var playsBonus = Math.min(p - 1, 10) * 10;
-    return Math.round(START_ELO + ratingBonus + playsBonus);
-  }
 
   function clearResults() {
     resultsEl.innerHTML = "";

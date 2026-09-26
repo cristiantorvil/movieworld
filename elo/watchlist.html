@@ -843,7 +843,22 @@
     <button type="button" id="undoToastBtn">Deshacer</button>
   </div>
 
-<script>
+<script type="module">
+import {
+  computeInitialElo,
+  computeWatchlistElo,
+  getKFactor,
+  expectedScore,
+  movieKey,
+  findByKey,
+  readPendingSync,
+  registerServiceWorker,
+  fetchJsonWithRetry,
+  postJson,
+  flushPendingSync as sharedFlushPendingSync,
+  syncDurable as sharedSyncDurable,
+} from "./frontend/shared-engine.js";
+
 // Pantalla de error amigable ante cualquier excepción no capturada (mismo
 // criterio que el ErrorBoundary de Cine Elo/index.html) — sin esto, un bug
 // no previsto acá dejaba la página en blanco o a medio pintar, sin ninguna
@@ -875,41 +890,15 @@
 (function () {
   var SYNC_URL = "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
   var TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w200";
-  var START_ELO = 1200;
   var NUDGE_STEP = 15;
   var IMPORT_CHUNK = 20;
   var DUEL_COUNT_KEY = "cine-elo-watchlist-duel-count";
   var DUEL_SIZE_KEY = "cine-elo-watchlist-duel-size";
   var DUEL_SIZES = [2, 3, 4, 5, 6, 7, 8, 9, 10]; // mismo rango que "Tamaño del duelo" en Cine Elo
 
-  // Mismas fórmulas que cine-elo.jsx/add.html — se duplican acá a propósito
-  // (páginas standalone sin build, ver README) en vez de importar el jsx.
-  function computeInitialElo(rating, plays) {
-    var r = typeof rating === "number" ? rating : 2.5;
-    var p = typeof plays === "number" ? plays : 1;
-    var ratingBonus = (r - 2.5) * 100;
-    var playsBonus = Math.min(p - 1, 10) * 10;
-    return Math.round(START_ELO + ratingBonus + playsBonus);
-  }
-  // Elo base de una peli de watchlist: en vez de un valor fijo para todas,
-  // usa el rating promedio de TMDB (vote_average, escala 0-10) pasado por la
-  // misma fórmula de arriba (dividido 2 para llevarlo a escala de estrellas).
-  // Sin votos no hay señal real, así que queda en el neutro 1200. Misma
-  // lógica que _computeWatchlistElo_ en el backend (Código.js).
-  function computeWatchlistElo(voteAverage, voteCount) {
-    var v = typeof voteAverage === "number" ? voteAverage : parseFloat(voteAverage);
-    var count = typeof voteCount === "number" ? voteCount : parseFloat(voteCount);
-    if (!v || !count) return START_ELO;
-    return computeInitialElo(v / 2, 1);
-  }
-  function getKFactor(comparisons) {
-    if (comparisons < 10) return 32;
-    if (comparisons < 30) return 20;
-    return 12;
-  }
-  function expectedScore(a, b) {
-    return 1 / (1 + Math.pow(10, (b - a) / 400));
-  }
+  // computeInitialElo/computeWatchlistElo/getKFactor/expectedScore/START_ELO:
+  // ver elo/frontend/shared-engine.js (importado arriba) — antes se
+  // duplicaban acá y en cine-elo.jsx/add.html/edit.html.
 
   // Mismo mapa que cine-elo.jsx: TMDB guarda el idioma como código ISO
   // 639-1 (en, es, fr...); lo que no está acá se muestra en mayúsculas.
@@ -932,127 +921,10 @@
     return TMDB_POSTER_BASE + (path.charAt(0) === "/" ? path : "/" + path);
   }
 
-  function fetchJsonWithRetry(url, options, retries, timeoutMs) {
-    if (retries == null) retries = 2;
-    if (timeoutMs == null) timeoutMs = 20000;
-    var controller = new AbortController();
-    var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
-    var fetchOptions = Object.assign({}, options, { signal: controller.signal });
-    return fetch(url, fetchOptions)
-      .then(function (r) { return r.json(); })
-      .finally(function () { clearTimeout(timer); })
-      .catch(function (err) {
-        if (retries <= 0) throw err;
-        return new Promise(function (resolve) { setTimeout(resolve, 500); }).then(
-          function () { return fetchJsonWithRetry(url, options, retries - 1, timeoutMs); }
-        );
-      });
-  }
-
-  function postJson(payload, allowCreate) {
-    var url = allowCreate ? SYNC_URL + "?allowCreate=1" : SYNC_URL;
-    return fetchJsonWithRetry(url, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(payload),
-    });
-  }
-
-  // ── Cola de guardados pendientes ──
-  // Mismo esquema que edit.html/add.html/index.html (Cine Elo): un intento
-  // de guardado en el momento reintentando un par de veces y avisando si
-  // falla (lo que tenía esto antes) sigue perdiendo el cambio si la pestaña
-  // se cierra o el Apps Script tarda más de lo que el navegador tolera —
-  // confirmado en producción. Acá cada cambio se anota PRIMERO en
-  // IndexedDB (no localStorage: el Service Worker de sw.js, que hace el
-  // reintento real en segundo plano vía Background Sync incluso con todas
-  // las pestañas cerradas, no tiene acceso a localStorage) y recién
-  // después se intenta mandar — si falla, sigue en la cola y Background
-  // Sync / el intervalo de abajo / la próxima carga de página lo
-  // reintentan solos, sin que el usuario tenga que hacer nada ni ver un
-  // error por una falla transitoria. Misma base "cine-elo-db" que las
-  // otras tres páginas, así que cualquiera puede drenar lo que dejó otra.
-  var IDB_NAME = "cine-elo-db";
-  var IDB_STORE = "pendingSync";
-
-  function idbOpen() {
-    return new Promise(function (resolve, reject) {
-      var req = indexedDB.open(IDB_NAME, 1);
-      req.onupgradeneeded = function () {
-        req.result.createObjectStore(IDB_STORE, { keyPath: "id" });
-      };
-      req.onsuccess = function () { resolve(req.result); };
-      req.onerror = function () { reject(req.error); };
-    });
-  }
-
-  function enqueuePendingSync(item) {
-    item.id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-    // El id lleva timestamp pero NO es ordenable como string (el prefijo
-    // random va primero) — sin un campo aparte, reconcileWithPendingQueue
-    // no tiene forma de saber cuál de dos pendientes para la misma peli es
-    // el más nuevo, y a veces terminaba aplicando el viejo encima (el
-    // elo/rank "se reseteaba" en pantalla cada tanto, sobre todo con el
-    // pool chico del filtro Bottom, donde la misma peli entra en varios
-    // duelos seguidos antes de que el primer guardado llegue a la Sheet).
-    item.ts = Date.now();
-    return idbOpen().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        var tx = db.transaction(IDB_STORE, "readwrite");
-        tx.objectStore(IDB_STORE).put(item);
-        tx.oncomplete = function () { resolve(item.id); };
-        tx.onerror = function () { reject(tx.error); };
-      });
-    });
-  }
-
-  function readPendingSync() {
-    return idbOpen().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        var tx = db.transaction(IDB_STORE, "readonly");
-        var req = tx.objectStore(IDB_STORE).getAll();
-        req.onsuccess = function () { resolve(req.result || []); };
-        req.onerror = function () { reject(req.error); };
-      });
-    });
-  }
-
-  function removePendingSync(id) {
-    return idbOpen().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        var tx = db.transaction(IDB_STORE, "readwrite");
-        tx.objectStore(IDB_STORE).delete(id);
-        tx.oncomplete = function () { resolve(); };
-        tx.onerror = function () { reject(tx.error); };
-      });
-    });
-  }
-
-  function requestBackgroundSync() {
-    if (!("serviceWorker" in navigator) || !("SyncManager" in window)) return;
-    navigator.serviceWorker.ready
-      .then(function (reg) { return reg.sync.register("flush-pending-sync"); })
-      .catch(function () {});
-  }
-
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(function () {});
-  }
-
-  function syncPendingItem(item) {
-    if (item.type === "setFields") {
-      return fetchJsonWithRetry(
-        SYNC_URL + "?action=setFields&tmdbId=" + encodeURIComponent(item.tmdbId || "") +
-          "&title=" + encodeURIComponent(item.title || "") +
-          "&year=" + encodeURIComponent(item.year || "") +
-          "&changes=" + encodeURIComponent(JSON.stringify(item.changes))
-      );
-    }
-    if (item.type === "deleteMovie") {
-      return postJson({ type: "deleteMovie", tmdbId: item.tmdbId || "", title: item.title, year: item.year }, false);
-    }
-    return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
-  }
+  // fetchJsonWithRetry/postJson/IDB pendingSync/syncPendingItem: ver
+  // elo/frontend/shared-engine.js (importado arriba) — antes se duplicaban
+  // acá y en cine-elo.jsx/add.html/edit.html.
+  registerServiceWorker("sw.js");
 
   // Toast con "Deshacer" — 8 segundos para arrepentirse de "Marcar como
   // vista" antes de que la ventana se cierre sola. Cancela cualquier
@@ -1094,40 +966,16 @@
     }).catch(function () {});
   }
 
-  // Encola ANTES de intentar mandarlo, e intenta mandarlo ya mismo — si
-  // eso falla queda en la cola sin avisarle a nadie (mismo trato
-  // silencioso que edit.html): Background Sync, el intervalo de abajo o
-  // la próxima carga de cualquiera de las cuatro páginas lo reintentan.
+  // Envoltorios finos sobre el syncDurable/flushPendingSync compartidos que
+  // además refrescan el indicador de "cambios sin confirmar" de esta
+  // página — el resto del archivo sigue llamando a syncDurable/
+  // flushPendingSync tal cual, sin enterarse del wrapper.
   function syncDurable(item) {
-    enqueuePendingSync(item).then(function (pendingId) {
-      updatePendingIndicator();
-      requestBackgroundSync();
-      syncPendingItem(item)
-        .then(function (data) {
-          if (data && data.ok) removePendingSync(pendingId).then(updatePendingIndicator);
-        })
-        .catch(function (err) {
-          console.error("Sync en segundo plano falló (queda pendiente, Background Sync reintentará):", item, err);
-        });
-    });
+    return sharedSyncDurable(item, updatePendingIndicator);
   }
 
-  // Devuelve una promesa que espera a que TODOS los intentos terminen —
-  // el arranque de más abajo la espera antes de pedir el pull inicial, para
-  // no traer un valor viejo de la Sheet si justo hay un guardado pendiente
-  // de otra pestaña (edit.html, add.html) todavía sin entregar.
   function flushPendingSync() {
-    return readPendingSync().then(function (queue) {
-      return Promise.all(
-        queue.map(function (item) {
-          return syncPendingItem(item)
-            .then(function (data) {
-              if (data && data.ok) removePendingSync(item.id);
-            })
-            .catch(function () {});
-        })
-      );
-    }).then(function (result) {
+    return sharedFlushPendingSync().then(function (result) {
       updatePendingIndicator();
       return result;
     });
@@ -1171,26 +1019,15 @@
   var QUICK_MODE_KEY = "cine-elo-watchlist-quick-mode";
   var quickMode = localStorage.getItem(QUICK_MODE_KEY) === "true";
 
-  // Clave de identidad compartida por películas locales Y items de la cola
-  // pendiente (ambos tienen los mismos campos tmdbId/title) — tmdbId es el
-  // identificador primario, título+"title:" queda de fallback SOLO para
-  // filas sin tmdbId asignado todavía. Se usa en TODO lo que antes
-  // indexaba/comparaba por título solo: el motor de duelos (rankingPicks,
-  // data-key de las cards, los diccionarios de elo corriendo), el render de
-  // Lista/Resumen, y el panel de edición inline. Sin esto, 2 pelis
-  // homónimas en el mismo grupo de duelo (posible con 3 "Wuthering
-  // Heights" distintas en la watchlist) eran indistinguibles al clickear,
-  // y sus deltas de elo se pisaban entre sí en el mismo diccionario.
-  function movieKey(m) {
-    // title+year (no solo título) para el fallback: dos pelis sin tmdbId
-    // pero con años distintos no deberían colisionar tampoco.
-    return m.tmdbId ? ("id:" + m.tmdbId) : ("title:" + m.title + "|" + (m.year || ""));
-  }
+  // movieKey: ver elo/frontend/shared-engine.js (importado arriba). Se usa
+  // en TODO lo que antes indexaba/comparaba por título solo: el motor de
+  // duelos (rankingPicks, data-key de las cards, los diccionarios de elo
+  // corriendo), el render de Lista/Resumen, y el panel de edición inline —
+  // sin esto, 2 pelis homónimas en el mismo grupo de duelo (posible con 3
+  // "Wuthering Heights" distintas en la watchlist) eran indistinguibles al
+  // clickear, y sus deltas de elo se pisaban entre sí en el mismo diccionario.
   function byKey(key) {
-    for (var i = 0; i < movies.length; i++) {
-      if (movieKey(movies[i]) === key) return movies[i];
-    }
-    return null;
+    return findByKey(movies, key);
   }
 
   // Local-first, mismo criterio que index.html/edit.html: sin esto, cada
