@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Editar película — Cine Elo</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%AC%3C/text%3E%3C/svg%3E" />
 <style>
   :root {
     --bg: #101116;
@@ -394,6 +395,32 @@
   </div>
 
 <script>
+// Pantalla de error amigable ante cualquier excepción no capturada (mismo
+// criterio que el ErrorBoundary de Cine Elo/index.html). Va afuera del IIFE
+// de abajo a propósito, para cubrir errores incluso antes de que corra.
+(function () {
+  var shown = false;
+  function showFatalError() {
+    if (shown) return;
+    shown = true;
+    var overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:#101116;color:#EDEAE3;display:flex;" +
+      "flex-direction:column;align-items:center;justify-content:center;gap:16px;" +
+      "padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;" +
+      "text-align:center;z-index:9999;";
+    overlay.innerHTML =
+      '<p style="font-size:18px;font-weight:700;margin:0;">Algo se rompió 🎬💥</p>' +
+      '<p style="font-size:13px;color:#8A8D98;max-width:320px;margin:0;">Tu progreso sigue guardado. Recargá la página para volver a intentarlo.</p>' +
+      '<button style="background:#F2C14E;color:#14151A;border:none;font-weight:700;' +
+      'font-size:14px;padding:12px 20px;border-radius:8px;cursor:pointer;">Recargar</button>';
+    overlay.querySelector("button").onclick = function () { location.reload(); };
+    document.body.appendChild(overlay);
+  }
+  window.addEventListener("error", showFatalError);
+  window.addEventListener("unhandledrejection", showFatalError);
+})();
+
 (function () {
   var SYNC_URL = "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
   var TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w200";
@@ -705,6 +732,9 @@
     rating: "rating",
     diary_count: "plays",
     elo_rating: "elo",
+    elo_games: "games",
+    elo_win: "wins",
+    elo_loss: "losses",
     poster_path: "poster",
     director: "director",
     genre: "genre",
@@ -960,14 +990,22 @@
     if (newPlays !== Number(current.plays || 0)) {
       changes.push({ col: "diary_count", value: newPlays });
     }
-    // Pelis que estaban en watchlist (sin rating, sin Elo) nunca pasaron
-    // por "Agregar película", así que no tienen Elo inicial. Si ahora se
-    // les pone un rating por primera vez, armamos ese Elo acá — si ya
-    // tenían Elo (o sea, ya jugaron duelos), no lo tocamos.
-    var hadNoElo = current.elo === "" || current.elo == null;
-    if (hadNoElo && newRating > 0) {
+    // Pelis sin rating pueden llegar acá con Elo de watchlist (dueleadas
+    // ahí para priorizar qué ver, a veces cientos de veces) — si ahora se
+    // les pone un rating por primera vez, ese Elo/duelos de watchlist no
+    // dice nada de qué tan buena es ya vista, así que se resetea a un Elo
+    // inicial nuevo (mismo criterio que "Marcar como vista" en la
+    // watchlist). Antes esto solo pasaba si el Elo estaba vacío del todo,
+    // lo que dejaba el Elo/duelos de watchlist pegados para siempre en
+    // cualquier peli que ya se hubiera dueleado ahí antes de puntuarla acá.
+    var wasRated = Number(current.rating || 0) > 0;
+    var becomingRated = !wasRated && newRating > 0;
+    if (becomingRated) {
       var seedElo = computeInitialElo(newRating, Math.max(newPlays, 1));
       changes.push({ col: "elo_rating", value: seedElo });
+      changes.push({ col: "elo_games", value: 0 });
+      changes.push({ col: "elo_win", value: 0 });
+      changes.push({ col: "elo_loss", value: 0 });
     }
     var newPoster = posterInput.value.trim();
     if (newPoster !== (current.poster || "")) {
@@ -1017,8 +1055,11 @@
 
     current.rating = newRating;
     current.plays = newPlays;
-    if (hadNoElo && newRating > 0) {
+    if (becomingRated) {
       current.elo = computeInitialElo(newRating, Math.max(newPlays, 1));
+      current.games = 0;
+      current.wins = 0;
+      current.losses = 0;
       selYear.textContent = "Elo " + current.elo;
     }
     current.poster = newPoster;

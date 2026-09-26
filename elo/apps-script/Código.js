@@ -1955,12 +1955,39 @@ function handleSetFields(tmdbId, changesJson, title, year) {
     }
     var rowIndex = found.rowIndex;
 
+    // Confirmado en producción (Symbiopsychotaxiplasm: Take One, Minions &
+    // Monsters): una peli dueleada muchas veces en la watchlist (elo/juegos
+    // altos, sin rating) y recién marcada "vista" (rating + elo/juegos
+    // reseteados a 0) podía volver a mostrar el elo/juegos VIEJOS si un
+    // guardado de un duelo de watchlist para esa MISMA fila, encolado
+    // ANTES de marcarla vista pero recién entregado/reintentado DESPUÉS
+    // (ej. por una cuota de ejecuciones simultáneas de Apps Script, o
+    // cualquier réplica de red), llegaba tarde — sin importar el orden en
+    // que se encolaron, gana el que responde último. Ahora: una fila que
+    // YA tiene rating no acepta un pisón de elo/duelos salvo que el MISMO
+    // guardado también traiga el cambio de `rating` (o sea, sea el propio
+    // "Marcar como vista" el que lo está escribiendo).
+    var ratingCol = header.indexOf('rating');
+    var currentRatingRaw = ratingCol > -1 ? values[rowIndex][ratingCol] : '';
+    var currentRating = typeof currentRatingRaw === 'number'
+      ? currentRatingRaw
+      : parseFloat(String(currentRatingRaw).replace(',', '.')) || 0;
+    var changesHasRating = changes.some(function (c) { return c.col === 'rating'; });
+    var ELO_DUEL_COLS = ['elo_rating', 'elo_games', 'elo_win', 'elo_loss', 'elo_tie'];
+
     var applied = [];
     var failed = [];
     changes.forEach(function (c) {
       var colIdx = header.indexOf(c.col);
       if (colIdx === -1) {
         failed.push({ col: c.col, error: 'No existe la columna "' + c.col + '".' });
+        return;
+      }
+      if (currentRating && !changesHasRating && ELO_DUEL_COLS.indexOf(c.col) !== -1) {
+        failed.push({
+          col: c.col,
+          error: 'Fila ya vista (rating=' + currentRating + ') — se ignora este campo de duelo de watchlist (probable reintento atrasado).',
+        });
         return;
       }
       sheet.getRange(rowIndex + 1, colIdx + 1).setValue(c.value);

@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Watchlist — Cine Elo</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8D%BF%3C/text%3E%3C/svg%3E" />
 <style>
   :root {
     --bg: #101116;
@@ -53,6 +54,39 @@
     margin: 0;
     color: var(--muted);
     font-size: 14px;
+  }
+  .pending-indicator {
+    margin-top: 8px !important;
+    font-size: 12px !important;
+    color: var(--gold) !important;
+  }
+  .undo-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    background: var(--card);
+    border: 1px solid var(--gold);
+    border-radius: 10px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--text);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    z-index: 1000;
+  }
+  .undo-toast button {
+    background: var(--gold);
+    color: var(--gold-text);
+    border: none;
+    font-weight: 700;
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
   }
 
   .tabs {
@@ -733,6 +767,7 @@
     <header>
       <h1>🍿 Watchlist</h1>
       <p>Duelos y prioridad para lo que todavía no viste.</p>
+      <p class="pending-indicator" id="pendingIndicator" style="display:none;"></p>
     </header>
 
     <div class="tabs">
@@ -780,6 +815,7 @@
           Solo cortos (40 min o menos)
         </label>
         <button type="button" class="btn-ghost" id="listReverseBtn">↓ Mejores primero</button>
+        <button type="button" class="btn-ghost" id="exportWatchlistBtn">exportar mi watchlist (CSV)</button>
       </div>
       <div id="listArea"><p class="center-msg">Cargando…</p></div>
     </div>
@@ -802,7 +838,40 @@
     </div>
   </div>
 
+  <div class="undo-toast" id="undoToast" style="display:none;">
+    <span id="undoToastText"></span>
+    <button type="button" id="undoToastBtn">Deshacer</button>
+  </div>
+
 <script>
+// Pantalla de error amigable ante cualquier excepción no capturada (mismo
+// criterio que el ErrorBoundary de Cine Elo/index.html) — sin esto, un bug
+// no previsto acá dejaba la página en blanco o a medio pintar, sin ninguna
+// pista de qué pasó ni cómo seguir. Va afuera del IIFE de abajo a propósito,
+// para que cubra cualquier error incluso antes de que ese código corra.
+(function () {
+  var shown = false;
+  function showFatalError() {
+    if (shown) return;
+    shown = true;
+    var overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:#101116;color:#EDEAE3;display:flex;" +
+      "flex-direction:column;align-items:center;justify-content:center;gap:16px;" +
+      "padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;" +
+      "text-align:center;z-index:9999;";
+    overlay.innerHTML =
+      '<p style="font-size:18px;font-weight:700;margin:0;">Algo se rompió 🎬💥</p>' +
+      '<p style="font-size:13px;color:#8A8D98;max-width:320px;margin:0;">Tu progreso sigue guardado. Recargá la página para volver a intentarlo.</p>' +
+      '<button style="background:#F2C14E;color:#14151A;border:none;font-weight:700;' +
+      'font-size:14px;padding:12px 20px;border-radius:8px;cursor:pointer;">Recargar</button>';
+    overlay.querySelector("button").onclick = function () { location.reload(); };
+    document.body.appendChild(overlay);
+  }
+  window.addEventListener("error", showFatalError);
+  window.addEventListener("unhandledrejection", showFatalError);
+})();
+
 (function () {
   var SYNC_URL = "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
   var TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w200";
@@ -985,16 +1054,57 @@
     return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
   }
 
+  // Toast con "Deshacer" — 8 segundos para arrepentirse de "Marcar como
+  // vista" antes de que la ventana se cierre sola. Cancela cualquier
+  // llamado anterior a undoFn si se muestra un toast nuevo antes de que el
+  // primero se resuelva (evita deshacer dos cosas encimadas).
+  var undoToastEl = document.getElementById("undoToast");
+  var undoToastTimer = null;
+  function showUndoToast(message, undoFn) {
+    if (!undoToastEl) return;
+    clearTimeout(undoToastTimer);
+    document.getElementById("undoToastText").textContent = message;
+    undoToastEl.style.display = "flex";
+    var btn = document.getElementById("undoToastBtn");
+    btn.onclick = function () {
+      undoToastEl.style.display = "none";
+      clearTimeout(undoToastTimer);
+      undoFn();
+    };
+    undoToastTimer = setTimeout(function () {
+      undoToastEl.style.display = "none";
+    }, 8000);
+  }
+
+  // Indicador chico en el header — antes no había NINGUNA señal de que
+  // quedara algo sin confirmar en la Sheet (justo lo que hizo tan difícil
+  // de notar el bug de esta noche: un guardado atascado en la cola no se
+  // veía en ningún lado hasta que, minutos después, aparecía revertido).
+  var pendingIndicatorEl = document.getElementById("pendingIndicator");
+  function updatePendingIndicator() {
+    readPendingSync().then(function (queue) {
+      if (!pendingIndicatorEl) return;
+      if (queue.length > 0) {
+        pendingIndicatorEl.textContent =
+          "● " + queue.length + " cambio" + (queue.length === 1 ? "" : "s") + " sin confirmar todavía";
+        pendingIndicatorEl.style.display = "block";
+      } else {
+        pendingIndicatorEl.style.display = "none";
+      }
+    }).catch(function () {});
+  }
+
   // Encola ANTES de intentar mandarlo, e intenta mandarlo ya mismo — si
   // eso falla queda en la cola sin avisarle a nadie (mismo trato
   // silencioso que edit.html): Background Sync, el intervalo de abajo o
   // la próxima carga de cualquiera de las cuatro páginas lo reintentan.
   function syncDurable(item) {
     enqueuePendingSync(item).then(function (pendingId) {
+      updatePendingIndicator();
       requestBackgroundSync();
       syncPendingItem(item)
         .then(function (data) {
-          if (data && data.ok) removePendingSync(pendingId);
+          if (data && data.ok) removePendingSync(pendingId).then(updatePendingIndicator);
         })
         .catch(function (err) {
           console.error("Sync en segundo plano falló (queda pendiente, Background Sync reintentará):", item, err);
@@ -1017,6 +1127,9 @@
             .catch(function () {});
         })
       );
+    }).then(function (result) {
+      updatePendingIndicator();
+      return result;
     });
   }
   var initialFlush = flushPendingSync();
@@ -1050,6 +1163,7 @@
   var movies = []; // {title, year, tmdbId, director, genre, poster, country, originalLanguage, elo, games, wins, losses, ties}
   var duelGroup = null; // pelis del duelo actual (2 o más, según duelSize)
   var rankingPicks = []; // títulos ya tocados en este duelo, del que más quiere ver al que menos
+  var pendingAdvance = null; // función de avance de renderResult, si la pantalla de resultado está activa (atajos de teclado)
   var duelCount = Number(localStorage.getItem(DUEL_COUNT_KEY) || "0");
   var duelSize = DUEL_SIZES.indexOf(Number(localStorage.getItem(DUEL_SIZE_KEY))) !== -1
     ? Number(localStorage.getItem(DUEL_SIZE_KEY))
@@ -1513,6 +1627,7 @@
 
   function renderDuel() {
     if (!duelGroup) return;
+    pendingAdvance = null;
     var isPair = duelGroup.length === 2;
     var ranking = getRanking();
     var cardsHtml = duelGroup
@@ -1711,8 +1826,10 @@
     function advance() {
       if (advanced) return;
       advanced = true;
+      pendingAdvance = null;
       pickGroup();
     }
+    pendingAdvance = advance;
     document.getElementById("advanceBar").onclick = advance;
     var fillEl = document.getElementById("advanceFill");
     if (fillEl) fillEl.addEventListener("animationend", advance);
@@ -1731,6 +1848,26 @@
     listReversed = !listReversed;
     listReverseBtn.textContent = listReversed ? "↑ Peores primero" : "↓ Mejores primero";
     renderList();
+  };
+
+  // Mismo criterio que "exportar mi progreso (CSV)" en Cine Elo — la
+  // watchlist no tenía ningún respaldo propio descargable.
+  document.getElementById("exportWatchlistBtn").onclick = function () {
+    var header = "title,year,tmdbId,elo,games,wins,losses";
+    var rows = movies.map(function (m) {
+      var safeTitle = '"' + String(m.title || "").replace(/"/g, '""') + '"';
+      return [safeTitle, m.year || "", m.tmdbId || "", m.elo, m.games || 0, m.wins || 0, m.losses || 0].join(",");
+    });
+    var csv = [header].concat(rows).join("\n");
+    var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "watchlist-cine-elo.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   // Título de la fila con el panel de edición abierto (uno solo a la vez).
@@ -2127,6 +2264,10 @@
         { col: "elo_win", value: 0 },
         { col: "elo_loss", value: 0 },
       ];
+      // Guardamos el estado de ANTES para poder ofrecer "Deshacer" — dado
+      // lo que costó esta noche recuperar un elo/duelos de watchlist
+      // pisados sin querer, más vale prevenir que lamentar acá.
+      var prevSnapshot = { title: m.title, tmdbId: m.tmdbId, year: m.year, elo: m.elo, games: m.games, wins: m.wins, losses: m.losses };
       // Optimista + cola durable, mismo criterio que el resto de la
       // página: ya no es watchlist (tiene rating), sale del pool local ya
       // mismo — el backend la excluye sola de pullWatchlist en cuanto el
@@ -2138,6 +2279,21 @@
       renderResumen();
       if (duelGroup && duelGroup.some(function (x) { return movieKey(x) === key; })) pickGroup();
       syncDurable({ type: "setFields", tmdbId: m.tmdbId || "", title: m.title, year: m.year, changes: changes });
+      showUndoToast('"' + m.title + '" marcada como vista.', function () {
+        var revertChanges = [
+          { col: "rating", value: 0 },
+          { col: "elo_rating", value: prevSnapshot.elo },
+          { col: "elo_games", value: prevSnapshot.games || 0 },
+          { col: "elo_win", value: prevSnapshot.wins || 0 },
+          { col: "elo_loss", value: prevSnapshot.losses || 0 },
+        ];
+        syncDurable({ type: "setFields", tmdbId: prevSnapshot.tmdbId || "", title: prevSnapshot.title, year: prevSnapshot.year, changes: revertChanges });
+        loadWatchlist().then(function () {
+          buildFilterOptions();
+          renderList();
+          renderResumen();
+        });
+      });
     };
   }
 
@@ -2359,6 +2515,34 @@
     }
     nextChunk();
   };
+
+  // ── Atajos de teclado (pestaña Duelo) ──
+  // 1-9 elige la carta en esa posición (mismo click que tocarla a mano);
+  // Espacio/Enter avanza la pantalla de resultado sin esperar la barra
+  // automática; S salta el grupo actual. Se ignora si el foco está en un
+  // campo de texto (los filtros/búsqueda tienen los suyos) o si la pestaña
+  // activa no es Duelo.
+  document.addEventListener("keydown", function (e) {
+    var tag = document.activeElement && document.activeElement.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (!panels.duel.classList.contains("active")) return;
+
+    if (pendingAdvance && (e.key === " " || e.key === "Enter")) {
+      e.preventDefault();
+      pendingAdvance();
+      return;
+    }
+    if (e.key >= "1" && e.key <= "9") {
+      var idx = Number(e.key) - 1;
+      var cards = duelArea.querySelectorAll(".duel-card:not(.picked)");
+      if (cards[idx]) cards[idx].click();
+      return;
+    }
+    if (e.key.toLowerCase() === "s") {
+      var skipBtn = document.getElementById("skipBtn");
+      if (skipBtn) skipBtn.click();
+    }
+  });
 
   // ── Arranque ──
   // Antes esto pintaba el cache local de una (duelos/elo de la última

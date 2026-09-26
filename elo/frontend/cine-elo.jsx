@@ -2306,6 +2306,36 @@ function CineEloApp() {
     return () => clearTimeout(timer);
   }, [result]);
 
+  // Atajos de teclado en Comparar (mismo criterio que watchlist.html): 1-9
+  // elige esa carta, Espacio/Enter avanza el resultado sin esperar el auto-
+  // avance, S saltea el grupo actual. Se ignora si el foco está en un campo
+  // de texto o si la pestaña activa no es Comparar.
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (tab !== "comparar") return;
+      const tagName = document.activeElement && document.activeElement.tagName;
+      if (tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT") return;
+
+      if (result && (e.key === " " || e.key === "Enter")) {
+        e.preventDefault();
+        nextDuel();
+        return;
+      }
+      if (!result && pair && e.key >= "1" && e.key <= "9") {
+        const idx = Number(e.key) - 1;
+        const remaining = pair.filter((m) => !rankingPicks.includes(m.id));
+        if (remaining[idx]) chooseRank(remaining[idx].id);
+        return;
+      }
+      if (!result && e.key.toLowerCase() === "s") {
+        if (directorDuelActive) pickDirectorDuelPair();
+        else pickContenders(duelPool, duelSize);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [tab, result, pair, rankingPicks, directorDuelActive, duelPool, duelSize, pickDirectorDuelPair, pickContenders, chooseRank, nextDuel]);
+
   const reloadSeed = () => {
     const seeded = SEED_MOVIES.map(([title, year, rating, plays, director, genre, poster, tmdbId]) => ({
       id: uid(),
@@ -3092,7 +3122,7 @@ function CineEloApp() {
                       saltear este duelo →
                     </button>
                     <p className="counter">
-                      {totalComparisons} comparaciones ·{" "}
+                      {totalComparisons} duelos ·{" "}
                       {directorDuelActive
                         ? `${directorDuelA} vs ${directorDuelB}`
                         : `${duelPool.length} ${
@@ -4488,7 +4518,7 @@ function RankingList({ ranking, filterText, globalRanking, projectedRating, onDu
                   </a>
                 </span>
                 <span className="rank-meta">
-                  {m.comparisons} comparaciones · {m.wins} ganadas
+                  {m.comparisons} duelos · {m.wins} ganados
                   {m.plays ? ` · vista ${m.plays}x` : ""}
                 </span>
                 <span className="movie-card-ratings">
