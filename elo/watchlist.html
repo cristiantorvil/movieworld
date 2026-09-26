@@ -60,6 +60,25 @@
     font-size: 12px !important;
     color: var(--gold) !important;
   }
+  .stale-banner {
+    margin-top: 8px !important;
+    font-size: 12px !important;
+    color: var(--red) !important;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .stale-banner button {
+    background: transparent;
+    border: 1px solid var(--red);
+    color: var(--red);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
   .undo-toast {
     position: fixed;
     left: 50%;
@@ -768,6 +787,10 @@
       <h1>🍿 Watchlist</h1>
       <p>Duelos y prioridad para lo que todavía no viste.</p>
       <p class="pending-indicator" id="pendingIndicator" style="display:none;"></p>
+      <p class="stale-banner" id="staleBanner" style="display:none;">
+        ⚠ No se pudo traer la Sheet, mostrando lo último guardado.
+        <button type="button" id="staleRetryBtn">Reintentar</button>
+      </p>
     </header>
 
     <div class="tabs">
@@ -1113,7 +1136,13 @@ import {
   }
 
   function loadWatchlist() {
-    return fetchJsonWithRetry(SYNC_URL + "?action=pullWatchlist", {}).then(function (data) {
+    // 20s de timeout (el doble del default del módulo compartido): esta
+    // trae el catálogo completo de watchlist (1200+ filas) y con la Sheet
+    // bajo carga puede tardar más que un setFields/deleteMovie de una sola
+    // fila — con el default de 10s se cortaba antes de tiempo y esta
+    // página se quedaba mostrando el cache viejo con más frecuencia de la
+    // que hacía falta.
+    return fetchJsonWithRetry(SYNC_URL + "?action=pullWatchlist", {}, 2, 20000).then(function (data) {
       if (!data.ok) throw new Error(data.error || "error desconocido");
       return reconcileWithPendingQueue(data.movies || []);
     }).then(function (reconciled) {
@@ -2223,7 +2252,9 @@ import {
       }
 
       importSummary.textContent = csvItems.length + " pelis en el CSV. Comparando con tu catálogo…";
-      fetchJsonWithRetry(SYNC_URL + "?action=pullTitles", {})
+      // Mismo motivo que loadWatchlist: trae TODOS los títulos de la Sheet,
+      // puede tardar más que el timeout default de 10s.
+      fetchJsonWithRetry(SYNC_URL + "?action=pullTitles", {}, 2, 20000)
         .then(function (data) {
           if (!data.ok) throw new Error(data.error || "error desconocido");
           // Pre-filtro barato por title+year (como antes, reduce candidatos
@@ -2387,34 +2418,72 @@ import {
   // segundo plano — se veían pelis con "0 duelos" u otros datos viejos por
   // un momento hasta que la Sheet respondía. Siempre se espera el pull real
   // antes de mostrar nada (queda "Cargando watchlist…" hasta entonces); el
-  // cache solo se usa como respaldo si el pull falla (sin conexión, etc).
+  // cache solo se usa como respaldo si el pull falla (sin conexión, Apps
+  // Script caído/con cuota agotada, etc).
   var cachedMovies = readWatchlistCache();
-  // Con timeout: IndexedDB puede tardar de más o no resolver nunca en
-  // algunos navegadores/contextos — sin esto, esperar el flush colgaba la
-  // carga entera en "Cargando watchlist…" para siempre.
-  Promise.race([
-    initialFlush.catch(function () {}),
-    new Promise(function (resolve) { setTimeout(resolve, 3000); }),
-  ])
-    .then(loadWatchlist)
-    .then(function () {
-      buildFilterOptions();
-      pickGroup();
-      renderList();
-      renderResumen();
-    })
-    .catch(function (err) {
-      if (cachedMovies && cachedMovies.length) {
-        movies = cachedMovies;
+  var staleBannerEl = document.getElementById("staleBanner");
+  var staleRetryBtn = document.getElementById("staleRetryBtn");
+
+  function startupLoad() {
+    // Con timeout: IndexedDB puede tardar de más o no resolver nunca en
+    // algunos navegadores/contextos — sin esto, esperar el flush colgaba la
+    // carga entera en "Cargando watchlist…" para siempre.
+    return Promise.race([
+      initialFlush.catch(function () {}),
+      new Promise(function (resolve) { setTimeout(resolve, 3000); }),
+    ])
+      .then(loadWatchlist)
+      .then(function () {
+        if (staleBannerEl) staleBannerEl.style.display = "none";
         buildFilterOptions();
         pickGroup();
         renderList();
         renderResumen();
-        return;
-      }
-      duelArea.innerHTML = '<p class="center-msg">No se pudo cargar la watchlist: ' + escapeHtml(err.message) + "</p>";
-      listArea.innerHTML = '<p class="center-msg">No se pudo cargar la watchlist.</p>';
-    });
+      })
+      .catch(function (err) {
+        // Antes esto se mostraba en silencio si había cache: la watchlist
+        // se veía "cargada" sin ninguna pista de que en realidad eran datos
+        // viejos y el pull real había fallado — justo el reporte de "a
+        // veces cargo el watchlist y no me aparece actualizado". Ahora
+        // queda un aviso visible + botón para reintentar sin recargar toda
+        // la página.
+        if (cachedMovies && cachedMovies.length) {
+          movies = cachedMovies;
+          buildFilterOptions();
+          pickGroup();
+          renderList();
+          renderResumen();
+          if (staleBannerEl) staleBannerEl.style.display = "flex";
+          return;
+        }
+        duelArea.innerHTML = '<p class="center-msg">No se pudo cargar la watchlist: ' + escapeHtml(err.message) + "</p>";
+        listArea.innerHTML = '<p class="center-msg">No se pudo cargar la watchlist.</p>';
+      });
+  }
+
+  if (staleRetryBtn) {
+    staleRetryBtn.onclick = function () {
+      staleRetryBtn.disabled = true;
+      staleRetryBtn.textContent = "Reintentando…";
+      loadWatchlist()
+        .then(function () {
+          staleBannerEl.style.display = "none";
+          buildFilterOptions();
+          pickGroup();
+          renderList();
+          renderResumen();
+        })
+        .catch(function () {
+          // sigue mostrando el banner: el usuario puede volver a intentar
+        })
+        .finally(function () {
+          staleRetryBtn.disabled = false;
+          staleRetryBtn.textContent = "Reintentar";
+        });
+    };
+  }
+
+  startupLoad();
 })();
 </script>
 </body>
