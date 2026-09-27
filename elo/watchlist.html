@@ -194,6 +194,25 @@
     color: var(--gold-text);
     border-color: var(--gold);
   }
+  .range-slider-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1 1 200px;
+    min-width: 160px;
+  }
+  .range-slider-wrap input[type="range"] {
+    flex: 1 1 auto;
+    accent-color: var(--gold);
+  }
+  .range-slider-value {
+    flex: 0 0 auto;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--gold);
+    min-width: 38px;
+    text-align: right;
+  }
   .pool-count {
     text-align: center;
     font-size: 12px;
@@ -816,7 +835,10 @@
       </div>
       <div class="duel-size-row" id="maxGamesFilterRow" style="display:none;">
         <span class="duel-size-label">Máximo de duelos jugados</span>
-        <div class="duel-size-btns" id="maxGamesFilterBtns"></div>
+        <div class="range-slider-wrap">
+          <input type="range" id="maxGamesSlider" min="0" max="51" step="1" value="51" />
+          <span class="range-slider-value" id="maxGamesSliderValue">Todas</span>
+        </div>
       </div>
       <div class="duel-size-row" id="duelSizeRow" style="display:none;">
         <span class="duel-size-label">Tamaño del duelo</span>
@@ -1168,7 +1190,10 @@ import {
   // pares, en vez de armar un bracket de eliminación) ──
   var FILTERS_KEY = "cine-elo-watchlist-filters";
   var RANK_PRESETS = [10, 50, 100, 250, 500];
-  var MAX_GAMES_PRESETS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+  // El slider de "Máximo de duelos jugados" va de 0 a este tope; un paso más
+  // allá (CAP + 1) es "Todas" (sin tope). Mismo valor que MAX_DUELOS_FILTER_CAP
+  // en cine-elo.jsx.
+  var MAX_DUELOS_FILTER_CAP = 50;
   // maxGames: -1 = "Todas" (sin tope). No puede ser null/0 como centinela de
   // "sin elegir" porque 0 es un valor real y elegible (0 duelos jugados).
   // rankDir: "top" prioriza las de más elo (como siempre), "bottom" las de
@@ -1197,7 +1222,8 @@ import {
   var rankDirBtnsEl = document.getElementById("rankDirBtns");
   var rankFilterBtnsEl = document.getElementById("rankFilterBtns");
   var maxGamesFilterRow = document.getElementById("maxGamesFilterRow");
-  var maxGamesFilterBtnsEl = document.getElementById("maxGamesFilterBtns");
+  var maxGamesSliderEl = document.getElementById("maxGamesSlider");
+  var maxGamesSliderValueEl = document.getElementById("maxGamesSliderValue");
 
   // Ranking completo por elo (de más a menos prioridad) — se recalcula cada
   // vez que hace falta en vez de cachearse, porque cambia con cada duelo.
@@ -1249,26 +1275,26 @@ import {
 
   // "Máximo de duelos jugados": acota el pool a pelis con pocos (o cero)
   // duelos, para priorizar dueleear las que todavía no jugaron nada — mismo
-  // filtro que ya existe en la pestaña Duelo de Cine Elo.
-  function buildMaxGamesFilterButtons() {
-    maxGamesFilterBtnsEl.innerHTML = "";
-    [-1].concat(MAX_GAMES_PRESETS).forEach(function (n) {
-      var btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "size-btn" + (filters.maxGames === n ? " active" : "");
-      btn.textContent = n === -1 ? "Todas" : String(n);
-      btn.onclick = function () {
-        filters.maxGames = n;
-        saveFilters();
-        Array.prototype.forEach.call(maxGamesFilterBtnsEl.children, function (b) { b.classList.remove("active"); });
-        btn.classList.add("active");
-        updateClearButton();
-        pickGroup();
-      };
-      maxGamesFilterBtnsEl.appendChild(btn);
-    });
+  // filtro (y mismo slider 0-50) que la pestaña Duelo de Cine Elo. Un paso
+  // más allá del tope (CAP + 1) es "Todas" (sin tope).
+  function syncMaxGamesSlider() {
+    var v = filters.maxGames === -1 ? MAX_DUELOS_FILTER_CAP + 1 : filters.maxGames;
+    maxGamesSliderEl.value = String(v);
+    maxGamesSliderValueEl.textContent = filters.maxGames === -1 ? "Todas" : String(filters.maxGames);
   }
-  buildMaxGamesFilterButtons();
+  maxGamesSliderEl.min = "0";
+  maxGamesSliderEl.max = String(MAX_DUELOS_FILTER_CAP + 1);
+  maxGamesSliderEl.oninput = function () {
+    var v = Number(maxGamesSliderEl.value);
+    filters.maxGames = v > MAX_DUELOS_FILTER_CAP ? -1 : v;
+    maxGamesSliderValueEl.textContent = filters.maxGames === -1 ? "Todas" : String(filters.maxGames);
+  };
+  maxGamesSliderEl.onchange = function () {
+    saveFilters();
+    updateClearButton();
+    pickGroup();
+  };
+  syncMaxGamesSlider();
 
   function uniqueSorted(values) {
     var set = {};
@@ -1404,7 +1430,7 @@ import {
     buildFilterOptions();
     buildRankDirButtons();
     buildRankFilterButtons();
-    buildMaxGamesFilterButtons();
+    syncMaxGamesSlider();
     pickGroup();
   };
 

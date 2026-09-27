@@ -23,6 +23,9 @@ const DEFAULT_SYNC_URL = SHARED_SYNC_URL;
 const SNAPSHOT_INTERVAL = 25; // guardar posiciones cada N duelos
 const MAX_SNAPSHOTS = 15; // tope de cortes guardados en el historial
 const SNAPSHOT_TOP_N = 1000; // solo se guarda el top 1000 en cada corte
+// Filtro "Máximo de duelos jugados": el slider va de 0 a este tope; un paso
+// más allá (CAP + 1) es "Todas" (sin tope), mismo valor en watchlist.html.
+const MAX_DUELOS_FILTER_CAP = 50;
 
 function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -2658,35 +2661,26 @@ function CineEloApp() {
 
                     <label className="filter-label">
                       Máximo de duelos jugados
-                      <div className="filter-range-presets">
-                        <button
-                          className={
-                            "preset-btn" +
-                            (maxDuelosFilter == null ? " active" : "")
-                          }
-                          onClick={() => {
-                            setMaxDuelosFilter(null);
-                            setPair(null);
-                          }}
-                        >
-                          Todas
-                        </button>
-                        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-                          <button
-                            key={n}
-                            className={
-                              "preset-btn" +
-                              (maxDuelosFilter === n ? " active" : "")
-                            }
-                            onClick={() => {
-                              setMaxDuelosFilter(n);
-                              setPair(null);
-                            }}
-                          >
-                            {n}
-                          </button>
-                        ))}
-                      </div>
+                      <span className="filter-range-value">
+                        {maxDuelosFilter == null ? "Todas" : maxDuelosFilter}
+                      </span>
+                      <input
+                        type="range"
+                        className="filter-range"
+                        min={0}
+                        max={MAX_DUELOS_FILTER_CAP + 1}
+                        step={1}
+                        value={
+                          maxDuelosFilter == null
+                            ? MAX_DUELOS_FILTER_CAP + 1
+                            : maxDuelosFilter
+                        }
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setMaxDuelosFilter(v > MAX_DUELOS_FILTER_CAP ? null : v);
+                          setPair(null);
+                        }}
+                      />
                     </label>
 
                     {hasActiveFilters && (
