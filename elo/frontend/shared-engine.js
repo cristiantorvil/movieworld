@@ -342,19 +342,33 @@ export function fetchJsonWithRetry(url, options, retries, timeoutMs) {
     });
 }
 
-export function postJson(payload, allowCreate) {
+export function postJson(payload, allowCreate, timeoutMs) {
   const url = allowCreate ? SYNC_URL + "?allowCreate=1" : SYNC_URL;
-  return fetchJsonWithRetry(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(payload),
-  });
+  return fetchJsonWithRetry(
+    url,
+    {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+    },
+    2,
+    timeoutMs
+  );
 }
 
 // Cola compartida (misma IndexedDB "cine-elo-db") entre las 4 páginas — este
 // handler soporta TODOS los tipos que cualquiera de ellas pueda encolar, no
 // solo los que encola la página actual, por si acá se drena un item que
 // vino de otra pestaña.
+//
+// 20s de timeout (el doble del default) en vez de los 10s de fetchJsonWithRetry
+// — confirmado en producción (2026-09-27) que bajo carga Apps Script puede
+// tardar más que eso en contestar un setFields, y con el default más corto
+// esto abortaba antes de tiempo en cada uno de los 2 reintentos, dejando
+// items que quizás sí hubieran llegado a confirmarse con un poco más de
+// margen atascados en la cola para siempre.
+const PENDING_SYNC_TIMEOUT_MS = 20000;
+
 export function syncPendingItem(item) {
   if (item.type === "setFields") {
     return fetchJsonWithRetry(
@@ -363,21 +377,29 @@ export function syncPendingItem(item) {
         "&title=" + encodeURIComponent(item.title || "") +
         "&year=" + encodeURIComponent(item.year || "") +
         "&changes=" + encodeURIComponent(JSON.stringify(item.changes)),
-      {}
+      {},
+      2,
+      PENDING_SYNC_TIMEOUT_MS
     );
   }
   if (item.type === "deleteMovie") {
     return postJson(
       { type: "deleteMovie", tmdbId: item.tmdbId || "", title: item.title, year: item.year },
-      false
+      false,
+      PENDING_SYNC_TIMEOUT_MS
     );
   }
   if (item.type === "create") {
-    return fetchJsonWithRetry(SYNC_URL + "?allowCreate=1", {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify([item.payload]),
-    });
+    return fetchJsonWithRetry(
+      SYNC_URL + "?allowCreate=1",
+      {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify([item.payload]),
+      },
+      2,
+      PENDING_SYNC_TIMEOUT_MS
+    );
   }
   return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
 }
