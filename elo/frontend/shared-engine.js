@@ -242,26 +242,63 @@ export function syncPendingItem(item) {
   return Promise.reject(new Error("tipo de pending sync desconocido: " + item.type));
 }
 
+// Tope de items que un solo flush intenta mandar. Con una cola grande
+// (cientos/miles de cambios acumulados durante una caída del backend o una
+// mala racha de cuota de Apps Script) mandarlos TODOS de una — como hacía
+// esto antes, vía Promise.all — satura tanto el límite de conexiones
+// simultáneas del navegador como la cuota de "ejecuciones simultáneas" de
+// Apps Script, y arma un bucle que se autoalimenta: todo falla por cuota,
+// nada se saca de la cola, y FLUSH_INTERVAL_MS después se vuelve a mandar
+// el mismo backlog entero de golpe, otra vez. Un backlog de miles de items
+// confirmado en producción por esto mismo. Con un tope chico, cada pasada
+// hace progreso real y deja cuota libre para el resto de la app (el pull
+// normal de la página, por ejemplo).
+const FLUSH_BATCH_SIZE = 25;
+
+// Con una cola grande, una sola pasada (25 items secuenciales, cada uno con
+// hasta 2 reintentos de por sí) puede tardar más que FLUSH_INTERVAL_MS en
+// terminar. Sin esta guarda, el setInterval de más abajo dispara una pasada
+// NUEVA encima de la anterior todavía en curso — y con varias pasadas
+// solapadas ya se vuelve a tener varios pedidos en simultáneo, el mismo
+// problema que el batching de arriba busca evitar. Un solo flush a la vez;
+// si ya hay uno en curso, esta llamada espera ESE mismo en vez de arrancar
+// otro.
+let flushInFlight = null;
+
 // Se llama al montar cada página y cada FLUSH_INTERVAL_MS mientras siga
 // abierta (red de contención para navegadores sin Background Sync, ej.
-// Safari/iPhone, o mientras ese registro todavía no disparó). Devuelve una
-// promesa que espera a que TODOS los intentos terminen (éxito o no) — quien
-// llama puede esperarla antes de pedir un pull, para no traer de la Sheet
-// un valor viejo mientras un guardado reciente todavía está en camino.
+// Safari/iPhone, o mientras ese registro todavía no disparó). Manda los
+// items UNO A LA VEZ (nunca en paralelo, ver FLUSH_BATCH_SIZE arriba),
+// del más viejo al más nuevo. Devuelve una promesa que espera a que todos
+// los intentos de esta pasada terminen (éxito o no) — quien llama puede
+// esperarla antes de pedir un pull, para no traer de la Sheet un valor
+// viejo mientras un guardado reciente todavía está en camino.
 export function flushPendingSync() {
-  return readPendingSync().then((queue) =>
-    Promise.all(
-      queue.map((item) =>
-        syncPendingItem(item)
-          .then((data) => {
-            if (data && data.ok) return removePendingSync(item.id);
-          })
-          .catch(() => {
-            // sigue en la cola: se reintenta la próxima vez.
-          })
-      )
-    )
-  );
+  if (flushInFlight) return flushInFlight;
+  flushInFlight = readPendingSync()
+    .then((queue) => {
+      const batch = queue
+        .slice()
+        .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+        .slice(0, FLUSH_BATCH_SIZE);
+      let chain = Promise.resolve();
+      batch.forEach((item) => {
+        chain = chain.then(() =>
+          syncPendingItem(item)
+            .then((data) => {
+              if (data && data.ok) return removePendingSync(item.id);
+            })
+            .catch(() => {
+              // sigue en la cola: se reintenta la próxima vez.
+            })
+        );
+      });
+      return chain;
+    })
+    .finally(() => {
+      flushInFlight = null;
+    });
+  return flushInFlight;
 }
 
 // Encola ANTES de intentar mandarlo, e intenta mandarlo ya mismo — si eso
