@@ -71,6 +71,146 @@ export function findByKey(list, key) {
   return null;
 }
 
+// Campos de metadata de TMDB que viajan igual en todos lados (pull, push,
+// merge, alta de película nueva). "numeric: true" son los que deben quedar
+// en null (no "") cuando no hay dato, para no romper comparaciones.
+export const META_FIELDS = [
+  { key: "director" },
+  { key: "genre" },
+  { key: "poster" },
+  { key: "tmdbId" },
+  { key: "country" },
+  { key: "originalLanguage" },
+  { key: "runtime", numeric: true },
+  { key: "overview" },
+  { key: "collection" },
+  { key: "productionCompanies" },
+  { key: "voteAverage", numeric: true },
+  { key: "voteCount", numeric: true },
+  { key: "cast" },
+  { key: "tagline" },
+  { key: "backdrop" },
+  { key: "imdbId" },
+];
+
+// Pisa los movies locales con lo que haya en el Sheet (progreso + metadata
+// de TMDB), y agrega las que estén en el Sheet pero no localmente — misma
+// lógica para Cine Elo (catálogo completo, pull-en-segundo-plano detrás de
+// lo local) y Watchlist (antes tenía su propio loadWatchlist que reemplazaba
+// todo de golpe en vez de mergear, y esperaba el pull entero antes de
+// mostrar nada). Se usa tanto al abrir cada app como en cualquier botón de
+// "restaurar/refrescar desde el Sheet".
+//
+// opts:
+// - gamesKey: nombre del campo LOCAL que guarda el conteo de duelos
+//   jugados (Cine Elo usa "comparisons", Watchlist usa "games" — el campo
+//   del lado de la Sheet siempre se llama "games" en ambos endpoints).
+// - metaFields: lista de META_FIELDS a mergear (default: la de arriba).
+// - makeId: generador opcional de id local (ej. uid) para películas nuevas
+//   que aparecen en la Sheet pero no existían localmente — Watchlist no
+//   usa un id sintético (se identifica por movieKey), así que no lo pasa.
+// - fallbackElo: cómo calcular el elo inicial de una peli sin elo_rating
+//   en la Sheet todavía — default computeInitialElo(rating, plays) (Cine
+//   Elo); Watchlist pasa computeWatchlistElo (usa vote_average de TMDB).
+export function mergeSheetIntoMovies(localMovies, sheetMovies, opts) {
+  const o = opts || {};
+  const gamesKey = o.gamesKey || "comparisons";
+  const metaFields = o.metaFields || META_FIELDS;
+  const makeId = o.makeId || null;
+  const fallbackElo = o.fallbackElo || ((sm) => computeInitialElo(sm.rating, sm.plays));
+
+  // Apps Script confirmadamente falla de forma intermitente (se cuelga, o
+  // devuelve una página de error) — si ALGUNA vez esa falla se cuela como
+  // un pull "exitoso" pero con muy pocas filas (respuesta cortada a mitad,
+  // etc.), lo de abajo filtra el catálogo local entero contra eso y borra
+  // todo lo que no aparezca. Eso pasó de verdad: dejó el catálogo local en
+  // 0-1 películas, persistido para siempre. Un pull legítimo nunca debería
+  // traer drásticamente MENOS de lo que ya hay guardado — si pasa, no es la
+  // Sheet real, es una respuesta mala, y no la usamos.
+  if (sheetMovies.length === 0 || (localMovies.length > 0 && sheetMovies.length < localMovies.length * 0.5)) {
+    console.error(
+      `mergeSheetIntoMovies: pull sospechoso (${sheetMovies.length} filas vs. ` +
+        `${localMovies.length} locales) — se ignora para no perder el catálogo local.`
+    );
+    return { merged: localMovies, updatedCount: 0, newCount: 0, skipped: true };
+  }
+
+  // tmdbId es el identificador primario — dos películas con el mismo título
+  // (ej. "Wuthering Heights" 1939/2011) tienen tmdbId distinto y no deben
+  // pisarse entre sí. title solo es fallback para filas sin tmdbId todavía.
+  const sheetById = new Map(
+    sheetMovies.filter((m) => m.tmdbId).map((m) => [String(m.tmdbId), m])
+  );
+  const sheetByTitle = new Map(
+    sheetMovies.filter((m) => !m.tmdbId).map((m) => [m.title, m])
+  );
+  const localIds = new Set(
+    localMovies.filter((m) => m.tmdbId).map((m) => String(m.tmdbId))
+  );
+  const localTitlesNoId = new Set(
+    localMovies.filter((m) => !m.tmdbId).map((m) => m.title)
+  );
+  function findSheetMatch(m) {
+    return m.tmdbId ? sheetById.get(String(m.tmdbId)) : sheetByTitle.get(m.title);
+  }
+  let updatedCount = 0;
+
+  // El pull siempre trae el estado completo del Sheet, así que una peli
+  // local que ya no aparece ahí fue borrada (o, en Watchlist, puntuada —
+  // pullWatchlist deja de devolverla) y hay que sacarla de la caché local.
+  const next = localMovies
+    .filter((m) => !!findSheetMatch(m))
+    .map((m) => {
+      const existing = findSheetMatch(m);
+      if (existing.elo == null) return m;
+      updatedCount++;
+      const merged = { ...m };
+      metaFields.forEach(({ key }) => {
+        merged[key] = existing[key] || m[key];
+      });
+      // title/year: la Sheet es la fuente de verdad ahora que el match es
+      // por tmdbId — una limpieza de título hecha del lado del backend
+      // (ej. sacar el "(AÑO)" pegado al nombre) tiene que llegar acá.
+      merged.title = existing.title || m.title;
+      merged.year = existing.year || m.year;
+      merged.rating = existing.rating != null ? existing.rating : m.rating;
+      merged.plays = existing.plays != null ? existing.plays : m.plays;
+      merged.elo = existing.elo;
+      merged[gamesKey] = existing.games || 0;
+      merged.wins = existing.wins || 0;
+      merged.losses = existing.losses != null ? existing.losses : m.losses;
+      merged.ties = existing.ties != null ? existing.ties : m.ties;
+      return merged;
+    });
+
+  const newOnes = [];
+  sheetMovies.forEach((sm) => {
+    if (!sm.title) return;
+    const already = sm.tmdbId ? localIds.has(String(sm.tmdbId)) : localTitlesNoId.has(sm.title);
+    if (already) return;
+    const movie = Object.assign(
+      makeId ? { id: makeId() } : {},
+      {
+        title: sm.title,
+        year: sm.year || undefined,
+        rating: sm.rating,
+        plays: sm.plays,
+        elo: sm.elo != null ? sm.elo : fallbackElo(sm),
+        wins: sm.wins || 0,
+        losses: sm.losses || 0,
+        ties: sm.ties || 0,
+      }
+    );
+    movie[gamesKey] = sm.games || 0;
+    metaFields.forEach(({ key, numeric }) => {
+      movie[key] = sm[key] || (numeric ? null : "");
+    });
+    newOnes.push(movie);
+  });
+
+  return { merged: [...next, ...newOnes], updatedCount, newCount: newOnes.length };
+}
+
 // ── Cola de guardados pendientes (IndexedDB) ──
 // Un guardado en el momento (fetch con retry/keepalive, ver
 // fetchJsonWithRetry) sigue perdiéndose si la pestaña se cierra o Apps

@@ -874,6 +874,7 @@ import {
   expectedScore,
   movieKey,
   findByKey,
+  mergeSheetIntoMovies,
   readPendingSync,
   registerServiceWorker,
   fetchJsonWithRetry,
@@ -1146,7 +1147,18 @@ import {
       if (!data.ok) throw new Error(data.error || "error desconocido");
       return reconcileWithPendingQueue(data.movies || []);
     }).then(function (reconciled) {
-      movies = reconciled;
+      // mergeSheetIntoMovies (compartida con Cine Elo, ver shared-engine.js)
+      // en vez de reemplazar "movies" entero: actualiza en el lugar lo que
+      // ya estaba pintado (de la caché) sin pisar el duelo que el usuario
+      // ya tiene en pantalla. gamesKey:"games" porque acá el conteo de
+      // duelos se llama así (Cine Elo usa "comparisons"); fallbackElo
+      // computeWatchlistElo porque una peli de watchlist nueva arranca del
+      // rating promedio de TMDB, no de un rating propio (no tiene todavía).
+      var result = mergeSheetIntoMovies(movies, reconciled, {
+        gamesKey: "games",
+        fallbackElo: computeWatchlistElo,
+      });
+      movies = result.merged;
       writeWatchlistCache(movies);
     });
   }
@@ -2413,21 +2425,37 @@ import {
   });
 
   // ── Arranque ──
-  // Antes esto pintaba el cache local de una (duelos/elo de la última
-  // visita) y recién lo reemplazaba cuando terminaba el pull real en
-  // segundo plano — se veían pelis con "0 duelos" u otros datos viejos por
-  // un momento hasta que la Sheet respondía. Siempre se espera el pull real
-  // antes de mostrar nada (queda "Cargando watchlist…" hasta entonces); el
-  // cache solo se usa como respaldo si el pull falla (sin conexión, Apps
-  // Script caído/con cuota agotada, etc).
+  // Local-first, misma lógica que Cine Elo (ver mergeSheetIntoMovies en
+  // shared-engine.js): si hay caché, se pinta YA, sin esperar nada de red.
+  // Esto es seguro ahora porque loadWatchlist ya no REEMPLAZA movies entero
+  // al llegar el pull — lo mergea en el lugar (actualiza lo que cambió,
+  // saca lo que ya no está, agrega lo nuevo), así que no hay riesgo de
+  // pisar el duelo que el usuario ya está mirando ni de mostrar por un
+  // instante algo con "0 duelos" que después salta a su valor real: lo que
+  // se ve arranca siendo lo último bueno que se vio, y se va actualizando
+  // solo. Antes esto esperaba siempre el pull real antes de mostrar nada
+  // porque el reemplazo total sí podía revivir una peli borrada o perder un
+  // pendiente sin reconciliar — con el merge esos casos ya están cubiertos.
   var cachedMovies = readWatchlistCache();
   var staleBannerEl = document.getElementById("staleBanner");
   var staleRetryBtn = document.getElementById("staleRetryBtn");
 
-  function startupLoad() {
+  if (cachedMovies && cachedMovies.length) {
+    movies = cachedMovies;
+    buildFilterOptions();
+    pickGroup();
+    renderList();
+    renderResumen();
+  }
+
+  // Refresca en segundo plano (al abrir, y disponible para el botón
+  // "Reintentar" del aviso de stale). No repite pickGroup() si ya hay un
+  // duelo en pantalla (duelGroup no nulo) — repintarlo de golpe le
+  // cambiaría las cards debajo del dedo a alguien a mitad de elegir.
+  function refreshInBackground() {
     // Con timeout: IndexedDB puede tardar de más o no resolver nunca en
     // algunos navegadores/contextos — sin esto, esperar el flush colgaba la
-    // carga entera en "Cargando watchlist…" para siempre.
+    // carga entera para siempre si no había caché que mostrar mientras tanto.
     return Promise.race([
       initialFlush.catch(function () {}),
       new Promise(function (resolve) { setTimeout(resolve, 3000); }),
@@ -2436,23 +2464,16 @@ import {
       .then(function () {
         if (staleBannerEl) staleBannerEl.style.display = "none";
         buildFilterOptions();
-        pickGroup();
+        if (!duelGroup) pickGroup();
         renderList();
         renderResumen();
       })
       .catch(function (err) {
-        // Antes esto se mostraba en silencio si había cache: la watchlist
-        // se veía "cargada" sin ninguna pista de que en realidad eran datos
-        // viejos y el pull real había fallado — justo el reporte de "a
-        // veces cargo el watchlist y no me aparece actualizado". Ahora
-        // queda un aviso visible + botón para reintentar sin recargar toda
-        // la página.
-        if (cachedMovies && cachedMovies.length) {
-          movies = cachedMovies;
-          buildFilterOptions();
-          pickGroup();
-          renderList();
-          renderResumen();
+        if (movies.length) {
+          // Ya había algo pintado (de la caché): se queda, pero avisamos
+          // que el refresco en segundo plano falló y podría no ser lo
+          // último — la razón original de este aviso ("a veces cargo el
+          // watchlist y no me aparece actualizado" sin ninguna pista).
           if (staleBannerEl) staleBannerEl.style.display = "flex";
           return;
         }
@@ -2469,7 +2490,7 @@ import {
         .then(function () {
           staleBannerEl.style.display = "none";
           buildFilterOptions();
-          pickGroup();
+          if (!duelGroup) pickGroup();
           renderList();
           renderResumen();
         })
@@ -2483,7 +2504,7 @@ import {
     };
   }
 
-  startupLoad();
+  refreshInBackground();
 })();
 </script>
 </body>
