@@ -59,7 +59,22 @@
     margin-top: 8px !important;
     font-size: 12px !important;
     color: var(--gold) !important;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
   }
+  .pending-indicator button {
+    background: transparent;
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .pending-indicator button:disabled { opacity: 0.6; cursor: default; }
   .stale-banner {
     margin-top: 8px !important;
     font-size: 12px !important;
@@ -805,7 +820,10 @@
     <header>
       <h1>🍿 Watchlist</h1>
       <p>Duelos y prioridad para lo que todavía no viste.</p>
-      <p class="pending-indicator" id="pendingIndicator" style="display:none;"></p>
+      <p class="pending-indicator" id="pendingIndicator" style="display:none;">
+        <span id="pendingText"></span>
+        <button type="button" id="pendingSyncBtn">Sincronizar ahora</button>
+      </p>
       <p class="stale-banner" id="staleBanner" style="display:none;">
         ⚠ No se pudo traer la Sheet, mostrando lo último guardado.
         <button type="button" id="staleRetryBtn">Reintentar</button>
@@ -897,6 +915,8 @@ import {
   movieKey,
   findByKey,
   mergeSheetIntoMovies,
+  dedupeMovies,
+  flushAllPending,
   readPendingSync,
   registerServiceWorker,
   fetchJsonWithRetry,
@@ -999,17 +1019,68 @@ import {
   // de notar el bug de esta noche: un guardado atascado en la cola no se
   // veía en ningún lado hasta que, minutos después, aparecía revertido).
   var pendingIndicatorEl = document.getElementById("pendingIndicator");
+  var pendingTextEl = document.getElementById("pendingText");
+  var pendingSyncBtn = document.getElementById("pendingSyncBtn");
+  var forcedSyncRunning = false;
+
   function updatePendingIndicator() {
+    // Mientras corre "Sincronizar ahora" el texto muestra el progreso real;
+    // no lo pisamos con el conteo crudo de la cola.
+    if (forcedSyncRunning) return;
     readPendingSync().then(function (queue) {
       if (!pendingIndicatorEl) return;
       if (queue.length > 0) {
-        pendingIndicatorEl.textContent =
+        pendingTextEl.textContent =
           "● " + queue.length + " cambio" + (queue.length === 1 ? "" : "s") + " sin confirmar todavía";
-        pendingIndicatorEl.style.display = "block";
+        pendingIndicatorEl.style.display = "flex";
       } else {
         pendingIndicatorEl.style.display = "none";
       }
     }).catch(function () {});
+  }
+
+  // "Sincronizar ahora": manda TODA la cola (los duelos repetidos de una
+  // misma peli se juntan en un solo pedido, ver flushAllPending), de a un
+  // pedido por vez, mostrando cuántos van. Se corta sola si Apps Script no
+  // contesta 5 veces seguidas — seguir insistiendo no ayuda.
+  if (pendingSyncBtn) {
+    pendingSyncBtn.onclick = function () {
+      if (forcedSyncRunning) return;
+      forcedSyncRunning = true;
+      pendingSyncBtn.disabled = true;
+      pendingSyncBtn.textContent = "Sincronizando…";
+      flushAllPending(function (p) {
+        pendingTextEl.textContent =
+          "● Sincronizando… " + p.done + " de " + p.total +
+          (p.failed ? " (" + p.failed + " sin respuesta)" : "");
+      })
+        .then(function (stats) {
+          forcedSyncRunning = false;
+          return readPendingSync().then(function (queue) {
+            if (queue.length === 0) {
+              pendingIndicatorEl.style.display = "none";
+              return;
+            }
+            var why = stats.stopped
+              ? "Apps Script no está contestando — reintentá en unos minutos."
+              : stats.rejected
+                ? stats.rejected + " rechazado" + (stats.rejected === 1 ? "" : "s") + " por la Sheet (probablemente pelis que ya no existen)."
+                : "";
+            pendingTextEl.textContent =
+              "● Quedan " + queue.length + " sin confirmar. " + why;
+            pendingIndicatorEl.style.display = "flex";
+          });
+        })
+        .catch(function () {
+          forcedSyncRunning = false;
+          updatePendingIndicator();
+        })
+        .finally(function () {
+          forcedSyncRunning = false;
+          pendingSyncBtn.disabled = false;
+          pendingSyncBtn.textContent = "Sincronizar ahora";
+        });
+    };
   }
 
   // Envoltorios finos sobre el syncDurable/flushPendingSync compartidos que
@@ -2463,6 +2534,10 @@ import {
   // porque el reemplazo total sí podía revivir una peli borrada o perder un
   // pendiente sin reconciliar — con el merge esos casos ya están cubiertos.
   var cachedMovies = readWatchlistCache();
+  // Un caché viejo puede traer la misma peli dos veces (ej. una fila
+  // duplicada que después se borró de la Sheet) — se colapsa acá para que
+  // no se vea repetida mientras el pull real no llega o falla.
+  if (cachedMovies) cachedMovies = dedupeMovies(cachedMovies);
   var staleBannerEl = document.getElementById("staleBanner");
   var staleRetryBtn = document.getElementById("staleRetryBtn");
 

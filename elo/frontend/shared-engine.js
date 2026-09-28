@@ -112,7 +112,24 @@ export const META_FIELDS = [
 // - fallbackElo: cómo calcular el elo inicial de una peli sin elo_rating
 //   en la Sheet todavía — default computeInitialElo(rating, plays) (Cine
 //   Elo); Watchlist pasa computeWatchlistElo (usa vote_average de TMDB).
+// Una misma película (mismo tmdbId, o mismo título si todavía no tiene)
+// repetida en una lista local — típicamente un caché viejo de antes de que
+// se borrara una fila duplicada en la Sheet — se colapsa a una sola. Se
+// queda la que tenga más duelos jugados (la más "usada"); el merge siguiente
+// contra la Sheet le pisa el elo/duelos con el valor real igual.
+export function dedupeMovies(list) {
+  const byKey = new Map();
+  list.forEach((m) => {
+    const key = m.tmdbId ? "id:" + m.tmdbId : "title:" + m.title;
+    const prev = byKey.get(key);
+    const games = (x) => Number(x.games != null ? x.games : x.comparisons) || 0;
+    if (!prev || games(m) > games(prev)) byKey.set(key, m);
+  });
+  return list.length === byKey.size ? list : Array.from(byKey.values());
+}
+
 export function mergeSheetIntoMovies(localMovies, sheetMovies, opts) {
+  localMovies = dedupeMovies(localMovies);
   const o = opts || {};
   const gamesKey = o.gamesKey || "comparisons";
   const metaFields = o.metaFields || META_FIELDS;
@@ -437,18 +454,15 @@ let flushInFlight = null;
 // viejo mientras un guardado reciente todavía está en camino.
 export function flushPendingSync() {
   if (flushInFlight) return flushInFlight;
-  flushInFlight = readPendingSync()
+  const current = readPendingSync()
     .then((queue) => {
-      const batch = queue
-        .slice()
-        .sort((a, b) => (a.ts || 0) - (b.ts || 0))
-        .slice(0, FLUSH_BATCH_SIZE);
+      const batch = coalescePending(queue).slice(0, FLUSH_BATCH_SIZE);
       let chain = Promise.resolve();
-      batch.forEach((item) => {
+      batch.forEach((group) => {
         chain = chain.then(() =>
-          syncPendingItem(item)
+          syncPendingItem(group.item)
             .then((data) => {
-              if (data && data.ok) return removePendingSync(item.id);
+              if (data && data.ok) return removeGroup(group);
             })
             .catch(() => {
               // sigue en la cola: se reintenta la próxima vez.
@@ -458,9 +472,116 @@ export function flushPendingSync() {
       return chain;
     })
     .finally(() => {
-      flushInFlight = null;
+      if (flushInFlight === current) flushInFlight = null;
     });
-  return flushInFlight;
+  flushInFlight = current;
+  return current;
+}
+
+// Junta los setFields consecutivos de una MISMA película que son solo
+// duelos (sin tocar "rating") en un único pedido, con el último valor de
+// cada columna — una peli que duelea 30 veces mientras el backend está
+// caído deja 30 items en la cola que dicen todos lo mismo salvo por el
+// elo final, y mandarlos uno por uno multiplica x30 el trabajo (y la
+// cuota) sin cambiar el resultado. Cualquier otra cosa (un cambio de
+// rating = "marcar como vista", un borrado, un alta) corta el grupo, así
+// el orden entre esos y los duelos de la misma peli se respeta. Devuelve
+// [{item, ids}]: el item a mandar y los ids de la cola que cubre (todos se
+// sacan de la cola juntos si el pedido se confirma).
+function coalescePending(queue) {
+  const sorted = queue.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const groups = [];
+  const open = new Map(); // movieKey -> grupo de duelos todavía abierto
+  sorted.forEach((item) => {
+    const key = movieKey(item);
+    const isDuelOnly =
+      item.type === "setFields" &&
+      Array.isArray(item.changes) &&
+      !item.changes.some((c) => c.col === "rating");
+    const g = open.get(key);
+    if (isDuelOnly && g) {
+      item.changes.forEach((c) => {
+        g.byCol[c.col] = c.value;
+      });
+      g.ids.push(item.id);
+      return;
+    }
+    const group = { item, ids: [item.id], byCol: null };
+    if (isDuelOnly) {
+      group.byCol = {};
+      item.changes.forEach((c) => {
+        group.byCol[c.col] = c.value;
+      });
+      open.set(key, group);
+    } else {
+      open.delete(key);
+    }
+    groups.push(group);
+  });
+  return groups.map((g) =>
+    g.byCol
+      ? {
+          item: Object.assign({}, g.item, {
+            changes: Object.keys(g.byCol).map((col) => ({ col, value: g.byCol[col] })),
+          }),
+          ids: g.ids,
+        }
+      : { item: g.item, ids: g.ids }
+  );
+}
+
+function removeGroup(group) {
+  return Promise.all(group.ids.map((id) => removePendingSync(id)));
+}
+
+// Botón "Sincronizar ahora": vacía TODA la cola (ya coalescida) en lugar
+// de los 25 por pasada del flush de fondo, siempre de a un pedido por vez.
+// Se corta sola tras 5 fallas seguidas de red/timeout (Apps Script caído o
+// sin cuota: seguir pegándole no ayuda y gasta más cuota) — pero un
+// rechazo explícito de la Sheet (ok:false, ej. la peli ya no existe) NO
+// cuenta como falla de red: el item queda en la cola (nunca se descarta
+// en silencio) y se sigue con el siguiente. onProgress({done,total,failed,
+// rejected}) se llama tras cada pedido. Resuelve con el resumen final.
+export function flushAllPending(onProgress) {
+  const MAX_CONSECUTIVE_FAILS = 5;
+  const run = () =>
+    readPendingSync().then((queue) => {
+      const groups = coalescePending(queue);
+      const stats = { done: 0, total: groups.length, failed: 0, rejected: 0, stopped: false };
+      let consecutiveFails = 0;
+      if (onProgress) onProgress(Object.assign({}, stats));
+      let chain = Promise.resolve();
+      groups.forEach((group) => {
+        chain = chain.then(() => {
+          if (stats.stopped) return;
+          return syncPendingItem(group.item)
+            .then((data) => {
+              if (data && data.ok) {
+                consecutiveFails = 0;
+                stats.done++;
+                return removeGroup(group);
+              }
+              consecutiveFails = 0;
+              stats.rejected++;
+            })
+            .catch(() => {
+              stats.failed++;
+              consecutiveFails++;
+              if (consecutiveFails >= MAX_CONSECUTIVE_FAILS) stats.stopped = true;
+            })
+            .then(() => {
+              if (onProgress) onProgress(Object.assign({}, stats));
+            });
+        });
+      });
+      return chain.then(() => stats);
+    });
+  const previous = flushInFlight ? flushInFlight.catch(() => {}) : Promise.resolve();
+  const current = previous.then(run).finally(() => {
+    if (flushInFlight === current) flushInFlight = null;
+  });
+  flushInFlight = current;
+  return current;
 }
 
 // Encola ANTES de intentar mandarlo, e intenta mandarlo ya mismo — si eso
