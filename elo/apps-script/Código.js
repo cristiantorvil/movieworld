@@ -104,6 +104,11 @@ function doPost(e) {
     var updated = [];
     var created = [];
     var skipped = [];
+    // Duelos ignorados porque la peli cambió de vista a watchlist (o al
+    // revés) entre que se jugó el duelo y llegó este guardado — ver
+    // expectRated más abajo.
+    var stale = [];
+    var ratingColBatch = header.indexOf('rating');
 
     // Las altas se juntan en newRows y se escriben con UN solo setValues al
     // final, en vez de un appendRow por película — con la hoja tan grande
@@ -166,6 +171,22 @@ function doPost(e) {
         var cell = sheet.getRange(rowIndex, f.col + 1);
         if (!cell.getValue()) cell.setValue(item[f.key]);
       });
+      // expectRated (opcional, lo manda el "syncElo" que usan Cine Elo y
+      // Watchlist para guardar duelos): si la peli estaba vista (true) o en
+      // watchlist (false) cuando se jugó el duelo y eso ya no es así en la
+      // Sheet, este guardado llegó tarde (ej. un duelo de watchlist
+      // reintentado DESPUÉS de "Marcar como vista", que ya reseteó el elo) y
+      // no debe pisar nada. Mismo criterio que el guard de handleSetFields.
+      if (typeof item.expectRated === 'boolean' && ratingColBatch > -1) {
+        var rawRating = values[rowIndex - 1][ratingColBatch];
+        var rowRating = typeof rawRating === 'number'
+          ? rawRating
+          : parseFloat(String(rawRating).replace(',', '.')) || 0;
+        if ((rowRating > 0) !== item.expectRated) {
+          stale.push(item.title);
+          return;
+        }
+      }
       if (eloCol > -1) sheet.getRange(rowIndex, eloCol + 1).setValue(item.elo);
       if (gamesCol > -1) sheet.getRange(rowIndex, gamesCol + 1).setValue(item.games);
       if (winCol > -1) sheet.getRange(rowIndex, winCol + 1).setValue(item.wins);
@@ -182,7 +203,7 @@ function doPost(e) {
     SpreadsheetApp.flush();
 
     return ContentService.createTextOutput(
-      JSON.stringify({ ok: true, updated: updated, created: created, skipped: skipped })
+      JSON.stringify({ ok: true, updated: updated, created: created, skipped: skipped, stale: stale })
     ).setMimeType(ContentService.MimeType.JSON);
     } finally {
       lock.releaseLock();

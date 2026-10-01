@@ -67,6 +67,25 @@ function syncItem(item) {
       body: JSON.stringify([item.payload]),
     }).then(function (r) { return r.json(); });
   }
+  if (item.type === "syncElo") {
+    // Resultado de duelo (Cine Elo y Watchlist, ver makeEloSyncItem en
+    // frontend/shared-engine.js): mismo POST por lotes, sin allowCreate.
+    return fetch(SYNC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify([{
+        title: item.title,
+        year: item.year || "",
+        tmdbId: item.tmdbId || "",
+        elo: item.elo,
+        games: item.games,
+        wins: item.wins,
+        losses: item.losses,
+        ties: 0,
+        expectRated: item.expectRated,
+      }]),
+    }).then(function (r) { return r.json(); });
+  }
   if (item.type === "deleteMovie") {
     return fetch(SYNC_URL, {
       method: "POST",

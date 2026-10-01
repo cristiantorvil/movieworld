@@ -5,8 +5,20 @@ Proyecto unificado de dos apps que antes vivían separadas (ELO y GRAFO), con un
 ## Estructura
 
 - `index.html` — portada, enlaza a las dos apps, a `elo/add.html` y a `elo/edit.html`.
-- `elo/` — **Cine Elo**: app de ranking por comparación (React, standalone). `apps-script/` tiene el backend (Google Apps Script, manejado con `clasp`); `frontend/` tiene el código fuente `.jsx`. `add.html` es una página aparte (sin build, vanilla JS) para agregar una película rápido sin abrir toda la app; `edit.html` es su equivalente para corregir una peli ya cargada (rating, poster, TMDB, director, u otro campo suelto).
+- `elo/` — **Cine Elo**: app de ranking por comparación (React, standalone), con dos modos sobre el mismo catálogo: **Vistas** (`elo/index.html`, pelis con rating) y **Watchlist** (`elo/index.html?modo=watchlist`, pelis sin ver; `elo/watchlist.html` redirige ahí). Los dos modos son la misma app: mismas pantallas (Comparar, Ranking, Torneo, Resumen, Mis pelis), mismo catálogo local, misma sincronización con la Sheet y la misma cola durable de guardados — el modo solo decide qué subconjunto se muestra. `apps-script/` tiene el backend (Google Apps Script, manejado con `clasp`); `frontend/` tiene el código fuente `.jsx` y `shared-engine.js` (Elo, merge con la Sheet y cola de guardados, compartido también con add/edit). `add.html` es una página aparte (sin build, vanilla JS) para agregar una película rápido sin abrir toda la app; `edit.html` es su equivalente para corregir una peli ya cargada (rating, poster, TMDB, director, u otro campo suelto).
 - `grafo/` — **Directors Graph**: grafo de influencias entre directores (notebook `grafo.ipynb` + PyVis). `lib/` son librerías JS de terceros (vis.js, tom-select); `posters/`/`profiles/` son imágenes cacheadas localmente.
+
+## Cómo regenerar `elo/index.html`
+
+`elo/index.html` es el bundle de `elo/frontend/cine-elo.jsx` (+ `build/entry.jsx` y `shared-engine.js`). Después de tocar cualquiera de esos:
+
+```
+cd elo/frontend/build
+npm install
+node build.mjs
+```
+
+Si cambia `elo/apps-script/Código.js`, hay que subirlo (`clasp push`) y publicar una versión nueva del deployment que ya usa la URL de las páginas.
 
 ## Base de datos única
 

@@ -60,10 +60,39 @@ class ErrorBoundary extends React.Component {
   }
 }
 
+// Modo inicial desde la URL: index.html?modo=watchlist (watchlist.html
+// redirige acá). El selector del header cambia de modo sin recargar y deja
+// la URL al día, así recargar o compartir el link mantiene el modo.
+function readModeFromUrl() {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    return q.get("modo") === "watchlist" ? "watchlist" : "vistas";
+  } catch (e) {
+    return "vistas";
+  }
+}
+
 function App() {
+  const [mode, setMode] = React.useState(readModeFromUrl);
+  const changeMode = React.useCallback((next) => {
+    setMode(next);
+    try {
+      const url = new URL(window.location.href);
+      if (next === "watchlist") url.searchParams.set("modo", "watchlist");
+      else url.searchParams.delete("modo");
+      window.history.replaceState(null, "", url.toString());
+    } catch (e) {
+      // URL no actualizable (file://, sandbox): el modo cambia igual
+    }
+    document.title = next === "watchlist" ? "Watchlist — Cine Elo" : "Cine Elo";
+    window.scrollTo(0, 0);
+  }, []);
+  React.useEffect(() => {
+    document.title = mode === "watchlist" ? "Watchlist — Cine Elo" : "Cine Elo";
+  }, []);
   return (
     <ErrorBoundary>
-      <CineElo />
+      <CineElo mode={mode} onModeChange={changeMode} />
     </ErrorBoundary>
   );
 }

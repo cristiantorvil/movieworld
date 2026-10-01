@@ -64,6 +64,30 @@ export function movieKey(m) {
   return m.tmdbId ? "id:" + m.tmdbId : "title:" + m.title + "|" + (m.year || "");
 }
 
+// Rating 0/vacío = sin ver = watchlist. Mismo criterio que el backend
+// (handlePullWatchlist: parseFloat con coma decimal, || 0) — una sola regla
+// para decidir en qué modo (vistas/watchlist) aparece cada película.
+export function parseRating(rating) {
+  if (typeof rating === "number") return isFinite(rating) ? rating : 0;
+  return parseFloat(String(rating == null ? "" : rating).replace(",", ".")) || 0;
+}
+
+export function isWatchlistMovie(m) {
+  return !(parseRating(m && m.rating) > 0);
+}
+
+// Elo de arranque cuando la Sheet no tiene uno cargado todavía: vistas
+// desde su rating, watchlist desde el promedio de TMDB.
+export function defaultEloFor(m) {
+  const rating = parseRating(m.rating);
+  if (rating > 0) return computeInitialElo(rating, Number(m.plays) || 1);
+  return computeWatchlistElo(m.voteAverage, m.voteCount);
+}
+
+function hasElo(v) {
+  return v !== null && v !== undefined && v !== "" && isFinite(Number(v));
+}
+
 export function findByKey(list, key) {
   for (let i = 0; i < list.length; i++) {
     if (movieKey(list[i]) === key) return list[i];
@@ -134,7 +158,7 @@ export function mergeSheetIntoMovies(localMovies, sheetMovies, opts) {
   const gamesKey = o.gamesKey || "comparisons";
   const metaFields = o.metaFields || META_FIELDS;
   const makeId = o.makeId || null;
-  const fallbackElo = o.fallbackElo || ((sm) => computeInitialElo(sm.rating, sm.plays));
+  const fallbackElo = o.fallbackElo || defaultEloFor;
 
   // Apps Script confirmadamente falla de forma intermitente (se cuelga, o
   // devuelve una página de error) — si ALGUNA vez esa falla se cuela como
@@ -179,7 +203,6 @@ export function mergeSheetIntoMovies(localMovies, sheetMovies, opts) {
     .filter((m) => !!findSheetMatch(m))
     .map((m) => {
       const existing = findSheetMatch(m);
-      if (existing.elo == null) return m;
       updatedCount++;
       const merged = { ...m };
       metaFields.forEach(({ key }) => {
@@ -192,9 +215,16 @@ export function mergeSheetIntoMovies(localMovies, sheetMovies, opts) {
       merged.year = existing.year || m.year;
       merged.rating = existing.rating != null ? existing.rating : m.rating;
       merged.plays = existing.plays != null ? existing.plays : m.plays;
-      merged.elo = existing.elo;
-      merged[gamesKey] = existing.games || 0;
-      merged.wins = existing.wins || 0;
+      // Celda de elo vacía en la Sheet (fila recién agregada a mano, por
+      // ejemplo): se conserva el local si hay, y si no se calcula — antes
+      // llegaba "" y la peli quedaba con elo vacío, ordenada como si fuera 0.
+      merged.elo = hasElo(existing.elo)
+        ? Number(existing.elo)
+        : hasElo(m.elo)
+        ? Number(m.elo)
+        : fallbackElo(existing);
+      merged[gamesKey] = Number(existing.games) || 0;
+      merged.wins = Number(existing.wins) || 0;
       merged.losses = existing.losses != null ? existing.losses : m.losses;
       merged.ties = existing.ties != null ? existing.ties : m.ties;
       return merged;
@@ -212,13 +242,13 @@ export function mergeSheetIntoMovies(localMovies, sheetMovies, opts) {
         year: sm.year || undefined,
         rating: sm.rating,
         plays: sm.plays,
-        elo: sm.elo != null ? sm.elo : fallbackElo(sm),
-        wins: sm.wins || 0,
+        elo: hasElo(sm.elo) ? Number(sm.elo) : fallbackElo(sm),
+        wins: Number(sm.wins) || 0,
         losses: sm.losses || 0,
         ties: sm.ties || 0,
       }
     );
-    movie[gamesKey] = sm.games || 0;
+    movie[gamesKey] = Number(sm.games) || 0;
     metaFields.forEach(({ key, numeric }) => {
       movie[key] = sm[key] || (numeric ? null : "");
     });
@@ -303,15 +333,59 @@ export const IDB_NAME = "cine-elo-db";
 export const IDB_STORE = "pendingSync";
 export const FLUSH_INTERVAL_MS = 20000;
 
+// Una sola conexión reutilizada (antes se abría una NUEVA en cada lectura/
+// escritura y nunca se cerraba — cientos por sesión con el flush cada 20s).
+// En el celular el navegador corta las conexiones de IndexedDB cuando la
+// pestaña pasa a segundo plano ("Connection to Indexed Database server
+// lost"); la próxima operación fallaba y, sin nadie que capturara ese
+// rechazo, watchlist.html mostraba "Algo se rompió" — la pantalla que se
+// veía tan seguido. Ahora la conexión se descarta al cerrarse y cada
+// operación reintenta una vez con una conexión nueva antes de rendirse.
+let dbPromise = null;
+
 function idbOpen() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_NAME, 1);
+  if (dbPromise) return dbPromise;
+  const p = new Promise((resolve, reject) => {
+    let req;
+    try {
+      req = indexedDB.open(IDB_NAME, 1);
+    } catch (e) {
+      reject(e);
+      return;
+    }
     req.onupgradeneeded = () => {
       req.result.createObjectStore(IDB_STORE, { keyPath: "id" });
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onclose = () => {
+        if (dbPromise === p) dbPromise = null;
+      };
+      db.onversionchange = () => {
+        db.close();
+        if (dbPromise === p) dbPromise = null;
+      };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
+    req.onblocked = () => reject(new Error("IndexedDB bloqueada por otra pestaña"));
   });
+  dbPromise = p;
+  p.catch(() => {
+    if (dbPromise === p) dbPromise = null;
+  });
+  return p;
+}
+
+// Corre fn(db) y, si falla (conexión muerta, transacción abortada), tira la
+// conexión cacheada y reintenta una vez con una nueva.
+function withDb(fn) {
+  return idbOpen()
+    .then(fn)
+    .catch(() => {
+      dbPromise = null;
+      return idbOpen().then(fn);
+    });
 }
 
 export function enqueuePendingSync(item) {
@@ -321,37 +395,40 @@ export function enqueuePendingSync(item) {
   // dos pendientes para la misma peli es el más nuevo al reconciliar contra
   // un pull fresco, y a veces se terminaba aplicando el viejo encima.
   item.ts = Date.now();
-  return idbOpen().then(
+  return withDb(
     (db) =>
       new Promise((resolve, reject) => {
         const tx = db.transaction(IDB_STORE, "readwrite");
         tx.objectStore(IDB_STORE).put(item);
         tx.oncomplete = () => resolve(item.id);
         tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error("transacción abortada"));
       })
   );
 }
 
 export function readPendingSync() {
-  return idbOpen().then(
+  return withDb(
     (db) =>
       new Promise((resolve, reject) => {
         const tx = db.transaction(IDB_STORE, "readonly");
         const req = tx.objectStore(IDB_STORE).getAll();
         req.onsuccess = () => resolve(req.result || []);
         req.onerror = () => reject(req.error);
+        tx.onabort = () => reject(tx.error || new Error("transacción abortada"));
       })
   );
 }
 
 export function removePendingSync(id) {
-  return idbOpen().then(
+  return withDb(
     (db) =>
       new Promise((resolve, reject) => {
         const tx = db.transaction(IDB_STORE, "readwrite");
         tx.objectStore(IDB_STORE).delete(id);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error("transacción abortada"));
       })
   );
 }
@@ -447,6 +524,46 @@ export function postJson(payload, allowCreate, timeoutMs) {
 // margen atascados en la cola para siempre.
 const PENDING_SYNC_TIMEOUT_MS = 20000;
 
+// ── Resultado de duelo (mismo camino para Cine Elo y Watchlist) ──
+// Antes cada página escribía los duelos distinto: Cine Elo con un POST
+// suelto (sin cola, sin reintento — si fallaba se perdía) y Watchlist con
+// setFields columna por columna vía la cola durable. Ahora las dos encolan
+// un "syncElo" con el estado completo de elo/duelos de cada película, que se
+// manda por el mismo POST por lotes de siempre (solo actualiza filas que ya
+// existen, nunca crea). expectRated le dice al backend si la peli estaba
+// vista o en watchlist al jugarse el duelo: si para cuando llega el guardado
+// eso cambió (ej. un duelo de watchlist atrasado que llega después de
+// "Marcar como vista"), el backend lo ignora en vez de pisar el elo nuevo.
+export function makeEloSyncItem(m, gamesKey) {
+  const games = Number(m[gamesKey || "comparisons"]) || 0;
+  const wins = Number(m.wins) || 0;
+  return {
+    type: "syncElo",
+    tmdbId: m.tmdbId || "",
+    title: m.title,
+    year: m.year || "",
+    elo: m.elo,
+    games,
+    wins,
+    losses: Math.max(games - wins, 0),
+    expectRated: !isWatchlistMovie(m),
+  };
+}
+
+function eloPayload(item) {
+  return {
+    title: item.title,
+    year: item.year || "",
+    tmdbId: item.tmdbId || "",
+    elo: item.elo,
+    games: item.games,
+    wins: item.wins,
+    losses: item.losses,
+    ties: 0,
+    expectRated: item.expectRated,
+  };
+}
+
 export function syncPendingItem(item) {
   if (item.type === "setFields") {
     return fetchJsonWithRetry(
@@ -459,6 +576,9 @@ export function syncPendingItem(item) {
       2,
       PENDING_SYNC_TIMEOUT_MS
     );
+  }
+  if (item.type === "syncElo") {
+    return postJson([eloPayload(item)], false, PENDING_SYNC_TIMEOUT_MS);
   }
   if (item.type === "deleteMovie") {
     return postJson(
@@ -532,6 +652,12 @@ export function flushPendingSync() {
       });
       return chain;
     })
+    // Nunca rechaza: se llama desde un setInterval sin nadie que capture el
+    // error (IndexedDB caída, por ejemplo) — lo que quede en la cola se
+    // reintenta en la próxima pasada igual.
+    .catch((err) => {
+      console.error("flushPendingSync falló (se reintenta en la próxima pasada):", err);
+    })
     .finally(() => {
       if (flushInFlight === current) flushInFlight = null;
     });
@@ -552,43 +678,55 @@ export function flushPendingSync() {
 function coalescePending(queue) {
   const sorted = queue.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
   const groups = [];
-  const open = new Map(); // movieKey -> grupo de duelos todavía abierto
+  // movieKey -> grupo todavía abierto. Un grupo solo junta items seguidos
+  // del MISMO tipo mergeable para esa peli: cualquier otra cosa en el medio
+  // (rating, borrado, alta, o el otro tipo de duelo) lo cierra, así el orden
+  // entre ellos se respeta tal cual se encolaron.
+  const open = new Map();
   sorted.forEach((item) => {
     const key = movieKey(item);
     const isDuelOnly =
       item.type === "setFields" &&
       Array.isArray(item.changes) &&
       !item.changes.some((c) => c.col === "rating");
+    // syncElo trae el estado COMPLETO de elo/duelos — el último pisa a los
+    // anteriores sin perder nada.
+    const isEloSnapshot = item.type === "syncElo";
+    const mergeType = isDuelOnly ? "fields" : isEloSnapshot ? "elo" : null;
     const g = open.get(key);
-    if (isDuelOnly && g) {
-      item.changes.forEach((c) => {
-        g.byCol[c.col] = c.value;
-      });
+    if (mergeType && g && g.mergeType === mergeType) {
+      if (mergeType === "fields") {
+        item.changes.forEach((c) => {
+          g.byCol[c.col] = c.value;
+        });
+      } else {
+        g.latest = item;
+      }
       g.ids.push(item.id);
       return;
     }
-    const group = { item, ids: [item.id], byCol: null };
-    if (isDuelOnly) {
+    const group = { item, ids: [item.id], byCol: null, latest: null, mergeType };
+    if (mergeType === "fields") {
       group.byCol = {};
       item.changes.forEach((c) => {
         group.byCol[c.col] = c.value;
       });
-      open.set(key, group);
-    } else {
-      open.delete(key);
     }
+    if (mergeType) open.set(key, group);
+    else open.delete(key);
     groups.push(group);
   });
-  return groups.map((g) =>
-    g.byCol
-      ? {
-          item: Object.assign({}, g.item, {
-            changes: Object.keys(g.byCol).map((col) => ({ col, value: g.byCol[col] })),
-          }),
-          ids: g.ids,
-        }
-      : { item: g.item, ids: g.ids }
-  );
+  return groups.map((g) => {
+    if (g.byCol) {
+      return {
+        item: Object.assign({}, g.item, {
+          changes: Object.keys(g.byCol).map((col) => ({ col, value: g.byCol[col] })),
+        }),
+        ids: g.ids,
+      };
+    }
+    return { item: g.latest || g.item, ids: g.ids };
+  });
 }
 
 function removeGroup(group) {
@@ -688,26 +826,104 @@ function runSerializedPerMovie(item, task) {
 // en silencio (ver el comentario ahí — antes la peli desaparecía de la
 // vista igual, aunque el borrado nunca hubiera llegado a la Sheet).
 export function syncDurable(item, onChange) {
-  return enqueuePendingSync(item).then((pendingId) => {
-    if (onChange) onChange();
-    requestBackgroundSync();
-    return runSerializedPerMovie(item, () => syncPendingItem(item))
-      .then((data) => {
-        if (data && data.ok) {
-          return removePendingSync(pendingId).then(() => {
-            if (onChange) onChange();
-            return { ok: true };
+  const send = () => runSerializedPerMovie(item, () => syncPendingItem(item));
+  return enqueuePendingSync(item)
+    .then(
+      (pendingId) => pendingId,
+      (err) => {
+        // IndexedDB no disponible (modo privado, storage lleno, conexión
+        // perdida): no hay cola durable, pero igual se intenta mandar ya.
+        console.error("No se pudo encolar el guardado, se manda sin cola:", item, err);
+        return null;
+      }
+    )
+    .then((pendingId) => {
+      if (onChange) onChange();
+      if (pendingId) requestBackgroundSync();
+      return send()
+        .then((data) => {
+          if (data && data.ok) {
+            const cleanup = pendingId ? removePendingSync(pendingId).catch(() => {}) : Promise.resolve();
+            return cleanup.then(() => {
+              if (onChange) onChange();
+              return { ok: true, data };
+            });
+          }
+          return { ok: false, error: (data && data.error) || "la Sheet rechazó el cambio" };
+        })
+        .catch((err) => {
+          console.error(
+            "Sync en segundo plano falló (queda pendiente, Background Sync reintentará):",
+            item,
+            err
+          );
+          return { ok: false, error: String((err && err.message) || err) };
+        });
+    });
+}
+
+// Aplica la cola pendiente sobre un pull fresco de la Sheet ANTES de
+// mergearlo: un cambio recién encolado puede no haber llegado todavía a la
+// Sheet, y sin esto el pull lo "deshacía" en pantalla (una peli borrada que
+// reaparece, un duelo que vuelve al elo anterior, una marcada como vista que
+// vuelve a la watchlist). Trabaja con los nombres de campo del pull (games,
+// rating, plays...). Nunca rechaza: si la cola no se puede leer, devuelve el
+// pull tal cual.
+const SETFIELDS_COL_TO_PULL_KEY = {
+  rating: "rating",
+  diary_count: "plays",
+  elo_rating: "elo",
+  elo_games: "games",
+  elo_win: "wins",
+  elo_loss: "losses",
+  director: "director",
+  poster_path: "poster",
+  genre: "genre",
+  country: "country",
+  year: "year",
+};
+
+export function reconcileWithPending(sheetMovies) {
+  return readPendingSync()
+    .then((queue) => {
+      if (!queue.length) return sheetMovies;
+      const sorted = queue.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      const byKey = new Map();
+      sheetMovies.forEach((m) => byKey.set(movieKey(m), Object.assign({}, m)));
+      sorted.forEach((item) => {
+        if (item.type === "create" && item.payload) {
+          const k = movieKey(item.payload);
+          if (!byKey.has(k)) byKey.set(k, Object.assign({}, item.payload));
+          return;
+        }
+        const key = movieKey(item);
+        if (item.type === "deleteMovie") {
+          byKey.delete(key);
+          return;
+        }
+        const m = byKey.get(key);
+        if (!m) return;
+        if (item.type === "syncElo") {
+          // Mismo guard que el backend: si la peli cambió de vista a
+          // watchlist (o al revés) después de este duelo, no aplica.
+          if (item.expectRated != null && item.expectRated === isWatchlistMovie(m)) return;
+          m.elo = item.elo;
+          m.games = item.games;
+          m.wins = item.wins;
+          m.losses = item.losses;
+        } else if (item.type === "setFields" && Array.isArray(item.changes)) {
+          // Mismo guard que handleSetFields en el backend: a una peli ya
+          // vista no se le pisan elo/duelos salvo que el mismo cambio traiga
+          // el rating (un duelo de watchlist viejo que llega tarde).
+          const touchesRating = item.changes.some((c) => c.col === "rating");
+          item.changes.forEach((c) => {
+            if (!touchesRating && !isWatchlistMovie(m) && /^elo_/.test(c.col)) return;
+            const k = SETFIELDS_COL_TO_PULL_KEY[c.col];
+            if (k) m[k] = c.value;
           });
         }
-        return { ok: false, error: (data && data.error) || "la Sheet rechazó el cambio" };
-      })
-      .catch((err) => {
-        console.error(
-          "Sync en segundo plano falló (queda pendiente, Background Sync reintentará):",
-          item,
-          err
-        );
-        return { ok: false, error: String((err && err.message) || err) };
       });
-  });
+      return Array.from(byKey.values());
+    })
+    .catch(() => sheetMovies);
 }
