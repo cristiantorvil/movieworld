@@ -460,7 +460,7 @@ export function flushPendingSync() {
       let chain = Promise.resolve();
       batch.forEach((group) => {
         chain = chain.then(() =>
-          syncPendingItem(group.item)
+          runSerializedPerMovie(group.item, () => syncPendingItem(group.item))
             .then((data) => {
               if (data && data.ok) return removeGroup(group);
             })
@@ -554,7 +554,7 @@ export function flushAllPending(onProgress) {
       groups.forEach((group) => {
         chain = chain.then(() => {
           if (stats.stopped) return;
-          return syncPendingItem(group.item)
+          return runSerializedPerMovie(group.item, () => syncPendingItem(group.item))
             .then((data) => {
               if (data && data.ok) {
                 consecutiveFails = 0;
@@ -584,6 +584,33 @@ export function flushAllPending(onProgress) {
   return current;
 }
 
+// Varios duelos seguidos sobre la MISMA película (normal: el modo rápido
+// dueleea la misma peli varias veces antes de que el primer guardado
+// confirme) cada uno dispara su propio intento inmediato acá abajo — sin
+// esto, esos pedidos viajan en paralelo y pueden llegar a Apps Script
+// DESORDENADOS (quién gana la carrera de red no tiene por qué ser quién
+// salió último), y el que escribe último en la Sheet pisa a los demás con
+// SU valor de elo_games, no necesariamente el más alto. Cada uno reporta
+// ok:true individualmente (escribió algo, solo que no lo último) así que
+// nunca queda nada pendiente ni ningún aviso — la Sheet simplemente se
+// queda con un conteo de duelos más bajo que el real, en silencio. Confirmado
+// en producción: un navegador mostraba 339 duelos jugados para "I Am Cuba",
+// la Sheet tenía 324. Esta cola serializa los intentos inmediatos por
+// película (nunca entre películas distintas) para que siempre salgan en el
+// mismo orden en que se encolaron.
+const inFlightByMovie = new Map();
+
+function runSerializedPerMovie(item, task) {
+  const key = movieKey(item);
+  const previous = inFlightByMovie.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(task);
+  inFlightByMovie.set(key, current);
+  current.finally(() => {
+    if (inFlightByMovie.get(key) === current) inFlightByMovie.delete(key);
+  });
+  return current;
+}
+
 // Encola ANTES de intentar mandarlo, e intenta mandarlo ya mismo — si eso
 // falla queda en la cola sin avisarle a nadie (mismo trato silencioso que un
 // duelo): Background Sync, el intervalo de flushPendingSync, o la próxima
@@ -603,7 +630,7 @@ export function syncDurable(item, onChange) {
   return enqueuePendingSync(item).then((pendingId) => {
     if (onChange) onChange();
     requestBackgroundSync();
-    return syncPendingItem(item)
+    return runSerializedPerMovie(item, () => syncPendingItem(item))
       .then((data) => {
         if (data && data.ok) {
           return removePendingSync(pendingId).then(() => {
