@@ -122,6 +122,8 @@
     cursor: pointer;
     flex-shrink: 0;
   }
+  .undo-toast.undo-toast-err { border-color: var(--red); }
+  .undo-toast.undo-toast-err button { background: var(--red); color: #fff; }
 
   .tabs {
     display: flex;
@@ -992,26 +994,32 @@ import {
   // acá y en cine-elo.jsx/add.html/edit.html.
   registerServiceWorker("sw.js");
 
-  // Toast con "Deshacer" — 8 segundos para arrepentirse de "Marcar como
-  // vista" antes de que la ventana se cierre sola. Cancela cualquier
-  // llamado anterior a undoFn si se muestra un toast nuevo antes de que el
-  // primero se resuelva (evita deshacer dos cosas encimadas).
+  // Toast con botón de acción — 8 segundos por default (ej. "Deshacer" de
+  // "Marcar como vista", antes de que la ventana se cierre sola). También
+  // se reusa para avisar que un borrado NO se pudo confirmar (ver
+  // removeMovie): ahí el botón es "Reintentar" y el toast queda más tiempo,
+  // porque a diferencia de un undo esto no es algo que el usuario deba
+  // decidir rápido. Cancela cualquier llamado anterior a actionFn si se
+  // muestra un toast nuevo antes de que el primero se resuelva.
   var undoToastEl = document.getElementById("undoToast");
   var undoToastTimer = null;
-  function showUndoToast(message, undoFn) {
+  function showUndoToast(message, actionFn, opts) {
     if (!undoToastEl) return;
+    opts = opts || {};
     clearTimeout(undoToastTimer);
     document.getElementById("undoToastText").textContent = message;
     undoToastEl.style.display = "flex";
+    undoToastEl.classList.toggle("undo-toast-err", !!opts.isError);
     var btn = document.getElementById("undoToastBtn");
+    btn.textContent = opts.buttonLabel || "Deshacer";
     btn.onclick = function () {
       undoToastEl.style.display = "none";
       clearTimeout(undoToastTimer);
-      undoFn();
+      actionFn();
     };
     undoToastTimer = setTimeout(function () {
       undoToastEl.style.display = "none";
-    }, 8000);
+    }, opts.timeoutMs || 8000);
   }
 
   // Indicador chico en el header — antes no había NINGUNA señal de que
@@ -2057,17 +2065,34 @@ import {
     var m = byKey(key);
     if (!m) return;
     if (!confirm('Quitar "' + m.title + '" de la watchlist? Esto la borra de la Sheet.')) return;
+    var title = m.title;
     movies = movies.filter(function (x) { return movieKey(x) !== key; });
     renderList();
     renderResumen();
     if (duelGroup && duelGroup.some(function (x) { return movieKey(x) === key; })) pickGroup();
-    // Encolado durable en vez del intento suelto de antes: si el borrado
-    // inmediato falla (Sheet ocupada, sin conexión), sigue pendiente y se
-    // reintenta solo hasta confirmarse — sin mostrar error ni, sobre todo,
-    // sin restaurar la peli en pantalla (sabemos que el usuario la quiere
-    // afuera porque recién lo confirmó). El backend ya trata borrar algo
-    // que ya no está como éxito, así que un reintento nunca falla en falso.
-    syncDurable({ type: "deleteMovie", tmdbId: m.tmdbId || "", title: m.title, year: m.year });
+    // Encolado durable (no un intento suelto): si el borrado inmediato
+    // falla (Sheet ocupada, Apps Script lento, sin conexión), sigue
+    // pendiente y Background Sync/el flush de fondo lo reintentan solos —
+    // la peli NO se restaura en pantalla, porque un reconcile posterior la
+    // volvería a sacar igual (ver reconcileWithPendingQueue) y eso sí se
+    // vería como un parpadeo raro. El backend ya trata borrar algo que ya
+    // no está como éxito, así que un reintento nunca falla en falso.
+    //
+    // Lo que SÍ faltaba (reporte real: varias pelis "borradas" seguían en
+    // la Sheet sin ningún aviso, mientras que en Cine Elo un borrado
+    // fallido se nota al toque): si este intento inmediato no confirma,
+    // avisamos con un toast en vez de quedarnos calladitos esperando a que
+    // el usuario mire el contador de pendientes.
+    syncDurable({ type: "deleteMovie", tmdbId: m.tmdbId || "", title: m.title, year: m.year }).then(function (result) {
+      if (result && result.ok) return;
+      showUndoToast(
+        '"' + title + '" no se pudo confirmar borrada todavía (Apps Script no contestó) — se sigue reintentando solo.',
+        function () {
+          flushPendingSync();
+        },
+        { buttonLabel: "Reintentar ahora", isError: true, timeoutMs: 15000 }
+      );
+    });
   }
 
   function editPanelHtml(m) {

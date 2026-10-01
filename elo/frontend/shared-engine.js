@@ -591,6 +591,14 @@ export function flushAllPending(onProgress) {
 // (opcional) se llama después de encolar y de nuevo si el intento inmediato
 // se confirma, para que la página pueda refrescar un indicador de "cambios
 // sin confirmar".
+// Resuelve siempre (nunca rechaza) con {ok, error?} — el intento inmediato
+// puede fallar sin que eso sea un error del llamador: el item ya quedó
+// encolado durable, así que Background Sync/el próximo flush lo reintentan
+// solos pase lo que pase acá. Páginas que no necesitan saber si confirmó ya
+// (la mayoría: duelos, ratings) ignoran el valor devuelto como siempre;
+// removeMovie en watchlist.html sí lo mira, para no dejar un borrado fallido
+// en silencio (ver el comentario ahí — antes la peli desaparecía de la
+// vista igual, aunque el borrado nunca hubiera llegado a la Sheet).
 export function syncDurable(item, onChange) {
   return enqueuePendingSync(item).then((pendingId) => {
     if (onChange) onChange();
@@ -600,8 +608,10 @@ export function syncDurable(item, onChange) {
         if (data && data.ok) {
           return removePendingSync(pendingId).then(() => {
             if (onChange) onChange();
+            return { ok: true };
           });
         }
+        return { ok: false, error: (data && data.error) || "la Sheet rechazó el cambio" };
       })
       .catch((err) => {
         console.error(
@@ -609,6 +619,7 @@ export function syncDurable(item, onChange) {
           item,
           err
         );
+        return { ok: false, error: String((err && err.message) || err) };
       });
   });
 }
