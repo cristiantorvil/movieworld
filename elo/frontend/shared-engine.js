@@ -228,6 +228,67 @@ export function mergeSheetIntoMovies(localMovies, sheetMovies, opts) {
   return { merged: [...next, ...newOnes], updatedCount, newCount: newOnes.length };
 }
 
+// Sube el estado LOCAL completo (elo/duelos/wins/losses + META_FIELDS) de
+// cada película al Sheet, pisando lo que haya ahí — para cuando el local es
+// la fuente de verdad real y el Sheet quedó atrás. Caso confirmado: duelos
+// seguidos sobre la misma peli mandados en paralelo (antes del fix de
+// runSerializedPerMovie en syncDurable) podían llegar desordenados y dejar
+// escrito un elo_games más viejo aunque cada pedido individual haya
+// contestado ok:true — nada queda "pendiente" en ese caso, así que ni
+// flushPendingSync ni "Sincronizar ahora" lo detectan ni lo corrigen. Esto
+// es la vía de recuperación manual para ese escenario.
+//
+// NUNCA crea filas nuevas (no manda allowCreate=1): solo pisa las que ya
+// matchean por tmdbId o título+año en el Sheet; cualquier película local
+// sin match ahí vuelve en `skipped`, intacta, para que se pueda revisar.
+// Manda de a `chunkSize` por pedido (default 100, igual que Cine Elo),
+// secuencial — nunca en paralelo, mismo motivo que flushPendingSync.
+export function bulkPushToSheet(movies, opts) {
+  const o = opts || {};
+  const gamesKey = o.gamesKey || "comparisons";
+  const metaFields = o.metaFields || META_FIELDS;
+  const chunkSize = o.chunkSize || 100;
+  const onProgress = o.onProgress;
+
+  const payload = movies.map((m) => {
+    const item = {
+      title: m.title,
+      year: m.year || "",
+      elo: m.elo,
+      games: m[gamesKey] || 0,
+      wins: m.wins || 0,
+      losses: m.losses != null ? m.losses : (m[gamesKey] || 0) - (m.wins || 0),
+      ties: m.ties || 0,
+    };
+    metaFields.forEach(({ key }) => {
+      item[key] = m[key] || "";
+    });
+    return item;
+  });
+
+  const chunks = [];
+  for (let i = 0; i < payload.length; i += chunkSize) {
+    chunks.push(payload.slice(i, i + chunkSize));
+  }
+
+  const stats = { done: 0, total: chunks.length, updated: 0, skipped: 0 };
+  if (onProgress) onProgress(Object.assign({}, stats));
+  let chain = Promise.resolve();
+  chunks.forEach((chunk) => {
+    chain = chain.then(() =>
+      postJson(chunk, false, 20000).then((data) => {
+        stats.done++;
+        if (data) {
+          stats.updated += (data.updated || []).length;
+          stats.skipped += (data.skipped || []).length;
+        }
+        if (onProgress) onProgress(Object.assign({}, stats));
+      })
+    );
+  });
+  return chain.then(() => stats);
+}
+
 // ── Cola de guardados pendientes (IndexedDB) ──
 // Un guardado en el momento (fetch con retry/keepalive, ver
 // fetchJsonWithRetry) sigue perdiéndose si la pestaña se cierra o Apps

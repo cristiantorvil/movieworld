@@ -814,6 +814,21 @@
     margin-top: 6px;
     text-align: center;
   }
+  .recovery-row {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    text-align: center;
+    margin-bottom: 14px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--card-border);
+  }
+  .recovery-hint {
+    font-size: 11px;
+    color: var(--muted);
+    max-width: 480px;
+  }
 </style>
 </head>
 <body>
@@ -886,6 +901,10 @@
     </div>
 
     <div class="panel" id="panel-resumen">
+      <div class="recovery-row">
+        <button type="button" class="btn-ghost" id="pushLocalBtn">Subir mis valores locales a la Sheet</button>
+        <span class="recovery-hint">Para cuando lo que ves acá (elo/duelos) es más nuevo que lo que hay en la Sheet — pisa la Sheet con lo que tenés en este navegador. No borra ni crea pelis.</span>
+      </div>
       <div id="resumenArea"><p class="center-msg">Cargando…</p></div>
     </div>
 
@@ -919,6 +938,7 @@ import {
   mergeSheetIntoMovies,
   dedupeMovies,
   flushAllPending,
+  bulkPushToSheet,
   readPendingSync,
   registerServiceWorker,
   fetchJsonWithRetry,
@@ -1852,6 +1872,55 @@ import {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
+
+  // Recuperación manual: sube TODO lo que hay cargado en este navegador
+  // ahora mismo (elo/duelos/wins/losses) al Sheet, pisando lo que haya ahí
+  // fila por fila — para cuando el local quedó adelante del Sheet sin que
+  // quede nada "pendiente" que lo delate (ver runSerializedPerMovie en
+  // shared-engine.js: antes de ese fix, duelos seguidos sobre la misma
+  // peli podían escribir un valor viejo con éxito, sin dejar rastro en la
+  // cola). Nunca crea filas nuevas ni borra nada — solo actualiza las que
+  // ya existen en la Sheet.
+  var pushLocalBtn = document.getElementById("pushLocalBtn");
+  if (pushLocalBtn) {
+    pushLocalBtn.onclick = function () {
+      if (!movies.length) return;
+      if (!confirm(
+        "Esto va a pisar el elo/duelos de " + movies.length + " pelis en la Sheet con lo que tenés cargado en ESTE navegador ahora mismo. " +
+        "Si otro dispositivo jugó duelos más recientes que no llegaron acá todavía, esos se van a perder. ¿Seguro?"
+      )) return;
+      if (forcedSyncRunning) return;
+      forcedSyncRunning = true;
+      pushLocalBtn.disabled = true;
+      pushLocalBtn.textContent = "Subiendo…";
+      if (pendingIndicatorEl) pendingIndicatorEl.style.display = "flex";
+      bulkPushToSheet(movies, {
+        gamesKey: "games",
+        onProgress: function (p) {
+          if (pendingTextEl) {
+            pendingTextEl.textContent = "● Subiendo valores locales… " + p.done + " de " + p.total + " tandas";
+          }
+        },
+      })
+        .then(function (stats) {
+          if (pendingTextEl) {
+            pendingTextEl.textContent =
+              "● Listo: " + stats.updated + " actualizadas" +
+              (stats.skipped ? ", " + stats.skipped + " no encontradas en la Sheet" : "") + ".";
+          }
+          setTimeout(updatePendingIndicator, 6000);
+        })
+        .catch(function () {
+          if (pendingTextEl) pendingTextEl.textContent = "● No se pudo subir — probá de nuevo en un rato.";
+          setTimeout(updatePendingIndicator, 6000);
+        })
+        .finally(function () {
+          forcedSyncRunning = false;
+          pushLocalBtn.disabled = false;
+          pushLocalBtn.textContent = "Subir mis valores locales a la Sheet";
+        });
+    };
+  }
 
   // Título de la fila con el panel de edición abierto (uno solo a la vez).
   // Se edita acá en vez de mandar a edit.html porque esa página busca en una
