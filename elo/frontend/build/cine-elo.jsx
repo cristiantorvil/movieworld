@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   SYNC_URL as SHARED_SYNC_URL,
-  START_ELO,
   getKFactor,
   expectedScore,
   computeInitialElo,
@@ -12,6 +11,15 @@ import {
   syncDurable,
   META_FIELDS,
   mergeSheetIntoMovies as sharedMergeSheetIntoMovies,
+  computeWatchlistElo,
+  defaultEloFor,
+  isWatchlistMovie,
+  makeEloSyncItem,
+  reconcileWithPending,
+  readPendingSync,
+  flushAllPending,
+  bulkPushToSheet,
+  postJson,
 } from "../shared-engine.js";
 
 const STORAGE_KEY = "cine-elo-movies";
@@ -26,6 +34,11 @@ const SNAPSHOT_TOP_N = 1000; // solo se guarda el top 1000 en cada corte
 // Filtro "Máximo de duelos jugados": el slider va de 0 a este tope; un paso
 // más allá (CAP + 1) es "Todas" (sin tope), mismo valor en watchlist.html.
 const MAX_DUELOS_FILTER_CAP = 50;
+
+// Celda de elo de la Sheet utilizable ("" = vacía, no 0).
+function hasSheetElo(v) {
+  return v !== null && v !== undefined && v !== "" && isFinite(Number(v));
+}
 
 function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -231,7 +244,43 @@ function Sprockets() {
   );
 }
 
-function CineEloApp() {
+// Una sola app, dos modos: "vistas" (Cine Elo de siempre: pelis con rating)
+// y "watchlist" (pelis sin ver, rating 0). Comparten TODO: el mismo catálogo
+// local (STORAGE_KEY), el mismo pull/merge contra la Sheet, la misma cola de
+// guardados y las mismas pantallas — el modo solo decide qué subconjunto del
+// catálogo se muestra y duelea. Antes watchlist.html era otra página aparte,
+// con su propio código, su propia caché y su propia forma de guardar, y cada
+// arreglo había que hacerlo dos veces (y a veces se hacía en una sola).
+export const MODES = {
+  vistas: {
+    title: "CINE ELO",
+    eyebrow: "tu cartelera, tu criterio",
+    duelQuestion: "¿cuál es mejor?",
+    duelQuestionMore: "de las que quedan, ¿cuál es la mejor?",
+    countNoun: "vistas",
+  },
+  watchlist: {
+    title: "WATCHLIST",
+    eyebrow: "lo que te falta ver, en orden",
+    duelQuestion: "¿cuál querés ver primero?",
+    duelQuestionMore: "de las que quedan, ¿cuál querés ver primero?",
+    countNoun: "en watchlist",
+  },
+};
+
+// Último pull exitoso de la Sheet (compartido entre modos): cambiar de modo
+// remonta la app, y sin esto cada cambio volvía a bajar el catálogo entero.
+let lastPullAt = 0;
+const PULL_FRESH_MS = 60000;
+
+function CineEloApp({ mode = "vistas", onModeChange }) {
+  const isWL = mode === "watchlist";
+  const modeInfo = MODES[mode] || MODES.vistas;
+  const inMode = useCallback((m) => isWatchlistMovie(m) === isWL, [isWL]);
+  // Preferencias por modo (tamaño de duelo, modo rápido, contador...): las
+  // de watchlist usan las mismas claves que ya usaba watchlist.html
+  // ("cine-elo-watchlist-..."), así no se pierden con la migración.
+  const prefKey = (key) => (isWL ? key.replace(/^cine-elo-/, "cine-elo-watchlist-") : key);
   const [movies, setMovies] = useState(null); // null = loading
   const [tab, setTab] = useState("comparar");
   const [newTitle, setNewTitle] = useState("");
@@ -256,14 +305,90 @@ function CineEloApp() {
   // También registra el Service Worker: sin él, Background Sync no
   // funciona en NINGUNA de las tres páginas (el registro es compartido,
   // pero alguien tiene que darlo de alta la primera vez).
+  // Cambios todavía sin confirmar en la Sheet (cola de IndexedDB) — se
+  // muestran en el header con un botón "Sincronizar ahora", igual que tenía
+  // watchlist.html; antes Cine Elo no daba ninguna señal de esto.
+  const [pendingCount, setPendingCount] = useState(0);
+  const [forcedSync, setForcedSync] = useState(null); // null | texto de progreso
+  const forcedSyncRef = useRef(false);
+  const refreshPending = useCallback(() => {
+    readPendingSync()
+      .then((queue) => setPendingCount(queue.length))
+      .catch(() => {});
+  }, []);
+  // Aviso de que el último pull de la Sheet falló y se está mostrando lo
+  // último guardado en este navegador.
+  const [sheetStale, setSheetStale] = useState(false);
+  // Toast con acción opcional (Deshacer / Reintentar).
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useRef(null);
+  const showToast = useCallback((message, opts) => {
+    const o = opts || {};
+    clearTimeout(toastTimerRef.current);
+    setToast({ message, actionLabel: o.actionLabel, onAction: o.onAction, isError: !!o.isError });
+    toastTimerRef.current = setTimeout(() => setToast(null), o.timeoutMs || 8000);
+  }, []);
+  useEffect(() => () => clearTimeout(toastTimerRef.current), []);
+
   useEffect(() => {
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("sw.js").catch(() => {});
     }
-    migrateOldPendingSync().then(flushPendingSync);
-    const interval = setInterval(flushPendingSync, FLUSH_INTERVAL_MS);
+    // Restos de la caché propia del watchlist.html viejo: la watchlist ahora
+    // vive en el mismo catálogo que Cine Elo, y esa copia aparte solo
+    // ocupaba lugar en el localStorage (que tiene tope de ~5 MB).
+    try {
+      localStorage.removeItem("cine-elo-watchlist-cache");
+    } catch (e) {
+      // storage bloqueado: no importa
+    }
+    const tick = () => flushPendingSync().then(refreshPending);
+    migrateOldPendingSync().catch(() => {}).then(tick);
+    const interval = setInterval(tick, FLUSH_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshPending]);
+
+  // Encola (durable) y manda el elo/duelos de estas películas — el único
+  // camino para guardar un duelo, en los dos modos (ver makeEloSyncItem).
+  const syncElo = useCallback(
+    (list) => {
+      if (!list.length) return;
+      setSyncStatus("syncing");
+      Promise.all(list.map((m) => syncDurable(makeEloSyncItem(m), refreshPending))).then((results) => {
+        setSyncStatus(results.every((r) => r && r.ok) ? "ok" : "error");
+      });
+    },
+    [refreshPending]
+  );
+
+  const syncNow = () => {
+    if (forcedSyncRef.current) return;
+    forcedSyncRef.current = true;
+    setForcedSync("Sincronizando…");
+    flushAllPending((p) =>
+      setForcedSync(
+        `Sincronizando… ${p.done} de ${p.total}` + (p.failed ? ` (${p.failed} sin respuesta)` : "")
+      )
+    )
+      .then((stats) => {
+        if (stats.stopped) {
+          showToast("Apps Script no está contestando — reintentá en unos minutos.", { isError: true });
+        } else if (stats.rejected) {
+          showToast(
+            `${stats.rejected} cambio${stats.rejected === 1 ? "" : "s"} rechazado${stats.rejected === 1 ? "" : "s"} por la Sheet (probablemente pelis que ya no existen).`,
+            { isError: true }
+          );
+        }
+      })
+      .catch(() => {
+        showToast("No se pudo leer la cola de cambios pendientes.", { isError: true });
+      })
+      .finally(() => {
+        forcedSyncRef.current = false;
+        setForcedSync(null);
+        refreshPending();
+      });
+  };
   const [confirmReset, setConfirmReset] = useState(false);
   const [duelDirector, setDuelDirector] = useState("");
   const [duelGenre, setDuelGenre] = useState("");
@@ -320,7 +445,7 @@ function CineEloApp() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.storage.get("cine-elo-quick-mode", false);
+        const res = await window.storage.get(prefKey("cine-elo-quick-mode"), false);
         if (res && res.value) setQuickMode(res.value === "true");
       } catch (e) {
         // default false
@@ -331,7 +456,7 @@ function CineEloApp() {
   const toggleQuickMode = () => {
     const next = !quickMode;
     setQuickMode(next);
-    window.storage.set("cine-elo-quick-mode", String(next), false).catch(() => {});
+    window.storage.set(prefKey("cine-elo-quick-mode"), String(next), false).catch(() => {});
   };
 
   // cargar preferencia de "ganador se mantiene" / "perdedor se mantiene"
@@ -340,7 +465,7 @@ function CineEloApp() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.storage.get("cine-elo-winner-stays", false);
+        const res = await window.storage.get(prefKey("cine-elo-winner-stays"), false);
         if (res && res.value) setWinnerStaysMode(res.value === "true");
       } catch (e) {
         // default false
@@ -348,7 +473,7 @@ function CineEloApp() {
     })();
     (async () => {
       try {
-        const res = await window.storage.get("cine-elo-loser-stays", false);
+        const res = await window.storage.get(prefKey("cine-elo-loser-stays"), false);
         if (res && res.value) setLoserStaysMode(res.value === "true");
       } catch (e) {
         // default false
@@ -359,20 +484,20 @@ function CineEloApp() {
   const toggleWinnerStays = () => {
     const next = !winnerStaysMode;
     setWinnerStaysMode(next);
-    window.storage.set("cine-elo-winner-stays", String(next), false).catch(() => {});
+    window.storage.set(prefKey("cine-elo-winner-stays"), String(next), false).catch(() => {});
     if (next && loserStaysMode) {
       setLoserStaysMode(false);
-      window.storage.set("cine-elo-loser-stays", "false", false).catch(() => {});
+      window.storage.set(prefKey("cine-elo-loser-stays"), "false", false).catch(() => {});
     }
   };
 
   const toggleLoserStays = () => {
     const next = !loserStaysMode;
     setLoserStaysMode(next);
-    window.storage.set("cine-elo-loser-stays", String(next), false).catch(() => {});
+    window.storage.set(prefKey("cine-elo-loser-stays"), String(next), false).catch(() => {});
     if (next && winnerStaysMode) {
       setWinnerStaysMode(false);
-      window.storage.set("cine-elo-winner-stays", "false", false).catch(() => {});
+      window.storage.set(prefKey("cine-elo-winner-stays"), "false", false).catch(() => {});
     }
   };
 
@@ -380,7 +505,7 @@ function CineEloApp() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.storage.get(TOURNAMENT_STORAGE_KEY, false);
+        const res = await window.storage.get(prefKey(TOURNAMENT_STORAGE_KEY), false);
         if (res && res.value) setTournament(JSON.parse(res.value));
       } catch (e) {
         // sin torneo guardado
@@ -391,16 +516,16 @@ function CineEloApp() {
   const persistTournament = (t) => {
     if (t) {
       window.storage
-        .set(TOURNAMENT_STORAGE_KEY, JSON.stringify(t), false)
+        .set(prefKey(TOURNAMENT_STORAGE_KEY), JSON.stringify(t), false)
         .catch(() => {});
     } else {
-      window.storage.delete(TOURNAMENT_STORAGE_KEY, false).catch(() => {});
+      window.storage.delete(prefKey(TOURNAMENT_STORAGE_KEY), false).catch(() => {});
     }
   };
 
   const startTournament = (size) => {
     if (!movies) return;
-    let pool = [...movies].filter((m) => Number(m.rating) !== 0);
+    let pool = movies.filter(inMode);
     if (tournamentFilterGenre) {
       pool = pool.filter(
         (m) =>
@@ -444,7 +569,7 @@ function CineEloApp() {
       tournamentFilterDecade !== "all";
     if (entrants.length < size) {
       setError(
-        `Necesitas al menos ${size} películas vistas${
+        `Necesitas al menos ${size} películas ${modeInfo.countNoun}${
           hasFilter ? " que cumplan el filtro elegido" : ""
         } para armar este torneo.`
       );
@@ -485,7 +610,7 @@ function CineEloApp() {
       return m;
     });
     setMovies(next);
-    syncToSheet(next.filter((m) => m.id === winnerId || m.id === loserId));
+    syncElo(next.filter((m) => m.id === winnerId || m.id === loserId));
 
     const nextTournament = advanceTournament(
       tournament,
@@ -501,7 +626,7 @@ function CineEloApp() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.storage.get("cine-elo-duel-size", false);
+        const res = await window.storage.get(prefKey("cine-elo-duel-size"), false);
         if (res && res.value) setDuelSize(Number(res.value));
       } catch (e) {
         // default 2
@@ -512,14 +637,14 @@ function CineEloApp() {
   const changeDuelSize = (n) => {
     setDuelSize(n);
     setPair(null);
-    window.storage.set("cine-elo-duel-size", String(n), false).catch(() => {});
+    window.storage.set(prefKey("cine-elo-duel-size"), String(n), false).catch(() => {});
   };
 
   // cargar contador de duelos
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.storage.get("cine-elo-duel-count", false);
+        const res = await window.storage.get(prefKey("cine-elo-duel-count"), false);
         if (res && res.value) setDuelCount(Number(res.value));
       } catch (e) {
         // default 0
@@ -549,62 +674,29 @@ function CineEloApp() {
   const [restoreMsg, setRestoreMsg] = useState("");
 
   const restoreFromSheet = async () => {
-    if (!syncUrl || !movies) return;
+    if (!movies) return;
     setRestoringFromSheet(true);
     setRestoreMsg("");
-    try {
-      // Este botón es justo el mecanismo para recuperarse de un catálogo
-      // local ya arruinado por un pull malo (ver mergeSheetIntoMovies) — no
-      // puede depender de un solo intento contra un backend que confirmado
-      // se cuelga o falla de forma intermitente. 3 intentos con timeout
-      // propio antes de rendirse.
-      let pullData = null;
-      let lastErr = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const attemptData = await fetchJsonWithRetry(`${syncUrl}?action=pull`);
-          // length > 0 acá, no solo ok+array: un pull "exitoso" pero vacío
-          // es la misma falla intermitente que arruinó el catálogo la
-          // primera vez, y justo estamos tratando de recuperarnos de eso.
-          if (attemptData && attemptData.ok && Array.isArray(attemptData.movies) && attemptData.movies.length > 0) {
-            pullData = attemptData;
-            break;
-          }
-          lastErr = lastErr || new Error("pull vacío o inválido");
-        } catch (e) {
-          lastErr = e;
-        }
-        if (attempt < 2) await new Promise((r) => setTimeout(r, 800));
-      }
-      if (!pullData || !pullData.ok || !Array.isArray(pullData.movies)) {
-        setRestoreMsg(
-          lastErr
-            ? "No se pudo conectar con el Sheet después de varios intentos. Probá de nuevo en un rato."
-            : "No se pudo leer el Sheet. Actualiza el script de Apps Script con el endpoint de lectura."
-        );
-        setRestoringFromSheet(false);
-        return;
-      }
-      const { merged, updatedCount, newCount, skipped } = mergeSheetIntoMovies(movies, pullData.movies);
-
-      if (skipped) {
-        setRestoreMsg(
-          `El Sheet devolvió muy pocas películas (${pullData.movies.length} contra ` +
-            `${movies.length} que ya tenés) — probablemente una respuesta a medias de ` +
-            `Apps Script, no lo real. No se tocó nada. Probá de nuevo en un rato.`
-        );
-        setRestoringFromSheet(false);
-        return;
-      }
-
-      setMovies(merged);
+    // Este botón es justo el mecanismo para recuperarse de un catálogo local
+    // desincronizado — no puede depender de un solo intento contra un backend
+    // que confirmado se cuelga o falla de forma intermitente.
+    const r = await refreshFromSheet({ force: true, retries: 2 });
+    if (r.ok) {
       setResult(null);
       setPair(null);
       setRestoreMsg(
-        `Listo: ${updatedCount} actualizadas, ${newCount} películas nuevas agregadas desde el Sheet.`
+        `Listo: ${r.updatedCount} actualizadas, ${r.newCount} películas nuevas agregadas desde el Sheet.`
       );
-    } catch (e) {
-      setRestoreMsg("Hubo un error leyendo el Sheet. Intenta de nuevo.");
+    } else if (r.skipped) {
+      setRestoreMsg(
+        `El Sheet devolvió muy pocas películas (${r.total} contra ${movies.length} que ` +
+          `ya tenés) — probablemente una respuesta a medias de Apps Script, no lo real. ` +
+          `No se tocó nada. Probá de nuevo en un rato.`
+      );
+    } else {
+      setRestoreMsg(
+        "No se pudo conectar con el Sheet después de varios intentos. Probá de nuevo en un rato."
+      );
     }
     setRestoringFromSheet(false);
   };
@@ -736,66 +828,62 @@ function CineEloApp() {
     }
   };
 
-  // allowCreate=false (default): un resultado de duelo solo puede
-  // ACTUALIZAR filas que ya existen en el Sheet — nunca crear una nueva.
-  // Si no lo fuera, una peli borrada del Sheet pero todavía presente en el
-  // localStorage de alguien (pestaña vieja sin este fix, cache no
-  // refrescado) podía "resucitar" sola en cuanto le tocaba un duelo. Solo
-  // el alta explícita de una película nueva (addMovie / bulkSyncAll) pasa
-  // allowCreate=true.
-  const syncToSheet = useCallback(
-    async (items, allowCreate = false) => {
-      if (!syncUrl) return;
-      setSyncStatus("syncing");
-      try {
-        const payload = items.map((m) => {
-          const item = {
-            title: m.title,
-            year: m.year || "",
-            elo: m.elo,
-            games: m.comparisons,
-            wins: m.wins,
-            losses: m.comparisons - m.wins,
-            ties: 0,
-          };
-          META_FIELDS.forEach(({ key }) => {
-            item[key] = m[key] || "";
-          });
-          return item;
-        });
-        const url = allowCreate
-          ? `${syncUrl}?allowCreate=1`
-          : syncUrl;
-        await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "text/plain;charset=utf-8" },
-          body: JSON.stringify(payload),
-        });
-        setSyncStatus("ok");
-      } catch (e) {
-        setSyncStatus("error");
+  // Trae la Sheet y la mergea sobre lo local (misma lógica en los dos modos
+  // y en el botón "restaurar"). Antes de pedir el pull espera (con tope)
+  // a que se entregue lo pendiente, y después reaplica sobre el pull lo que
+  // siga en la cola (reconcileWithPending) — así un duelo o un "marcar como
+  // vista" recién hecho no se ve revertido por un pull que llegó antes que
+  // el guardado. Devuelve {ok, updatedCount, newCount, skipped, total}.
+  const refreshFromSheet = useCallback(async (opts) => {
+    const o = opts || {};
+    if (!o.force && Date.now() - lastPullAt < PULL_FRESH_MS) return { ok: true, cached: true };
+    try {
+      await Promise.race([
+        flushPendingSync(),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+      // ~6000 filas: el pull pesa varios MB y con la Sheet cargada tarda
+      // bastante más que un guardado suelto — 30s antes de darlo por caído.
+      const data = await fetchJsonWithRetry(`${DEFAULT_SYNC_URL}?action=pull`, {}, o.retries == null ? 1 : o.retries, 30000);
+      if (!data || !data.ok || !Array.isArray(data.movies) || data.movies.length === 0) {
+        throw new Error((data && data.error) || "pull vacío o inválido");
       }
-    },
-    [syncUrl]
-  );
+      const reconciled = await reconcileWithPending(data.movies);
+      // El resumen (cuántas cambiaron, si el pull vino sospechosamente
+      // corto) se calcula sobre lo último renderizado; el merge real va en
+      // el updater, sobre el estado más nuevo — por si justo en el medio se
+      // jugó un duelo que todavía no llegó a renderizarse.
+      const outcome = mergeSheetIntoMovies(moviesRef.current || [], reconciled);
+      const skipped = !!outcome.skipped;
+      if (!skipped) {
+        setMovies((current) => {
+          const result = mergeSheetIntoMovies(current || [], reconciled);
+          return result.skipped ? current : result.merged;
+        });
+      }
+      if (!skipped) lastPullAt = Date.now();
+      setSheetStale(skipped);
+      refreshPending();
+      return {
+        ok: !skipped,
+        skipped,
+        updatedCount: outcome.updatedCount,
+        newCount: outcome.newCount,
+        total: data.movies.length,
+      };
+    } catch (e) {
+      setSheetStale(true);
+      return { ok: false, error: e };
+    }
+  }, [refreshPending]);
 
   // load
   useEffect(() => {
     (async () => {
       try {
-        // Esperar a que se entregue cualquier guardado pendiente (ej. un
-        // "Marcar como vista" hecho en watchlist.html hace un segundo,
-        // todavía en la cola de esta misma pestaña) ANTES de pedir el pull
-        // de acá abajo — si el pull corriera primero, podría traer el
-        // valor viejo de la Sheet y esta pantalla se quedaría mostrándolo
-        // sin que nada la refresque después. Con timeout: IndexedDB puede
-        // tardar de más o directamente no resolver nunca en algunos
-        // navegadores/contextos — sin esto, la carga entera se colgaba en
-        // "Cargando…" para siempre si ese flush no terminaba.
-        await Promise.race([
-          migrateOldPendingSync().then(flushPendingSync).catch(() => {}),
-          new Promise((resolve) => setTimeout(resolve, 3000)),
-        ]);
+        // Local-first: lo guardado en este navegador se pinta YA, sin
+        // esperar ni a la cola de pendientes ni a la Sheet (antes se
+        // esperaban hasta 3s de flush antes de mostrar nada).
         const res = await window.storage.get(STORAGE_KEY, false);
         if (res && res.value) {
           const saved = JSON.parse(res.value);
@@ -854,22 +942,9 @@ function CineEloApp() {
           // si no, un dispositivo/navegador que ya tenía algo guardado
           // localmente se queda pegado con esos valores viejos para siempre,
           // aunque el Sheet (la fuente real) haya cambiado desde otro lado.
-          fetch(`${DEFAULT_SYNC_URL}?action=pull`)
-            .then((r) => r.json())
-            .then((pullData) => {
-              if (pullData && pullData.ok && Array.isArray(pullData.movies)) {
-                setMovies((current) => {
-                  const { merged } = mergeSheetIntoMovies(
-                    current || migrated,
-                    pullData.movies
-                  );
-                  return merged;
-                });
-              }
-            })
-            .catch(() => {
-              // sin conexión o el pull tardó/falló: seguimos con lo local.
-            });
+          // Si falla, refreshFromSheet prende el aviso de "mostrando lo
+          // último guardado" y seguimos con lo local.
+          refreshFromSheet();
         } else {
           // Navegador sin progreso local: antes de arrancar de cero, intentamos
           // traer el progreso real desde el Sheet, para no pisarlo con valores
@@ -880,12 +955,15 @@ function CineEloApp() {
           let sheetById = new Map();
           let sheetByTitle = new Map();
           try {
-            const pullRes = await fetch(
-              `${DEFAULT_SYNC_URL}?action=pull`
-            );
-            const pullData = await pullRes.json();
+            await Promise.race([
+              flushPendingSync(),
+              new Promise((resolve) => setTimeout(resolve, 3000)),
+            ]);
+            const pullData = await fetchJsonWithRetry(`${DEFAULT_SYNC_URL}?action=pull`, {}, 1, 30000);
             if (pullData && pullData.ok && Array.isArray(pullData.movies)) {
-              pullData.movies.forEach((m) => {
+              lastPullAt = Date.now();
+              const reconciledPull = await reconcileWithPending(pullData.movies);
+              reconciledPull.forEach((m) => {
                 if (m.tmdbId) sheetById.set(String(m.tmdbId), m);
                 else sheetByTitle.set(m.title, m);
               });
@@ -912,11 +990,13 @@ function CineEloApp() {
               rating: existing && existing.rating != null ? existing.rating : rating,
               plays: existing && existing.plays != null ? existing.plays : plays,
               elo:
-                existing && existing.elo != null
-                  ? existing.elo
+                existing && hasSheetElo(existing.elo)
+                  ? Number(existing.elo)
+                  : existing
+                  ? defaultEloFor(existing)
                   : computeInitialElo(rating, plays),
-              comparisons: existing ? existing.games || 0 : 0,
-              wins: existing ? existing.wins || 0 : 0,
+              comparisons: existing ? Number(existing.games) || 0 : 0,
+              wins: existing ? Number(existing.wins) || 0 : 0,
             };
             // Preferimos la metadata del Sheet sobre la del catálogo baked-in:
             // correcciones hechas ahí deben verse sin depender de un reset
@@ -950,12 +1030,9 @@ function CineEloApp() {
               year: sm.year || undefined,
               rating: sm.rating,
               plays: sm.plays,
-              elo:
-                sm.elo != null
-                  ? sm.elo
-                  : computeInitialElo(sm.rating, sm.plays),
-              comparisons: sm.games || 0,
-              wins: sm.wins || 0,
+              elo: hasSheetElo(sm.elo) ? Number(sm.elo) : defaultEloFor(sm),
+              comparisons: Number(sm.games) || 0,
+              wins: Number(sm.wins) || 0,
             };
             META_FIELDS.forEach(({ key, numeric }) => {
               movie[key] = sm[key] || (numeric ? null : "");
@@ -972,6 +1049,15 @@ function CineEloApp() {
       }
     })();
   }, []);
+
+  // Lo que se ve y se duelea en el modo actual: las vistas en Cine Elo, las
+  // sin ver en Watchlist (ver también modeRanking más abajo).
+  const modeMovies = useMemo(() => (movies ? movies.filter(inMode) : []), [movies, inMode]);
+
+  const moviesRef = useRef(null);
+  useEffect(() => {
+    moviesRef.current = movies;
+  }, [movies]);
 
   // persist
   useEffect(() => {
@@ -1075,12 +1161,8 @@ function CineEloApp() {
       setPair(null);
       return;
     }
-    const poolA = movies.filter(
-      (m) => m.director === directorDuelA && Number(m.rating) !== 0
-    );
-    const poolB = movies.filter(
-      (m) => m.director === directorDuelB && Number(m.rating) !== 0
-    );
+    const poolA = modeMovies.filter((m) => m.director === directorDuelA);
+    const poolB = modeMovies.filter((m) => m.director === directorDuelB);
     if (poolA.length === 0 || poolB.length === 0) {
       setPair(null);
       return;
@@ -1093,7 +1175,7 @@ function CineEloApp() {
     }
     setPair(Math.random() < 0.5 ? [a, b] : [b, a]);
     setRankingPicks([]);
-  }, [movies, directorDuelA, directorDuelB]);
+  }, [movies, modeMovies, directorDuelA, directorDuelB]);
 
   const ranking = useMemo(() => {
     if (!movies) return [];
@@ -1105,9 +1187,20 @@ function CineEloApp() {
   // amontonan al final de "ranking" y arruinan "Peores N" si se usa esa
   // lista completa para calcular el rango.
   const ratedRanking = useMemo(
-    () => ranking.filter((m) => Number(m.rating) !== 0),
+    () => ranking.filter((m) => !isWatchlistMovie(m)),
     [ranking]
   );
+
+  // Lo que se ve y se duelea en el modo actual: las vistas en Cine Elo, las
+  // sin ver en Watchlist. Todo lo de abajo (pool de duelos, Ranking,
+  // Resumen, filtros, torneo) parte de acá — así los dos modos tienen
+  // exactamente la misma lógica, solo sobre otro subconjunto.
+  const modeRanking = useMemo(() => ranking.filter(inMode), [ranking, inMode]);
+  const rankById = useMemo(() => {
+    const map = new Map();
+    modeRanking.forEach((m, idx) => map.set(m.id, idx + 1));
+    return map;
+  }, [modeRanking]);
 
   // Rating proyectado: el Elo NO es continuo — se amontona en valores
   // redondos (la mayoría de las pelis tuvo pocos duelos y sigue pegada a su
@@ -1123,7 +1216,8 @@ function CineEloApp() {
   // de origen — y como el rating real también es 0.5-5, escalamos el ancho
   // de esa campana al desvío real de tus ratings.
   const eloRatingStats = useMemo(() => {
-    if (ratedRanking.length < 2) return null;
+    // En Watchlist no hay rating propio contra el cual proyectar.
+    if (isWL || ratedRanking.length < 2) return null;
     const sortedElos = ratedRanking.map((m) => m.elo).sort((a, b) => a - b);
     const ratings = ratedRanking.map((m) => Number(m.rating));
     const mean = (arr) => arr.reduce((s, x) => s + x, 0) / arr.length;
@@ -1132,7 +1226,7 @@ function CineEloApp() {
     const meanRating = mean(ratings);
     const stdRating = std(ratings, meanRating);
     return { sortedElos, meanRating, stdRating };
-  }, [ratedRanking]);
+  }, [ratedRanking, isWL]);
 
   // Escala 1-10 (el doble de la escala real de 0.5-5) solo para mostrar —
   // el rating que se guarda sigue siendo 0.5-5 en todos lados.
@@ -1188,12 +1282,13 @@ function CineEloApp() {
   // historial de snapshots para el cambio de Elo entre el corte más viejo
   // guardado y ahora.
   const summaryStats = useMemo(() => {
-    if (!movies || ratedRanking.length === 0) return null;
+    if (!movies || modeRanking.length === 0) return null;
 
-    const top10 = ratedRanking.slice(0, 10);
-    const bottom10 = ratedRanking.slice(Math.max(ratedRanking.length - 10, 0)).reverse(); // peor primero
+    const top10 = modeRanking.slice(0, 10);
+    const bottom10 = modeRanking.slice(Math.max(modeRanking.length - 10, 0)).reverse(); // peor primero
 
-    const withDiff = ratedRanking
+    // Rating real vs proyectado: solo tiene sentido con pelis ya vistas.
+    const withDiff = (isWL ? [] : modeRanking)
       .filter((m) => m.comparisons >= 10)
       .map((m) => {
         const gold = Number(m.rating) * 2;
@@ -1214,12 +1309,12 @@ function CineEloApp() {
       .sort((a, b) => b.diff - a.diff || a.elo - b.elo)
       .slice(0, 10);
 
-    const mostDueled = [...movies]
+    const mostDueled = [...modeMovies]
       .filter((m) => m.comparisons > 0)
       .sort((a, b) => b.comparisons - a.comparisons)
       .slice(0, 10);
 
-    const withEnoughGames = movies
+    const withEnoughGames = modeMovies
       .filter((m) => m.comparisons >= 10)
       .map((m) => ({ ...m, winRate: m.wins / m.comparisons }));
     const bestStreak = [...withEnoughGames]
@@ -1231,7 +1326,7 @@ function CineEloApp() {
 
     let eloGainers = [];
     let eloLosers = [];
-    if (rankHistoryData && rankHistoryData.length >= 2) {
+    if (!isWL && rankHistoryData && rankHistoryData.length >= 2) {
       const sortedSnaps = [...rankHistoryData].sort((a, b) => a.t - b.t);
       const oldest = sortedSnaps[0];
       const newest = sortedSnaps[sortedSnaps.length - 1];
@@ -1254,7 +1349,7 @@ function CineEloApp() {
     }
 
     const avgElo =
-      ratedRanking.reduce((s, m) => s + m.elo, 0) / ratedRanking.length;
+      modeRanking.reduce((s, m) => s + m.elo, 0) / modeRanking.length;
 
     return {
       top10,
@@ -1266,19 +1361,19 @@ function CineEloApp() {
       worstStreak,
       eloGainers,
       eloLosers,
-      totalRated: ratedRanking.length,
+      totalRated: modeRanking.length,
       avgElo,
     };
-  }, [movies, ratedRanking, projectedRating, rankHistoryData]);
+  }, [movies, modeMovies, modeRanking, isWL, projectedRating, rankHistoryData]);
 
   const yearBounds = useMemo(() => {
     if (!movies) return [1900, new Date().getFullYear()];
-    const years = movies
+    const years = modeMovies
       .map((m) => m.year)
       .filter((y) => typeof y === "number" && y > 0);
     if (years.length === 0) return [1900, new Date().getFullYear()];
     return [Math.min(...years), Math.max(...years)];
-  }, [movies]);
+  }, [movies, modeMovies]);
 
   const decadeBounds = useMemo(() => {
     return [
@@ -1305,23 +1400,23 @@ function CineEloApp() {
 
   const totalComparisons = useMemo(() => {
     if (!movies) return 0;
-    return Math.round(movies.reduce((s, m) => s + m.comparisons, 0) / 2);
-  }, [movies]);
+    return Math.round(modeMovies.reduce((s, m) => s + (Number(m.comparisons) || 0), 0) / 2);
+  }, [movies, modeMovies]);
 
   const directorsList = useMemo(() => {
-    if (!movies) return [];
     const set = new Set();
-    movies.forEach((m) => {
+    modeMovies.forEach((m) => {
       if (m.director) set.add(m.director);
     });
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [movies]);
+  }, [modeMovies]);
 
   // cargar historial de posiciones al entrar a la pestaña Evolución:
   // preferimos traerlo del Sheet (historial completo, sin tope de 15 cortes),
   // y si falla (sin conexión, script viejo, etc.) usamos el local como respaldo.
   useEffect(() => {
     if (
+      isWL ||
       (tab !== "evolucion" && tab !== "resumen") ||
       rankHistoryData !== null ||
       !movies
@@ -1375,7 +1470,7 @@ function CineEloApp() {
         setRankHistoryData([]);
       }
     })();
-  }, [tab, rankHistoryData, movies, syncUrl]);
+  }, [tab, rankHistoryData, movies, syncUrl, isWL]);
 
   const EVO_MAX_MOVIES = 10;
   const EVO_PALETTE = [
@@ -1446,9 +1541,8 @@ function CineEloApp() {
   const evoAnySeriesHasData = evoMultiSeries.some((s) => s.hasAnyData);
 
   const genresList = useMemo(() => {
-    if (!movies) return [];
     const set = new Set();
-    movies.forEach((m) => {
+    modeMovies.forEach((m) => {
       if (m.genre) {
         m.genre
           .split(",")
@@ -1458,21 +1552,19 @@ function CineEloApp() {
       }
     });
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [movies]);
+  }, [modeMovies]);
 
   // Años puntuales presentes en el catálogo, más reciente primero (evita
   // scrollear un <select> larguísimo para llegar a los estrenos nuevos).
   const yearsList = useMemo(() => {
-    if (!movies) return [];
     const set = new Set();
-    movies.forEach((m) => { if (m.year) set.add(Number(m.year)); });
+    modeMovies.forEach((m) => { if (m.year) set.add(Number(m.year)); });
     return [...set].sort((a, b) => b - a);
-  }, [movies]);
+  }, [modeMovies]);
 
   const countriesList = useMemo(() => {
-    if (!movies) return [];
     const set = new Set();
-    movies.forEach((m) => {
+    modeMovies.forEach((m) => {
       if (m.country) {
         m.country
           .split(",")
@@ -1482,22 +1574,21 @@ function CineEloApp() {
       }
     });
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [movies]);
+  }, [modeMovies]);
 
   const languagesList = useMemo(() => {
-    if (!movies) return [];
     const set = new Set();
-    movies.forEach((m) => {
+    modeMovies.forEach((m) => {
       if (m.originalLanguage) set.add(languageLabel(m.originalLanguage));
     });
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [movies]);
+  }, [modeMovies]);
 
   const filteredRanking = useMemo(() => {
-    // Solo vistas: el Ranking es "qué tan buena es, comparada con las
-    // demás que ya viste" — una de la watchlist nunca entró a un duelo
-    // real, tiene el elo inicial congelado, y solo confundía mezclada acá.
-    let list = ratedRanking;
+    // Solo las del modo actual: en Cine Elo el Ranking es "qué tan buena
+    // es, comparada con las demás que ya viste"; en Watchlist, "cuál
+    // quiero ver primero". Mezclarlas no tiene sentido en ninguno de los dos.
+    let list = modeRanking;
     if (rankFilterDirector) {
       list = list.filter((m) => m.director === rankFilterDirector);
     }
@@ -1519,30 +1610,30 @@ function CineEloApp() {
       list = list.filter((m) => m.runtime > 0 && m.runtime <= 40);
     }
     // .slice() a propósito: reverse() muta in-place, y "list" puede seguir
-    // siendo la misma referencia que "ratedRanking" si no se aplicó ningún
+    // siendo la misma referencia que "modeRanking" si no se aplicó ningún
     // otro filtro arriba — sin el slice esto invertiría el ranking global.
     if (rankReversed) {
       list = list.slice().reverse();
     }
     return list;
-  }, [ratedRanking, rankFilterDirector, rankFilterGenre, rankFilterDecade, rankFilterShorts, rankReversed]);
+  }, [modeRanking, rankFilterDirector, rankFilterGenre, rankFilterDecade, rankFilterShorts, rankReversed]);
 
   const hasRankFilters =
     rankFilterDirector || rankFilterGenre || rankFilterDecade !== "all" || rankFilterShorts;
 
   const duelPool = useMemo(() => {
     if (!movies) return [];
-    // Las pelis con rating 0 (no vistas, solo en watchlist) no compiten.
-    let pool = movies.filter((m) => Number(m.rating) !== 0);
+    // Solo compiten las del modo actual (vistas o watchlist).
+    let pool = modeMovies;
 
     const effectiveMax =
       duelRankMax > 0
-        ? Math.min(duelRankMax, ratedRanking.length)
-        : ratedRanking.length;
+        ? Math.min(duelRankMax, modeRanking.length)
+        : modeRanking.length;
     const effectiveMin = Math.max(1, Math.min(duelRankMin, effectiveMax));
-    if (effectiveMin > 1 || effectiveMax < ratedRanking.length) {
+    if (effectiveMin > 1 || effectiveMax < modeRanking.length) {
       const rangeIds = new Set(
-        ratedRanking.slice(effectiveMin - 1, effectiveMax).map((m) => m.id)
+        modeRanking.slice(effectiveMin - 1, effectiveMax).map((m) => m.id)
       );
       pool = pool.filter((m) => rangeIds.has(m.id));
     }
@@ -1591,13 +1682,13 @@ function CineEloApp() {
     if (maxDuelosFilter != null) {
       pool = pool.filter((m) => m.comparisons <= maxDuelosFilter);
     }
-    if (duelGoldMin > 1 || duelGoldMax < 10) {
+    if (!isWL && (duelGoldMin > 1 || duelGoldMax < 10)) {
       pool = pool.filter((m) => {
         const gold = Number(m.rating) * 2;
         return gold >= duelGoldMin && gold <= duelGoldMax;
       });
     }
-    if (duelSilverMin > 0 || duelSilverMax < 10) {
+    if (!isWL && (duelSilverMin > 0 || duelSilverMax < 10)) {
       pool = pool.filter((m) => {
         const silver = projectedRating(m.elo);
         return silver != null && silver >= duelSilverMin && silver <= duelSilverMax;
@@ -1606,7 +1697,9 @@ function CineEloApp() {
     return pool;
   }, [
     movies,
-    ratedRanking,
+    modeMovies,
+    modeRanking,
+    isWL,
     duelRankMin,
     duelRankMax,
     duelYearMin,
@@ -1721,6 +1814,9 @@ function CineEloApp() {
   ]);
 
   const [newTmdbId, setNewTmdbId] = useState("");
+  // Rating al agregar: "" = sin ver (va a la watchlist). En Cine Elo se pide
+  // uno — una peli sin rating no aparece en este modo.
+  const [newRating, setNewRating] = useState("");
   const [tmdbLookupBusy, setTmdbLookupBusy] = useState(false);
 
   const addMovie = async (e) => {
@@ -1728,6 +1824,11 @@ function CineEloApp() {
     const title = newTitle.trim();
     if (!title) return;
     setError("");
+    const rating = newRating === "" ? 0 : Number(newRating);
+    if (!isWL && !rating) {
+      setError("Elegí tu rating (si todavía no la viste, agregala desde la Watchlist).");
+      return;
+    }
 
     let tmdbId = newTmdbId.trim();
     let year = null;
@@ -1780,13 +1881,17 @@ function CineEloApp() {
       return;
     }
 
+    // Mismo Elo de arranque que add.html y el importador: vistas desde tu
+    // rating, watchlist desde el promedio de TMDB.
     const newMovie = {
       id: uid(),
       title,
       ...meta,
       tmdbId: tmdbId || "",
       year,
-      elo: START_ELO,
+      rating,
+      plays: rating ? 1 : 0,
+      elo: rating ? computeInitialElo(rating, 1) : computeWatchlistElo(meta.voteAverage, meta.voteCount),
       comparisons: 0,
       wins: 0,
     };
@@ -1794,48 +1899,48 @@ function CineEloApp() {
     setMovies(next);
     setNewTitle("");
     setNewTmdbId("");
-    syncToSheet([newMovie], true);
+    setNewRating("");
+    // Alta por la cola durable (tipo "create", el mismo de add.html): si
+    // Apps Script no contesta, queda pendiente y se reintenta sola.
+    const payload = {
+      title: newMovie.title,
+      year: newMovie.year || "",
+      rating: newMovie.rating,
+      plays: newMovie.plays,
+      elo: newMovie.elo,
+      games: 0,
+      wins: 0,
+      losses: 0,
+      ties: 0,
+    };
+    META_FIELDS.forEach(({ key }) => {
+      payload[key] = newMovie[key] || "";
+    });
+    syncDurable({ type: "create", tmdbId: newMovie.tmdbId, title: newMovie.title, year: newMovie.year || "", payload }, refreshPending);
   };
 
-  const removeMovie = async (id) => {
+  const removeMovie = (id) => {
     const movie = movies.find((m) => m.id === id);
     if (!movie) return;
+    if (!window.confirm(`¿Quitar "${movie.title}"? Esto la borra de la Sheet.`)) return;
     setMovies((current) => current.filter((m) => m.id !== id));
     if (pair && pair.some((p) => p.id === id)) {
       setPair(null);
     }
-    if (!syncUrl) return;
-    // Si el borrado en el Sheet falla (red, redirect raro de Apps Script,
-    // etc.) y lo dejamos como borrado local nomás, el próximo pull la trae
-    // de vuelta del Sheet — parece "revivir sola" sin ningún aviso. Por eso
-    // esperamos la respuesta: si no vino ok, la restauramos localmente y
-    // avisamos, en vez de fallar en silencio.
-    try {
-      const res = await fetch(syncUrl, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({
-          type: "deleteMovie",
-          tmdbId: movie.tmdbId || "",
-          title: movie.title,
-          year: movie.year,
-        }),
-      });
-      const data = await res.json();
-      if (!data || !data.ok) {
-        setMovies((current) => [...current, movie]);
-        setError(
-          `No se pudo borrar "${movie.title}" del Sheet (${
-            (data && data.error) || "error desconocido"
-          }). Probá de nuevo.`
-        );
-      }
-    } catch (e) {
-      setMovies((current) => [...current, movie]);
-      setError(
-        `No se pudo borrar "${movie.title}": sin conexión con el Sheet. Probá de nuevo.`
+    // Borrado por la cola durable (mismo criterio en los dos modos): si el
+    // intento inmediato no confirma, NO se restaura en pantalla — queda
+    // pendiente y se reintenta solo (el backend trata "ya no estaba" como
+    // éxito) —, pero se avisa con un toast en vez de fallar en silencio.
+    syncDurable(
+      { type: "deleteMovie", tmdbId: movie.tmdbId || "", title: movie.title, year: movie.year },
+      refreshPending
+    ).then((r) => {
+      if (r && r.ok) return;
+      showToast(
+        `"${movie.title}" no se pudo confirmar borrada todavía (Apps Script no contestó) — se sigue reintentando sola.`,
+        { actionLabel: "Reintentar ahora", onAction: syncNow, isError: true, timeoutMs: 15000 }
       );
-    }
+    });
   };
 
   // Click durante un duelo: en uno de 2, resuelve directo (la otra queda
@@ -1920,15 +2025,16 @@ function CineEloApp() {
     setLastAction({ prevMovies, affectedIds });
 
     const updatedContenders = next.filter((m) => affectedIds.includes(m.id));
-    syncToSheet(updatedContenders);
+    syncElo(updatedContenders);
 
     // Contador de duelos + snapshot periódico de posiciones del ranking
     const newDuelCount = duelCount + 1;
     setDuelCount(newDuelCount);
     window.storage
-      .set("cine-elo-duel-count", String(newDuelCount), false)
+      .set(prefKey("cine-elo-duel-count"), String(newDuelCount), false)
       .catch(() => {});
-    if (newDuelCount % SNAPSHOT_INTERVAL === 0) {
+    // Los cortes de historial (Evolución) son del ranking de vistas.
+    if (!isWL && newDuelCount % SNAPSHOT_INTERVAL === 0) {
       saveRankSnapshot(next);
     }
 
@@ -1939,9 +2045,9 @@ function CineEloApp() {
       return;
     }
 
-    // Posición en el ranking antes y después del duelo
-    const oldSorted = [...movies].sort((x, y) => y.elo - x.elo);
-    const newSorted = [...next].sort((x, y) => y.elo - x.elo);
+    // Posición en el ranking (del modo actual) antes y después del duelo
+    const oldSorted = movies.filter(inMode).sort((x, y) => y.elo - x.elo);
+    const newSorted = next.filter(inMode).sort((x, y) => y.elo - x.elo);
 
     const ranking = ordered.map((m, idx) => ({
       id: m.id,
@@ -1965,48 +2071,61 @@ function CineEloApp() {
     const revertItems = lastAction.prevMovies.filter((m) =>
       lastAction.affectedIds.includes(m.id)
     );
-    syncToSheet(revertItems);
+    syncElo(revertItems);
     setLastAction(null);
     setResult(null);
     setRankingPicks([]);
     const newDuelCount = Math.max(0, duelCount - 1);
     setDuelCount(newDuelCount);
     window.storage
-      .set("cine-elo-duel-count", String(newDuelCount), false)
+      .set(prefKey("cine-elo-duel-count"), String(newDuelCount), false)
       .catch(() => {});
   };
 
+  // Sube el elo/duelos de TODO el modo actual tal como está en este
+  // navegador, pisando la Sheet (nunca crea ni borra filas) — la vía de
+  // recuperación para cuando lo local quedó adelante de la Sheet. Mismo
+  // bulkPushToSheet que usaba "Subir mis valores locales" de watchlist.html.
   const bulkSyncAll = async () => {
-    if (!syncUrl || !movies) return;
+    if (!movies) return;
+    if (
+      !window.confirm(
+        `Esto va a pisar el elo/duelos de ${modeMovies.length} pelis en la Sheet con lo que tenés en ESTE navegador. ` +
+          "Si otro dispositivo jugó duelos más recientes que no llegaron acá, esos se pierden. ¿Seguro?"
+      )
+    )
+      return;
     setBulkSyncing(true);
     setBulkSyncProgress(0);
-    const CHUNK_SIZE = 100;
-    const chunks = [];
-    for (let i = 0; i < movies.length; i += CHUNK_SIZE) {
-      chunks.push(movies.slice(i, i + CHUNK_SIZE));
-    }
-    for (let i = 0; i < chunks.length; i++) {
-      await syncToSheet(chunks[i]);
-      setBulkSyncProgress(
-        Math.round(((i + 1) / chunks.length) * movies.length)
+    setRestoreMsg("");
+    try {
+      const stats = await bulkPushToSheet(modeMovies, {
+        onProgress: (p) => setBulkSyncProgress(p.total ? Math.round((p.done / p.total) * modeMovies.length) : 0),
+      });
+      setRestoreMsg(
+        `Listo: ${stats.updated} actualizadas` +
+          (stats.skipped ? `, ${stats.skipped} no encontradas en la Sheet` : "") +
+          "."
       );
+    } catch (e) {
+      setRestoreMsg("No se pudo subir todo — probá de nuevo en un rato.");
     }
     setBulkSyncing(false);
   };
 
   const exportProgress = () => {
-    const header = "title,year,elo,games,wins,losses,ties";
-    const rows = movies.map((m) => {
+    const header = "title,year,tmdbId,rating,elo,games,wins,losses,ties";
+    const rows = modeMovies.map((m) => {
       const losses = m.comparisons - m.wins;
-      const safeTitle = `"${m.title.replace(/"/g, '""')}"`;
-      return [safeTitle, m.year ?? "", m.elo, m.comparisons, m.wins, losses, 0].join(",");
+      const safeTitle = `"${String(m.title).replace(/"/g, '""')}"`;
+      return [safeTitle, m.year ?? "", m.tmdbId || "", Number(m.rating) || 0, m.elo, m.comparisons, m.wins, losses, 0].join(",");
     });
     const csv = [header, ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "cine-elo-progreso.csv";
+    a.download = isWL ? "watchlist-cine-elo.csv" : "cine-elo-progreso.csv";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -2080,7 +2199,7 @@ function CineEloApp() {
     setLastAction(null);
     setDuelCount(0);
     setRankHistoryCount(0);
-    window.storage.set("cine-elo-duel-count", "0", false).catch(() => {});
+    window.storage.set(prefKey("cine-elo-duel-count"), "0", false).catch(() => {});
     window.storage.delete("cine-elo-rank-history", false).catch(() => {});
     setConfirmReset(false);
   };
@@ -2089,8 +2208,8 @@ function CineEloApp() {
     if (!movies) return [];
     const q = debouncedFilterText.trim().toLowerCase();
     if (!q) return [];
-    return movies.filter((m) => m.title.toLowerCase().includes(q)).slice(0, 200);
-  }, [movies, debouncedFilterText]);
+    return modeMovies.filter((m) => String(m.title).toLowerCase().includes(q)).slice(0, 200);
+  }, [movies, modeMovies, debouncedFilterText]);
 
   const hasActiveFilters =
     duelDirector ||
@@ -2099,14 +2218,12 @@ function CineEloApp() {
     duelLanguage ||
     maxDuelosFilter != null ||
     duelRankMin > 1 ||
-    (duelRankMax > 0 && duelRankMax < ratedRanking.length) ||
+    (duelRankMax > 0 && duelRankMax < modeRanking.length) ||
     (duelYearMin != null && duelYearMin > decadeBounds[0]) ||
     (duelYearMax != null && duelYearMax < decadeBounds[1]) ||
     duelYearExact ||
-    duelGoldMin > 1 ||
-    duelGoldMax < 10 ||
-    duelSilverMin > 0 ||
-    duelSilverMax < 10;
+    (!isWL &&
+      (duelGoldMin > 1 || duelGoldMax < 10 || duelSilverMin > 0 || duelSilverMax < 10));
 
   const hasActiveModes =
     quickMode ||
@@ -2161,59 +2278,109 @@ function CineEloApp() {
   );
 
   // Editar el rating directo desde Resumen/Ranking, sin pasar por
-  // edit.html. syncToSheet (el que ya usan los duelos) NO sirve acá: solo
-  // rellena celdas VACÍAS, nunca pisa un rating ya cargado — necesitamos
-  // el mismo setFields (sobreescribe) que usa edit.html, con la misma cola
-  // de sincronización (IndexedDB + Background Sync) para que el cambio
-  // llegue al Sheet aunque se cierre la pestaña.
-  const saveMovieRating = useCallback((movie, newRating) => {
-    const title = movie.title;
-    const tmdbId = movie.tmdbId || "";
-    const year = movie.year;
-    const changes = [];
-    if (newRating !== Number(movie.rating || 0)) {
-      changes.push({ col: "rating", value: newRating });
-    }
-    let newPlays = Number(movie.plays || 0);
-    if (newRating > 0) {
-      newPlays = Math.max(newPlays, 1);
-      if (newPlays !== Number(movie.plays || 0)) {
-        changes.push({ col: "diary_count", value: newPlays });
+  // edit.html — y en Watchlist, "Marcar como vista". Va por setFields (pisa
+  // la celda, a diferencia del POST por lotes que solo rellena vacías) con
+  // la misma cola durable que todo lo demás.
+  const saveMovieRating = useCallback(
+    (movie, newRating, opts) => {
+      const o = opts || {};
+      const title = movie.title;
+      const tmdbId = movie.tmdbId || "";
+      const year = movie.year;
+      const prevRating = Number(movie.rating) || 0;
+      const changes = [];
+      if (newRating !== prevRating) {
+        changes.push({ col: "rating", value: newRating });
       }
-    }
-    // No basta con "elo vacío": una peli que ya tuvo duelos en watchlist.html
-    // sin estar puntuada todavía llega con un elo_rating cargado (el de esos
-    // duelos), y si sólo resetéabamos cuando elo estaba en blanco, puntuarla
-    // acá se quedaba con ese elo de watchlist en vez de arrancar de cero con
-    // el elo derivado del rating nuevo. Mismo fix que edit.html: lo que
-    // importa es si la peli PASA de no puntuada a puntuada, no si el elo
-    // estaba vacío.
-    const wasRated = Number(movie.rating || 0) > 0;
-    const becomingRated = !wasRated && newRating > 0;
-    let newElo = movie.elo;
-    let newComparisons = movie.comparisons;
-    let newWins = movie.wins;
-    if (becomingRated) {
-      newElo = computeInitialElo(newRating, Math.max(newPlays, 1));
-      newComparisons = 0;
-      newWins = 0;
-      changes.push({ col: "elo_rating", value: newElo });
-      changes.push({ col: "elo_games", value: 0 });
-      changes.push({ col: "elo_win", value: 0 });
-      changes.push({ col: "elo_loss", value: 0 });
-    }
-    if (!changes.length) return;
+      let newPlays = Number(movie.plays || 0);
+      if (newRating > 0) {
+        newPlays = Math.max(newPlays, o.plays || 1);
+        if (newPlays !== Number(movie.plays || 0)) {
+          changes.push({ col: "diary_count", value: newPlays });
+        }
+      }
+      // Si la peli CAMBIA de lado (watchlist → vista o al revés), el
+      // elo/duelos que juntó del otro lado no dice nada acá: arranca de cero
+      // con el elo de base que corresponde (de tu rating si ya la viste, del
+      // promedio de TMDB si vuelve a la watchlist). Mismo criterio que
+      // edit.html — importa el cambio de lado, no si el elo estaba vacío.
+      const wasRated = prevRating > 0;
+      const becomingRated = !wasRated && newRating > 0;
+      const becomingUnrated = wasRated && !(newRating > 0);
+      let newElo = movie.elo;
+      let newComparisons = movie.comparisons;
+      let newWins = movie.wins;
+      if (becomingRated || becomingUnrated) {
+        newElo = becomingRated
+          ? computeInitialElo(newRating, Math.max(newPlays, 1))
+          : computeWatchlistElo(movie.voteAverage, movie.voteCount);
+        newComparisons = 0;
+        newWins = 0;
+        changes.push({ col: "elo_rating", value: newElo });
+        changes.push({ col: "elo_games", value: 0 });
+        changes.push({ col: "elo_win", value: 0 });
+        changes.push({ col: "elo_loss", value: 0 });
+      }
+      if (!changes.length) return;
 
-    setMovies((current) =>
-      current.map((m) =>
-        m.id === movie.id
-          ? { ...m, rating: newRating, plays: newPlays, elo: newElo, comparisons: newComparisons, wins: newWins }
-          : m
-      )
-    );
+      setMovies((current) =>
+        current.map((m) =>
+          m.id === movie.id
+            ? { ...m, rating: newRating, plays: newPlays, elo: newElo, comparisons: newComparisons, wins: newWins }
+            : m
+        )
+      );
+      if (pair && pair.some((p) => p.id === movie.id) && (becomingRated || becomingUnrated)) {
+        setPair(null);
+      }
 
-    syncDurable({ type: "setFields", tmdbId, title, year, changes });
-  }, []);
+      syncDurable({ type: "setFields", tmdbId, title, year, changes }, refreshPending);
+
+      // Cambiar de lado saca la peli de esta pantalla: se ofrece deshacer
+      // (lo que costó recuperar elo/duelos pisados sin querer en la
+      // watchlist vieja justifica tenerlo a mano).
+      if (becomingRated || becomingUnrated) {
+        const prev = {
+          rating: prevRating,
+          plays: Number(movie.plays) || 0,
+          elo: movie.elo,
+          comparisons: Number(movie.comparisons) || 0,
+          wins: Number(movie.wins) || 0,
+        };
+        showToast(
+          becomingRated
+            ? `"${title}" marcada como vista (★ ${newRating}).`
+            : `"${title}" volvió a la watchlist.`,
+          {
+            actionLabel: "Deshacer",
+            onAction: () => {
+              setMovies((current) =>
+                current.map((m) => (m.id === movie.id ? { ...m, ...prev } : m))
+              );
+              syncDurable(
+                {
+                  type: "setFields",
+                  tmdbId,
+                  title,
+                  year,
+                  changes: [
+                    { col: "rating", value: prev.rating },
+                    { col: "diary_count", value: prev.plays },
+                    { col: "elo_rating", value: prev.elo },
+                    { col: "elo_games", value: prev.comparisons },
+                    { col: "elo_win", value: prev.wins },
+                    { col: "elo_loss", value: Math.max(prev.comparisons - prev.wins, 0) },
+                  ],
+                },
+                refreshPending
+              );
+            },
+          }
+        );
+      }
+    },
+    [pair, refreshPending, showToast]
+  );
 
   if (movies === null) {
     return (
@@ -2236,8 +2403,47 @@ function CineEloApp() {
           <a className="back-link" href="../index.html">
             ← MovieWorld
           </a>
-          <p className="eyebrow">tu cartelera, tu criterio</p>
-          <h1 className="title">CINE ELO</h1>
+          <p className="eyebrow">{modeInfo.eyebrow}</p>
+          <h1 className="title">{modeInfo.title}</h1>
+          <div className="mode-switch" role="tablist" aria-label="Modo">
+            <button
+              type="button"
+              className={"mode-btn" + (!isWL ? " active" : "")}
+              onClick={() => !isWL || (onModeChange && onModeChange("vistas"))}
+            >
+              🎬 Vistas
+            </button>
+            <button
+              type="button"
+              className={"mode-btn" + (isWL ? " active" : "")}
+              onClick={() => isWL || (onModeChange && onModeChange("watchlist"))}
+            >
+              🍿 Watchlist
+            </button>
+          </div>
+          {(pendingCount > 0 || forcedSync) && (
+            <p className="status-line">
+              <span>
+                {forcedSync ||
+                  `● ${pendingCount} cambio${pendingCount === 1 ? "" : "s"} sin confirmar todavía`}
+              </span>
+              <button type="button" className="status-btn" onClick={syncNow} disabled={!!forcedSync}>
+                {forcedSync ? "Sincronizando…" : "Sincronizar ahora"}
+              </button>
+            </p>
+          )}
+          {sheetStale && (
+            <p className="status-line status-warn">
+              <span>⚠ No se pudo traer la Sheet, mostrando lo último guardado.</span>
+              <button
+                type="button"
+                className="status-btn"
+                onClick={() => refreshFromSheet({ force: true })}
+              >
+                Reintentar
+              </button>
+            </p>
+          )}
         </div>
         <Sprockets />
       </header>
@@ -2255,12 +2461,14 @@ function CineEloApp() {
         >
           Ranking
         </button>
-        <button
-          className={"tab" + (tab === "evolucion" ? " active" : "")}
-          onClick={() => setTab("evolucion")}
-        >
-          Evolución
-        </button>
+        {!isWL && (
+          <button
+            className={"tab" + (tab === "evolucion" ? " active" : "")}
+            onClick={() => setTab("evolucion")}
+          >
+            Evolución
+          </button>
+        )}
         <button
           className={"tab" + (tab === "torneo" ? " active" : "")}
           onClick={() => setTab("torneo")}
@@ -2284,12 +2492,13 @@ function CineEloApp() {
       <main className="main">
         {tab === "comparar" && (
           <section>
-            {movies.length < 2 ? (
+            {modeMovies.length < 2 ? (
               <div className="empty">
                 <p className="empty-title">Falta reparto.</p>
                 <p className="empty-body">
-                  Agrega al menos dos películas en la pestaña "Mis pelis" para
-                  empezar a compararlas.
+                  {isWL
+                    ? 'Necesitás al menos dos pelis sin ver. Agregalas (o importá tu watchlist de Letterboxd) en "Mis pelis".'
+                    : 'Agrega al menos dos películas en la pestaña "Mis pelis" para empezar a compararlas.'}
                 </p>
                 <button className="btn-gold" onClick={() => setTab("gestionar")}>
                   Agregar películas
@@ -2370,6 +2579,7 @@ function CineEloApp() {
                         ⚔️ Duelo de directores
                         {directorDuelActive ? " · ON" : ""}
                       </button>
+                      {!isWL && (
                       <button
                         className={
                           "quick-toggle" + (biasedMode === "over" ? " active" : "")
@@ -2379,6 +2589,8 @@ function CineEloApp() {
                       >
                         📈 Sobrevalorados{biasedMode === "over" ? " · ON" : ""}
                       </button>
+                      )}
+                      {!isWL && (
                       <button
                         className={
                           "quick-toggle" + (biasedMode === "under" ? " active" : "")
@@ -2388,6 +2600,7 @@ function CineEloApp() {
                       >
                         📉 Infravalorados{biasedMode === "under" ? " · ON" : ""}
                       </button>
+                      )}
                     </div>
 
                     {biasedMode &&
@@ -2504,22 +2717,22 @@ function CineEloApp() {
                     <label className="filter-label">
                       Rango del ranking
                       <span className="filter-range-hint">
-                        (solo entre las vistas — {ratedRanking.length} pelis)
+                        (solo entre las {modeInfo.countNoun} — {modeRanking.length} pelis)
                       </span>
                       <span className="filter-range-value">
                         #{duelRankMin} —{" "}
-                        {duelRankMax > 0 ? `#${duelRankMax}` : `#${ratedRanking.length}`}
+                        {duelRankMax > 0 ? `#${duelRankMax}` : `#${modeRanking.length}`}
                       </span>
                       <DualRangeSlider
                         min={1}
-                        max={ratedRanking.length}
-                        step={Math.max(1, Math.round(ratedRanking.length / 200))}
+                        max={modeRanking.length}
+                        step={Math.max(1, Math.round(modeRanking.length / 200))}
                         valueMin={duelRankMin}
-                        valueMax={duelRankMax > 0 ? duelRankMax : ratedRanking.length}
+                        valueMax={duelRankMax > 0 ? duelRankMax : modeRanking.length}
                         onChange={(newMin, newMax) =>
                           setDuelRankRange(
                             newMin,
-                            newMax >= ratedRanking.length ? 0 : newMax
+                            newMax >= modeRanking.length ? 0 : newMax
                           )
                         }
                       />
@@ -2543,14 +2756,14 @@ function CineEloApp() {
                             key={"bottom" + n}
                             className={
                               "preset-btn" +
-                              (duelRankMin === Math.max(1, ratedRanking.length - n + 1) &&
-                              (duelRankMax === 0 || duelRankMax === ratedRanking.length)
+                              (duelRankMin === Math.max(1, modeRanking.length - n + 1) &&
+                              (duelRankMax === 0 || duelRankMax === modeRanking.length)
                                 ? " active"
                                 : "")
                             }
                             onClick={() =>
                               setDuelRankRange(
-                                Math.max(1, ratedRanking.length - n + 1),
+                                Math.max(1, modeRanking.length - n + 1),
                                 0
                               )
                             }
@@ -2572,6 +2785,8 @@ function CineEloApp() {
                       </div>
                     </label>
 
+                    {!isWL && (
+                    <>
                     <label className="filter-label">
                       Rango de rating dorado
                       <span className="filter-range-value">
@@ -2609,6 +2824,8 @@ function CineEloApp() {
                         }}
                       />
                     </label>
+                    </>
+                    )}
 
                     <label className="filter-label">
                       Década
@@ -2728,8 +2945,8 @@ function CineEloApp() {
                   <div className="duel">
                     <p className="duel-caption">
                       {rankingPicks.length === 0
-                        ? "¿cuál es mejor?"
-                        : "de las que quedan, ¿cuál es la mejor?"}
+                        ? modeInfo.duelQuestion
+                        : modeInfo.duelQuestionMore}
                     </p>
                     <div
                       className={
@@ -2760,7 +2977,7 @@ function CineEloApp() {
                             </div>
                             <div className="movie-card-body">
                               <span className="rank-badge">
-                                #{ranking.findIndex((r) => r.id === m.id) + 1}
+                                #{rankById.get(m.id) || "?"}
                               </span>
                               <span className="movie-card-title">
                                 {m.title}
@@ -2963,9 +3180,10 @@ function CineEloApp() {
                   <RankingList
                     ranking={filteredRanking}
                     filterText={debouncedFilterText}
-                    globalRanking={ratedRanking}
+                    globalRanking={modeRanking}
                     projectedRating={projectedRating}
                     onDuel={duelSpecificMovie}
+                    onRate={isWL ? saveMovieRating : null}
                   />
                 )}
               </>
@@ -2973,7 +3191,7 @@ function CineEloApp() {
           </section>
         )}
 
-        {tab === "evolucion" && (
+        {tab === "evolucion" && !isWL && (
           <section>
             <p className="duel-caption">evolución de posiciones</p>
             <div className="autocomplete" style={{ marginBottom: "10px" }}>
@@ -3118,9 +3336,9 @@ function CineEloApp() {
               <div className="empty">
                 <p className="empty-title">Arma un torneo</p>
                 <p className="empty-body">
-                  Elige cuántas películas entran (al azar entre las vistas,
-                  opcionalmente filtradas) y arrancamos un cuadro de
-                  eliminación directa.
+                  Elige cuántas películas entran (al azar entre las{" "}
+                  {modeInfo.countNoun}, opcionalmente filtradas) y arrancamos
+                  un cuadro de eliminación directa.
                 </p>
 
                 <div
@@ -3261,7 +3479,7 @@ function CineEloApp() {
                               </div>
                               <div className="movie-card-body">
                                 <span className="rank-badge">
-                                  #{ranking.findIndex((r) => r.id === m.id) + 1}
+                                  #{rankById.get(m.id) || "?"}
                                 </span>
                                 <span className="movie-card-title">
                                   {m.title}
@@ -3333,14 +3551,18 @@ function CineEloApp() {
               <div className="empty">
                 <p className="empty-title">Todavía no hay nada que resumir.</p>
                 <p className="empty-body">
-                  Puntúa y duelea algunas películas primero.
+                  {isWL
+                    ? "Agregá y dueleá algunas películas de la watchlist primero."
+                    : "Puntúa y duelea algunas películas primero."}
                 </p>
               </div>
             ) : (
               <div className="summary-grid">
                 <div className="summary-card">
                   <p className="summary-card-title">Top 10</p>
-                  <p className="summary-card-sub">las de mayor Elo</p>
+                  <p className="summary-card-sub">
+                    {isWL ? "las de mayor Elo — más ganas de verlas" : "las de mayor Elo"}
+                  </p>
                   <SummaryList
                     onDuel={duelSpecificMovie}
                     items={summaryStats.top10}
@@ -3350,7 +3572,9 @@ function CineEloApp() {
 
                 <div className="summary-card">
                   <p className="summary-card-title">Bottom 10</p>
-                  <p className="summary-card-sub">las de menor Elo</p>
+                  <p className="summary-card-sub">
+                    {isWL ? "las de menor Elo — menos prioridad para ver" : "las de menor Elo"}
+                  </p>
                   <SummaryList
                     onDuel={duelSpecificMovie}
                     items={summaryStats.bottom10}
@@ -3358,6 +3582,8 @@ function CineEloApp() {
                   />
                 </div>
 
+                {!isWL && (
+                <>
                 <div className="summary-card">
                   <p className="summary-card-title">📉 Infravaloradas</p>
                   <p className="summary-card-sub">
@@ -3397,6 +3623,8 @@ function CineEloApp() {
                     )}
                   />
                 </div>
+                </>
+                )}
 
                 {summaryStats.eloGainers.length > 0 && (
                   <div className="summary-card">
@@ -3463,7 +3691,7 @@ function CineEloApp() {
                       <span className="summary-kpi-value">
                         {summaryStats.totalRated}
                       </span>
-                      <span className="summary-kpi-label">puntuadas</span>
+                      <span className="summary-kpi-label">{isWL ? "en watchlist" : "puntuadas"}</span>
                     </div>
                     <div className="summary-kpi">
                       <span className="summary-kpi-value">
@@ -3501,6 +3729,17 @@ function CineEloApp() {
                   value={newTmdbId}
                   onChange={(e) => setNewTmdbId(e.target.value)}
                 />
+                <select
+                  className="add-input add-input-rating"
+                  value={newRating}
+                  onChange={(e) => setNewRating(e.target.value)}
+                  aria-label="Tu rating"
+                >
+                  <option value="">{isWL ? "Sin ver (watchlist)" : "Tu rating…"}</option>
+                  {RATING_EDIT_OPTIONS.map((v) => (
+                    <option key={v} value={v}>★ {v}</option>
+                  ))}
+                </select>
               </div>
               <button className="btn-gold" type="submit" disabled={tmdbLookupBusy}>
                 {tmdbLookupBusy ? "Buscando…" : "Agregar"}
@@ -3509,8 +3748,14 @@ function CineEloApp() {
             {error && <p className="form-error">{error}</p>}
 
             <p className="counter" style={{ margin: "4px 0 12px" }}>
-              {movies.length} películas en tu catálogo
+              {modeMovies.length} películas {modeInfo.countNoun} · {movies.length} en todo tu catálogo
             </p>
+
+            {isWL && (
+              <LetterboxdImport
+                onDone={() => refreshFromSheet({ force: true })}
+              />
+            )}
 
             <input
               className="add-input"
@@ -3521,7 +3766,7 @@ function CineEloApp() {
               style={{ marginBottom: "12px", width: "100%" }}
             />
 
-            {movies.length === 0 ? (
+            {modeMovies.length === 0 ? (
               <div className="empty">
                 <p className="empty-title">Lista vacía.</p>
                 <p className="empty-body">Suma tu primera película arriba.</p>
@@ -3565,7 +3810,7 @@ function CineEloApp() {
 
             <div style={{ marginTop: "28px", textAlign: "center" }}>
               <button className="skip" onClick={exportProgress}>
-                exportar mi progreso (CSV)
+                {isWL ? "exportar mi watchlist (CSV)" : "exportar mi progreso (CSV)"}
               </button>
             </div>
 
@@ -3602,7 +3847,9 @@ function CineEloApp() {
                 disabled={bulkSyncing || !syncUrl}
               >
                 {bulkSyncing
-                  ? `sincronizando… ${bulkSyncProgress}/${movies.length}`
+                  ? `sincronizando… ${bulkSyncProgress}/${modeMovies.length}`
+                  : isWL
+                  ? "subir mi watchlist local a la Sheet"
                   : "sincronizar todo mi progreso ahora"}
               </button>{" "}
               <button
@@ -3629,6 +3876,8 @@ function CineEloApp() {
               </p>
             </div>
 
+            {!isWL && (
+            <>
             <div className="sync-panel">
               <p className="sync-title">Historial de posiciones</p>
               <p className="sync-hint" style={{ margin: 0 }}>
@@ -3676,9 +3925,252 @@ function CineEloApp() {
                 </button>
               )}
             </div>
+            </>
+            )}
           </section>
         )}
       </main>
+
+      {toast && (
+        <div className={"toast" + (toast.isError ? " toast-err" : "")} role="status">
+          <span>{toast.message}</span>
+          {toast.onAction && (
+            <button
+              type="button"
+              onClick={() => {
+                const fn = toast.onAction;
+                setToast(null);
+                fn();
+              }}
+            >
+              {toast.actionLabel || "Deshacer"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Importar watchlist de Letterboxd (CSV) ──
+// Mismo flujo que tenía watchlist.html: se saltean las que ya están en la
+// Sheet (pre-filtro por título+año con pullTitles, y filtro final por tmdbId
+// una vez matcheadas), se busca poster/director en TMDB de a lotes, y se dan
+// de alta como watchlist (rating 0, elo de base según el promedio de TMDB).
+const IMPORT_CHUNK = 20;
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\r") {
+      // ignorar
+    } else if (c === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += c;
+    }
+  }
+  if (field.length || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows.filter((r) => r.length > 1 || (r.length === 1 && r[0] !== ""));
+}
+
+function normTitleYear(title, year) {
+  return String(title || "").trim().toLowerCase() + "|" + String(year || "").trim();
+}
+
+function LetterboxdImport({ onDone }) {
+  const [open, setOpen] = useState(false);
+  const [summary, setSummary] = useState("");
+  const [pending, setPending] = useState(null); // { items, existingIds }
+  const [importing, setImporting] = useState(false);
+  const [progress, setProgress] = useState(null); // { pct, text }
+
+  const onFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setSummary("Leyendo archivo…");
+    setPending(null);
+    setProgress(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const rows = parseCsv(String(reader.result || ""));
+      if (!rows.length) {
+        setSummary("El CSV está vacío o no se pudo leer.");
+        return;
+      }
+      const header = rows[0].map((h) => h.trim().toLowerCase());
+      const nameIdx = header.indexOf("name");
+      const yearIdx = header.indexOf("year");
+      if (nameIdx === -1) {
+        setSummary('No encuentro la columna "Name" — ¿es un export de watchlist de Letterboxd?');
+        return;
+      }
+      const seen = new Set();
+      const csvItems = [];
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        const title = (r[nameIdx] || "").trim();
+        if (!title) continue;
+        const year = yearIdx > -1 ? (r[yearIdx] || "").trim() : "";
+        const key = normTitleYear(title, year);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        csvItems.push({ title, year });
+      }
+      setSummary(`${csvItems.length} pelis en el CSV. Comparando con tu catálogo…`);
+      fetchJsonWithRetry(`${SHARED_SYNC_URL}?action=pullTitles`, {}, 2, 20000)
+        .then((data) => {
+          if (!data || !data.ok) throw new Error((data && data.error) || "error desconocido");
+          const existing = new Set();
+          const existingIds = new Set();
+          (data.titles || []).forEach((t) => {
+            existing.add(normTitleYear(t.title, t.year));
+            existing.add(normTitleYear(t.title, "")); // por si el año no coincide exacto
+            if (t.id) existingIds.add(String(t.id));
+          });
+          const items = csvItems.filter(
+            (it) => !existing.has(normTitleYear(it.title, it.year)) && !existing.has(normTitleYear(it.title, ""))
+          );
+          setPending({ items, existingIds });
+          setSummary(
+            `${items.length} nuevas para importar · ${csvItems.length - items.length} ya estaban en tu catálogo.`
+          );
+        })
+        .catch((err) => setSummary(`No se pudo comparar con la Sheet: ${err.message}`));
+    };
+    reader.readAsText(file);
+  };
+
+  const runImport = async () => {
+    if (!pending || !pending.items.length || importing) return;
+    setImporting(true);
+    const { items, existingIds } = pending;
+    const total = items.length;
+    let done = 0;
+    let created = 0;
+    let unmatched = 0;
+    let alreadyExists = 0;
+    while (done < total) {
+      const chunk = items.slice(done, done + IMPORT_CHUNK);
+      setProgress({ pct: Math.round((done / total) * 100), text: `Buscando en TMDB ${done}/${total}…` });
+      try {
+        const matchData = await postJson(
+          { type: "tmdbMatchBatch", items: chunk.map((c) => ({ title: c.title, year: c.year })) },
+          false
+        );
+        const results = (matchData && matchData.results) || [];
+        const payload = chunk
+          .map((c, i) => {
+            const m = results[i] || {};
+            if (!m.matched) unmatched++;
+            const item = {
+              title: m.matched ? m.title : c.title,
+              tmdbId: m.tmdbId || "",
+              year: m.year || c.year || "",
+              rating: 0,
+              plays: 0,
+              elo: computeWatchlistElo(m.voteAverage, m.voteCount),
+              games: 0,
+              wins: 0,
+              losses: 0,
+              ties: 0,
+            };
+            META_FIELDS.forEach(({ key }) => {
+              if (key !== "tmdbId") item[key] = m[key] || "";
+            });
+            return item;
+          })
+          // Filtro final por tmdbId ya resuelto: atrapa las que el
+          // pre-filtro por título+año no vio (año distinto entre
+          // Letterboxd y la Sheet, por ejemplo).
+          .filter((item) => {
+            if (item.tmdbId && existingIds.has(String(item.tmdbId))) {
+              alreadyExists++;
+              return false;
+            }
+            return true;
+          });
+        setProgress({ pct: Math.round((done / total) * 100), text: `Guardando en la Sheet ${done}/${total}…` });
+        const createData = payload.length ? await postJson(payload, true) : { ok: true, created: [] };
+        created += ((createData && createData.created) || []).length;
+        done += chunk.length;
+      } catch (err) {
+        setProgress({
+          pct: Math.round((done / total) * 100),
+          text: `Error en el lote ${done}-${done + chunk.length}: ${err.message}. Reintentando…`,
+        });
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+    setProgress({
+      pct: 100,
+      text:
+        `Listo — ${created} agregadas (${unmatched} sin match en TMDB, igual agregadas` +
+        (alreadyExists ? `; ${alreadyExists} ya estaban por tmdbId` : "") +
+        ").",
+    });
+    setPending(null);
+    setImporting(false);
+    if (onDone) onDone();
+  };
+
+  return (
+    <div className="sync-panel" style={{ marginTop: 0, marginBottom: "16px" }}>
+      <button type="button" className="filters-toggle" onClick={() => setOpen((v) => !v)}>
+        📥 Importar watchlist de Letterboxd {open ? "▲" : "▼"}
+      </button>
+      {open && (
+        <div style={{ marginTop: "12px" }}>
+          <p className="sync-hint" style={{ marginTop: 0 }}>
+            Subí el CSV exportado de Letterboxd (Configuración → Exportar datos →{" "}
+            <code>watchlist.csv</code>). Se saltean las pelis que ya tenés cargadas y se busca
+            poster/director en TMDB para las nuevas.
+          </p>
+          <input type="file" accept=".csv,text/csv" onChange={onFile} disabled={importing} />
+          {summary && <p className="sync-hint">{summary}</p>}
+          <button
+            className="btn-gold"
+            onClick={runImport}
+            disabled={importing || !pending || !pending.items.length}
+          >
+            {importing ? "Importando…" : "Importar"}
+          </button>
+          {progress && (
+            <div className="import-progress">
+              <div className="import-progress-bar">
+                <div className="import-progress-fill" style={{ width: `${progress.pct}%` }} />
+              </div>
+              <p className="sync-hint" style={{ textAlign: "center" }}>{progress.text}</p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -4196,11 +4688,51 @@ function InlineRatingDiff({ movie, gold, silver, diff, onSave }) {
   );
 }
 
-function RankingList({ ranking, filterText, globalRanking, projectedRating, onDuel }) {
+// "¿Ya la viste?" de la Watchlist: mismo <select> en el lugar que el
+// rating editable de Resumen — elegir un rating la pasa a vistas
+// (saveMovieRating resetea su elo/duelos y ofrece deshacer).
+function MarkWatchedButton({ movie, onSave }) {
+  const [editing, setEditing] = useState(false);
+  if (editing) {
+    return (
+      <select
+        autoFocus
+        className="rating-edit-select"
+        defaultValue=""
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => {
+          setEditing(false);
+          if (e.target.value) onSave(movie, Number(e.target.value));
+        }}
+        onBlur={() => setEditing(false)}
+      >
+        <option value="">¿Qué rating le das?</option>
+        {RATING_EDIT_OPTIONS.map((v) => (
+          <option key={v} value={v}>★ {v}</option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="mark-watched-btn"
+      onClick={(e) => {
+        e.stopPropagation();
+        setEditing(true);
+      }}
+      title="Marcar como vista (le ponés rating y pasa a Cine Elo)"
+    >
+      ✅ ¿ya la viste?
+    </button>
+  );
+}
+
+function RankingList({ ranking, filterText, globalRanking, projectedRating, onDuel, onRate }) {
   const source = globalRanking || ranking;
   const q = filterText.trim().toLowerCase();
   const filtered = q
-    ? ranking.filter((m) => m.title.toLowerCase().includes(q))
+    ? ranking.filter((m) => String(m.title).toLowerCase().includes(q))
     : ranking;
   const visible = filtered.slice(0, 200);
   return (
@@ -4242,6 +4774,9 @@ function RankingList({ ranking, filterText, globalRanking, projectedRating, onDu
                 </span>
                 <span className="movie-card-ratings">
                   {(() => {
+                    if (onRate) {
+                      return <MarkWatchedButton movie={m} onSave={onRate} />;
+                    }
                     if (Number(m.rating) > 0 && proj != null) {
                       const gold = Number(m.rating) * 2;
                       return <RatingDiff gold={gold} silver={proj} diff={gold - proj} />;
@@ -5460,6 +5995,123 @@ function StyleSheet() {
         cursor: pointer;
         padding: 0 4px;
       }
+      .mode-switch {
+        display: inline-flex;
+        gap: 4px;
+        margin-top: 12px;
+        padding: 3px;
+        border-radius: 999px;
+        background: #16171d;
+        border: 1px solid #2A2C35;
+      }
+      .mode-btn {
+        background: none;
+        border: none;
+        color: #8A8D98;
+        font-family: 'Archivo', sans-serif;
+        font-size: 13px;
+        font-weight: 700;
+        padding: 6px 14px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .mode-btn.active {
+        background: #F2C14E;
+        color: #14151A;
+      }
+      .status-line {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 10px 0 0;
+        font-size: 12px;
+        color: #F2C14E;
+      }
+      .status-line.status-warn {
+        color: #EB5757;
+      }
+      .status-btn {
+        background: none;
+        border: 1px solid currentColor;
+        color: inherit;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 3px 9px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .status-btn:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .mark-watched-btn {
+        background: none;
+        border: 1px dashed #3a3d48;
+        color: #8A8D98;
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .mark-watched-btn:hover {
+        border-color: #F2C14E;
+        color: #F2C14E;
+      }
+      .add-input-rating {
+        flex: 0 0 auto;
+      }
+      .import-progress {
+        margin-top: 12px;
+      }
+      .import-progress-bar {
+        height: 8px;
+        background: #0B0C10;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .import-progress-fill {
+        height: 100%;
+        background: #F2C14E;
+        transition: width 0.2s ease;
+      }
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 20px;
+        transform: translateX(-50%);
+        width: calc(100% - 32px);
+        max-width: 480px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        background: #1c1e26;
+        border: 1px solid #F2C14E;
+        border-radius: 10px;
+        color: #EDEAE3;
+        font-size: 13px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        z-index: 50;
+      }
+      .toast span {
+        flex: 1;
+      }
+      .toast.toast-err {
+        border-color: #EB5757;
+      }
+      .toast button {
+        background: #F2C14E;
+        color: #14151A;
+        border: none;
+        font-weight: 700;
+        font-size: 12px;
+        padding: 7px 12px;
+        border-radius: 6px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
     `}</style>
   );
 }
@@ -5500,6 +6152,19 @@ class ErrorBoundary extends React.Component {
             Tu progreso sigue guardado. Recarga la página para volver a
             intentarlo.
           </p>
+          {/* El detalle del error, chiquito: sin esto, "Algo se rompió" no
+              daba ninguna pista de qué arreglar. */}
+          <p
+            style={{
+              fontSize: "11px",
+              color: "#5d606b",
+              maxWidth: "320px",
+              fontFamily: "monospace",
+              wordBreak: "break-word",
+            }}
+          >
+            {String((this.state.error && this.state.error.message) || this.state.error)}
+          </p>
           <button
             onClick={() => window.location.reload()}
             style={{
@@ -5522,10 +6187,14 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-export default function CineElo() {
+export default function CineElo({ mode, onModeChange }) {
+  // key={mode}: cambiar de modo remonta la app de cero (estado de duelo,
+  // filtros, torneo) — el catálogo se relee del mismo localStorage, así que
+  // es instantáneo, y el pull a la Sheet se saltea si fue hace menos de un
+  // minuto (ver lastPullAt).
   return (
-    <ErrorBoundary>
-      <CineEloApp />
+    <ErrorBoundary key={mode}>
+      <CineEloApp key={mode} mode={mode} onModeChange={onModeChange} />
     </ErrorBoundary>
   );
 }

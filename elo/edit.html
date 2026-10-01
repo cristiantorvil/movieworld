@@ -428,7 +428,12 @@ import {
     document.body.appendChild(overlay);
   }
   window.addEventListener("error", showFatalError);
-  window.addEventListener("unhandledrejection", showFatalError);
+  // Una promesa rechazada sin capturar (típicamente un guardado de fondo
+  // o IndexedDB cortada al volver de segundo plano en el celular) no deja
+  // la página rota: antes esto tapaba todo con "Algo se rompió" igual.
+  window.addEventListener("unhandledrejection", function (e) {
+    console.error("Promesa rechazada sin capturar:", e.reason);
+  });
 })();
 
 (function () {
