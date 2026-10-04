@@ -3184,6 +3184,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                     projectedRating={projectedRating}
                     onDuel={duelSpecificMovie}
                     onRate={isWL ? saveMovieRating : null}
+                    onRemove={isWL ? removeMovie : null}
                   />
                 )}
               </>
@@ -4728,7 +4729,7 @@ function MarkWatchedButton({ movie, onSave }) {
   );
 }
 
-function RankingList({ ranking, filterText, globalRanking, projectedRating, onDuel, onRate }) {
+function RankingList({ ranking, filterText, globalRanking, projectedRating, onDuel, onRate, onRemove }) {
   const source = globalRanking || ranking;
   const q = filterText.trim().toLowerCase();
   const filtered = q
@@ -4767,6 +4768,22 @@ function RankingList({ ranking, filterText, globalRanking, projectedRating, onDu
                   >
                     ✏️
                   </a>
+                  {onRemove && (
+                    // Borrar directo desde el Ranking de la Watchlist (pide
+                    // confirmación y va por la cola durable, ver removeMovie).
+                    <button
+                      type="button"
+                      className="rank-delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRemove(m.id);
+                      }}
+                      title="Quitar de la watchlist"
+                      aria-label={`Quitar ${m.title}`}
+                    >
+                      🗑️
+                    </button>
+                  )}
                 </span>
                 <span className="rank-meta">
                   {m.comparisons} duelos · {m.wins} ganados
@@ -5776,6 +5793,19 @@ function StyleSheet() {
         line-height: 1;
       }
       .rank-edit:hover {
+        opacity: 1;
+      }
+      .rank-delete {
+        flex-shrink: 0;
+        background: none;
+        border: none;
+        padding: 0 0 0 6px;
+        font-size: 12px;
+        line-height: 1;
+        opacity: 0.55;
+        cursor: pointer;
+      }
+      .rank-delete:hover {
         opacity: 1;
       }
       .rank-meta {
