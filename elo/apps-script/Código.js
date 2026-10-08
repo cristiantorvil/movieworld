@@ -186,6 +186,18 @@ function doPost(e) {
           stale.push(item.title);
           return;
         }
+        // Un guardado de duelo con MENOS duelos que los que ya tiene la
+        // fila es uno viejo que llegó tarde (ej. el Service Worker
+        // reenviando un pendiente después de que la página ya mandó uno más
+        // nuevo) — si se aplicara, el elo/duelos "volverían atrás". Solo
+        // "deshacer duelo" baja el conteo a propósito, y lo marca.
+        if (gamesCol > -1 && !item.allowDecrease) {
+          var rowGames = Number(values[rowIndex - 1][gamesCol]) || 0;
+          if ((Number(item.games) || 0) < rowGames) {
+            stale.push(item.title);
+            return;
+          }
+        }
       }
       if (eloCol > -1) sheet.getRange(rowIndex, eloCol + 1).setValue(item.elo);
       if (gamesCol > -1) sheet.getRange(rowIndex, gamesCol + 1).setValue(item.games);
@@ -1169,7 +1181,16 @@ function _backfillChunk_(sheet, startRow, lastRow, lastCol, cols, apiKey, deadli
     Utilities.sleep(BACKFILL_SLEEP_MS);
   }
 
-  range.setValues(values);
+  // Solo se reescriben las columnas de metadata que este backfill completa —
+  // antes era range.setValues(values) sobre las filas ENTERAS, leídas al
+  // principio del lote: si en los segundos que tarda TMDB se guardaba un
+  // duelo (elo_rating/elo_games) de alguna de esas filas, este setValues lo
+  // pisaba con el valor viejo y el duelo "se reiniciaba".
+  ['country', 'lang', 'runtime', 'overview', 'collection', 'companies', 'voteAverage', 'voteCount', 'cast', 'tagline', 'backdrop', 'imdbId'].forEach(function (key) {
+    var c = cols[key];
+    if (c == null || c < 0) return;
+    sheet.getRange(startRow, c + 1, values.length, 1).setValues(values.map(function (r) { return [r[c]]; }));
+  });
   return {
     nextRow: startRow + i,
     procesadas: procesadas,

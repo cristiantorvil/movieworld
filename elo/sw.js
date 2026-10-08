@@ -83,6 +83,7 @@ function syncItem(item) {
         losses: item.losses,
         ties: 0,
         expectRated: item.expectRated,
+        allowDecrease: !!item.allowDecrease,
       }]),
     }).then(function (r) { return r.json(); });
   }

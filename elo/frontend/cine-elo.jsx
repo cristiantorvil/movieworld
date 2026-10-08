@@ -15,6 +15,7 @@ import {
   defaultEloFor,
   isWatchlistMovie,
   makeEloSyncItem,
+  movieKey,
   reconcileWithPending,
   readPendingSync,
   flushAllPending,
@@ -271,6 +272,41 @@ export const MODES = {
 // Último pull exitoso de la Sheet (compartido entre modos): cambiar de modo
 // remonta la app, y sin esto cada cambio volvía a bajar el catálogo entero.
 let lastPullAt = 0;
+
+// Cuándo se tocó por última vez, en ESTE navegador, el elo/duelos/rating de
+// cada peli (por movieKey). El pull completo tarda 15-30s: si mientras tanto
+// se juegan duelos y sus guardados llegan y salen de la cola, el pull (que
+// es una foto de la Sheet de ANTES de esos duelos) los pisaba al llegar — y
+// en pantalla los duelos y el elo "se reiniciaban". Lo tocado después de que
+// arrancó el pull manda sobre lo que trae ese pull.
+const localEditAt = new Map();
+function markLocalEdit(m) {
+  if (m) localEditAt.set(movieKey(m), Date.now());
+}
+
+function protectLocalEdits(current, sheetMovies, since) {
+  const fresh = new Map();
+  (current || []).forEach((m) => {
+    const t = localEditAt.get(movieKey(m));
+    if (t && t >= since) fresh.set(movieKey(m), m);
+  });
+  if (!fresh.size) return sheetMovies;
+  return sheetMovies.map((sm) => {
+    const m = fresh.get(movieKey(sm));
+    if (!m) return sm;
+    const games = Number(m.comparisons) || 0;
+    const wins = Number(m.wins) || 0;
+    return {
+      ...sm,
+      rating: m.rating,
+      plays: m.plays,
+      elo: m.elo,
+      games,
+      wins,
+      losses: Math.max(games - wins, 0),
+    };
+  });
+}
 const PULL_FRESH_MS = 60000;
 
 function CineEloApp({ mode = "vistas", onModeChange }) {
@@ -351,10 +387,11 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   // Encola (durable) y manda el elo/duelos de estas películas — el único
   // camino para guardar un duelo, en los dos modos (ver makeEloSyncItem).
   const syncElo = useCallback(
-    (list) => {
+    (list, opts) => {
       if (!list.length) return;
+      list.forEach(markLocalEdit);
       setSyncStatus("syncing");
-      Promise.all(list.map((m) => syncDurable(makeEloSyncItem(m), refreshPending))).then((results) => {
+      Promise.all(list.map((m) => syncDurable(makeEloSyncItem(m, "comparisons", opts), refreshPending))).then((results) => {
         setSyncStatus(results.every((r) => r && r.ok) ? "ok" : "error");
       });
     },
@@ -837,6 +874,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   const refreshFromSheet = useCallback(async (opts) => {
     const o = opts || {};
     if (!o.force && Date.now() - lastPullAt < PULL_FRESH_MS) return { ok: true, cached: true };
+    const startedAt = Date.now();
     try {
       await Promise.race([
         flushPendingSync(),
@@ -853,11 +891,17 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       // corto) se calcula sobre lo último renderizado; el merge real va en
       // el updater, sobre el estado más nuevo — por si justo en el medio se
       // jugó un duelo que todavía no llegó a renderizarse.
-      const outcome = mergeSheetIntoMovies(moviesRef.current || [], reconciled);
+      const outcome = mergeSheetIntoMovies(
+        moviesRef.current || [],
+        protectLocalEdits(moviesRef.current, reconciled, startedAt)
+      );
       const skipped = !!outcome.skipped;
       if (!skipped) {
         setMovies((current) => {
-          const result = mergeSheetIntoMovies(current || [], reconciled);
+          const result = mergeSheetIntoMovies(
+            current || [],
+            protectLocalEdits(current, reconciled, startedAt)
+          );
           return result.skipped ? current : result.merged;
         });
       }
@@ -1896,6 +1940,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       wins: 0,
     };
     const next = [...movies, newMovie];
+    markLocalEdit(newMovie);
     setMovies(next);
     setNewTitle("");
     setNewTmdbId("");
@@ -2071,7 +2116,9 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     const revertItems = lastAction.prevMovies.filter((m) =>
       lastAction.affectedIds.includes(m.id)
     );
-    syncElo(revertItems);
+    // Deshacer BAJA el conteo de duelos a propósito: sin esta marca el
+    // backend lo tomaría por un guardado viejo y lo ignoraría.
+    syncElo(revertItems, { allowDecrease: true });
     setLastAction(null);
     setResult(null);
     setRankingPicks([]);
@@ -2323,6 +2370,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       }
       if (!changes.length) return;
 
+      markLocalEdit(movie);
       setMovies((current) =>
         current.map((m) =>
           m.id === movie.id
@@ -2354,6 +2402,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
           {
             actionLabel: "Deshacer",
             onAction: () => {
+              markLocalEdit(movie);
               setMovies((current) =>
                 current.map((m) => (m.id === movie.id ? { ...m, ...prev } : m))
               );
