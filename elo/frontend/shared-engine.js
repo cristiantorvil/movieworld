@@ -534,7 +534,11 @@ const PENDING_SYNC_TIMEOUT_MS = 20000;
 // vista o en watchlist al jugarse el duelo: si para cuando llega el guardado
 // eso cambió (ej. un duelo de watchlist atrasado que llega después de
 // "Marcar como vista"), el backend lo ignora en vez de pisar el elo nuevo.
-export function makeEloSyncItem(m, gamesKey) {
+// opts.allowDecrease: solo para "deshacer duelo" — el backend ignora un
+// guardado de duelo con MENOS duelos que los que ya tiene la fila (es uno
+// viejo que llegó tarde, ej. el Service Worker reenviando un pendiente
+// después de que ya llegó uno más nuevo), salvo que venga con esta marca.
+export function makeEloSyncItem(m, gamesKey, opts) {
   const games = Number(m[gamesKey || "comparisons"]) || 0;
   const wins = Number(m.wins) || 0;
   return {
@@ -547,6 +551,7 @@ export function makeEloSyncItem(m, gamesKey) {
     wins,
     losses: Math.max(games - wins, 0),
     expectRated: !isWatchlistMovie(m),
+    allowDecrease: !!(opts && opts.allowDecrease),
   };
 }
 
@@ -561,6 +566,7 @@ function eloPayload(item) {
     losses: item.losses,
     ties: 0,
     expectRated: item.expectRated,
+    allowDecrease: !!item.allowDecrease,
   };
 }
 
@@ -907,6 +913,7 @@ export function reconcileWithPending(sheetMovies) {
           // Mismo guard que el backend: si la peli cambió de vista a
           // watchlist (o al revés) después de este duelo, no aplica.
           if (item.expectRated != null && item.expectRated === isWatchlistMovie(m)) return;
+          if (!item.allowDecrease && Number(item.games) < (Number(m.games) || 0)) return;
           m.elo = item.elo;
           m.games = item.games;
           m.wins = item.wins;
