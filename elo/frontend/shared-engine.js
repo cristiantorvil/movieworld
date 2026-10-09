@@ -555,6 +555,66 @@ export function makeEloSyncItem(m, gamesKey, opts) {
   };
 }
 
+// ── Duelo como cambio (delta) ──
+// Reemplaza a makeEloSyncItem: en vez del estado completo de la peli, cada
+// duelo encola por película {dElo, dGames, dWins} con un opId único, que el
+// backend (handleEloOps) SUMA a lo que haya en la fila. Así dos dispositivos
+// jugando a la vez se combinan en vez de pisarse, y un reintento no se cuenta
+// dos veces (el backend recuerda los últimos opId aplicados por fila).
+// change: {movie (estado ANTES del duelo), dElo, dGames, dWins}.
+export function makeEloDeltaItem(change) {
+  const m = change.movie;
+  return {
+    type: "eloDelta",
+    opId: Math.random().toString(36).slice(2, 10) + Date.now().toString(36),
+    tmdbId: m.tmdbId || "",
+    title: m.title,
+    year: m.year || "",
+    dElo: Math.round(Number(change.dElo) || 0),
+    dGames: Number(change.dGames) || 0,
+    dWins: Number(change.dWins) || 0,
+    // Solo si la celda de elo está vacía en la Sheet: punto de partida.
+    baseElo: Number(m.elo) || START_ELO,
+    expectRated: !isWatchlistMovie(m),
+  };
+}
+
+function eloOpPayload(item) {
+  return {
+    opId: item.opId,
+    tmdbId: item.tmdbId || "",
+    title: item.title,
+    year: item.year || "",
+    dElo: item.dElo,
+    dGames: item.dGames,
+    dWins: item.dWins,
+    baseElo: item.baseElo,
+    expectRated: item.expectRated,
+  };
+}
+
+// La página registra acá quién se entera de las filas que devuelve cada
+// guardado de duelos (el valor REAL en la Sheet después de aplicar, ya con
+// los duelos de otros dispositivos), para actualizar lo local. Una sola
+// página por vez (la app de Cine Elo); add/edit no lo necesitan.
+let eloRowsListener = null;
+export function setEloRowsListener(fn) {
+  eloRowsListener = fn;
+}
+
+function sendEloOps(items) {
+  return postJson({ type: "eloOps", ops: items.map(eloOpPayload) }, false, PENDING_SYNC_TIMEOUT_MS).then((data) => {
+    if (data && data.ok && eloRowsListener) {
+      try {
+        eloRowsListener(data.rows || [], data.results || []);
+      } catch (e) {
+        console.error("eloRowsListener falló:", e);
+      }
+    }
+    return data;
+  });
+}
+
 function eloPayload(item) {
   return {
     title: item.title,
@@ -583,6 +643,16 @@ export function syncPendingItem(item) {
       PENDING_SYNC_TIMEOUT_MS
     );
   }
+  if (item.type === "eloDelta") {
+    return sendEloOps([item]);
+  }
+  // Lote armado por coalescePending: varios eloDelta (de distintas pelis)
+  // en un solo pedido — cada pedido lee la hoja entera, mandarlos juntos
+  // ahorra muchísimo.
+  if (item.type === "eloBatch") {
+    return sendEloOps(item.items);
+  }
+  // Duelos con estado completo encolados por una versión anterior de la app.
   if (item.type === "syncElo") {
     return postJson([eloPayload(item)], false, PENDING_SYNC_TIMEOUT_MS);
   }
@@ -620,6 +690,9 @@ export function syncPendingItem(item) {
 // hace progreso real y deja cuota libre para el resto de la app (el pull
 // normal de la página, por ejemplo).
 const FLUSH_BATCH_SIZE = 25;
+// Duelos (eloDelta) por pedido: cada uno es una fila chica, y el costo real
+// del pedido es leer la hoja — 100 entran cómodos en un solo POST.
+const ELO_BATCH_SIZE = 100;
 
 // Con una cola grande, una sola pasada (25 items secuenciales, cada uno con
 // hasta 2 reintentos de por sí) puede tardar más que FLUSH_INTERVAL_MS en
@@ -689,8 +762,25 @@ function coalescePending(queue) {
   // (rating, borrado, alta, o el otro tipo de duelo) lo cierra, así el orden
   // entre ellos se respeta tal cual se encolaron.
   const open = new Map();
+  // Duelos como delta (eloDelta): se juntan en lotes de hasta ELO_BATCH_SIZE
+  // (de cualquier peli) que viajan en un solo pedido. Un item de otro tipo
+  // para una peli que ya está en el lote abierto lo cierra: lo que venga
+  // después para esa peli va en un lote nuevo, detrás de ese item.
+  let batch = null;
   sorted.forEach((item) => {
     const key = movieKey(item);
+    if (item.type === "eloDelta") {
+      open.delete(key);
+      if (!batch || batch.items.length >= ELO_BATCH_SIZE) {
+        batch = { items: [], ids: [], keys: new Set(), eloBatch: true };
+        groups.push(batch);
+      }
+      batch.items.push(item);
+      batch.ids.push(item.id);
+      batch.keys.add(key);
+      return;
+    }
+    if (batch && batch.keys.has(key)) batch = null;
     const isDuelOnly =
       item.type === "setFields" &&
       Array.isArray(item.changes) &&
@@ -723,6 +813,9 @@ function coalescePending(queue) {
     groups.push(group);
   });
   return groups.map((g) => {
+    if (g.eloBatch) {
+      return { item: { type: "eloBatch", items: g.items, title: "(lote de duelos)" }, ids: g.ids };
+    }
     if (g.byCol) {
       return {
         item: Object.assign({}, g.item, {
@@ -752,7 +845,17 @@ export function flushAllPending(onProgress) {
   const run = () =>
     readPendingSync().then((queue) => {
       const groups = coalescePending(queue);
-      const stats = { done: 0, total: groups.length, failed: 0, rejected: 0, stopped: false };
+      // items/itemsDone: cambios individuales (un lote de duelos son muchos),
+      // que es lo que tiene sentido mostrarle al usuario.
+      const stats = {
+        done: 0,
+        total: groups.length,
+        items: groups.reduce((n, g) => n + g.ids.length, 0),
+        itemsDone: 0,
+        failed: 0,
+        rejected: 0,
+        stopped: false,
+      };
       let consecutiveFails = 0;
       if (onProgress) onProgress(Object.assign({}, stats));
       let chain = Promise.resolve();
@@ -764,6 +867,7 @@ export function flushAllPending(onProgress) {
               if (data && data.ok) {
                 consecutiveFails = 0;
                 stats.done++;
+                stats.itemsDone += group.ids.length;
                 return removeGroup(group);
               }
               consecutiveFails = 0;
@@ -868,6 +972,97 @@ export function syncDurable(item, onChange) {
     });
 }
 
+// Igual que syncDurable pero para los deltas de UN duelo (una entrada por
+// película): se encolan por separado (cada uno sale de la cola solo) y se
+// mandan juntos en un único pedido.
+export function syncEloDurable(items, onChange) {
+  if (!items.length) return Promise.resolve({ ok: true });
+  return Promise.all(items.map((it) => enqueuePendingSync(it).then((id) => id, () => null)))
+    .then((pendingIds) => {
+      if (onChange) onChange();
+      requestBackgroundSync();
+      return sendEloOps(items)
+        .then((data) => {
+          if (!data || !data.ok) {
+            return { ok: false, error: (data && data.error) || "la Sheet rechazó el cambio" };
+          }
+          return Promise.all(pendingIds.filter(Boolean).map((id) => removePendingSync(id).catch(() => {}))).then(() => {
+            if (onChange) onChange();
+            return { ok: true, data };
+          });
+        })
+        .catch((err) => {
+          console.error("Guardado de duelo falló (queda pendiente, se reintenta solo):", err);
+          return { ok: false, error: String((err && err.message) || err) };
+        });
+    });
+}
+
+// Pisa elo/duelos de las pelis locales con las filas que devolvió un
+// guardado de duelos (valor real de la Sheet, con los duelos de otros
+// dispositivos), más los duelos de ESTE que siguen en la cola y la Sheet
+// todavía no tiene (los que no figuran en row.ops). Puro: devuelve la lista
+// nueva, o la misma si no cambió nada.
+export function overlayEloRows(localMovies, rows, queue, gamesKey) {
+  const gk = gamesKey || "comparisons";
+  if (!rows.length || !localMovies) return localMovies;
+  const byKey = new Map(rows.map((r) => [movieKey(r), r]));
+  const pending = new Map();
+  (queue || []).forEach((item) => {
+    if (item.type !== "eloDelta") return;
+    const key = movieKey(item);
+    if (!byKey.has(key)) return;
+    if ((byKey.get(key).ops || []).indexOf(item.opId) !== -1) return;
+    const p = pending.get(key) || { dElo: 0, dGames: 0, dWins: 0 };
+    p.dElo += item.dElo;
+    p.dGames += item.dGames;
+    p.dWins += item.dWins;
+    pending.set(key, p);
+  });
+  let changed = false;
+  const next = localMovies.map((m) => {
+    const key = movieKey(m);
+    const r = byKey.get(key);
+    if (!r || !hasElo(r.elo)) return m;
+    const p = pending.get(key) || { dElo: 0, dGames: 0, dWins: 0 };
+    const elo = Number(r.elo) + p.dElo;
+    const games = (Number(r.games) || 0) + p.dGames;
+    const wins = (Number(r.wins) || 0) + p.dWins;
+    if (m.elo === elo && Number(m[gk]) === games && Number(m.wins) === wins) return m;
+    changed = true;
+    return { ...m, elo, [gk]: games, wins, losses: Math.max(games - wins, 0) };
+  });
+  return changed ? next : localMovies;
+}
+
+// Pull liviano (handlePullElo): solo elo/duelos/rating de cada fila, sin
+// metadata — para refrescar seguido sin bajar los ~2.5 MB del pull completo.
+// Devuelve {movies, applied}: applied = Set de opId de la cola local que la
+// Sheet ya tiene aplicados (no hay que volver a sumarlos encima).
+export function pullEloLight() {
+  return readPendingSync()
+    .catch(() => [])
+    .then((queue) => {
+      const opIds = queue.filter((i) => i.type === "eloDelta" && i.opId).map((i) => i.opId);
+      return postJson({ type: "pullElo", opIds }, false, 30000);
+    })
+    .then((data) => {
+      if (!data || !data.ok || !Array.isArray(data.rows)) {
+        throw new Error((data && data.error) || "pull liviano inválido");
+      }
+      const cols = data.cols;
+      const movies = data.rows.map((r) => {
+        const m = {};
+        cols.forEach((c, i) => {
+          m[c] = r[i];
+        });
+        m.title = String(m.title);
+        return m;
+      });
+      return { movies, applied: new Set(data.applied || []) };
+    });
+}
+
 // Aplica la cola pendiente sobre un pull fresco de la Sheet ANTES de
 // mergearlo: un cambio recién encolado puede no haber llegado todavía a la
 // Sheet, y sin esto el pull lo "deshacía" en pantalla (una peli borrada que
@@ -889,7 +1084,7 @@ const SETFIELDS_COL_TO_PULL_KEY = {
   year: "year",
 };
 
-export function reconcileWithPending(sheetMovies) {
+export function reconcileWithPending(sheetMovies, appliedOpIds) {
   return readPendingSync()
     .then((queue) => {
       if (!queue.length) return sheetMovies;
@@ -909,6 +1104,17 @@ export function reconcileWithPending(sheetMovies) {
         }
         const m = byKey.get(key);
         if (!m) return;
+        if (item.type === "eloDelta") {
+          if (appliedOpIds && appliedOpIds.has(item.opId)) return;
+          if (item.expectRated != null && item.expectRated === isWatchlistMovie(m)) return;
+          const games = (Number(m.games) || 0) + item.dGames;
+          const wins = (Number(m.wins) || 0) + item.dWins;
+          m.elo = (hasElo(m.elo) ? Number(m.elo) : item.baseElo) + item.dElo;
+          m.games = games;
+          m.wins = wins;
+          m.losses = Math.max(games - wins, 0);
+          return;
+        }
         if (item.type === "syncElo") {
           // Mismo guard que el backend: si la peli cambió de vista a
           // watchlist (o al revés) después de este duelo, no aplica.

@@ -67,9 +67,30 @@ function syncItem(item) {
       body: JSON.stringify([item.payload]),
     }).then(function (r) { return r.json(); });
   }
+  if (item.type === "eloDelta") {
+    // Duelo como delta (ver makeEloDeltaItem en frontend/shared-engine.js):
+    // el backend lo suma a la fila y descarta reintentos por opId.
+    return fetch(SYNC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({
+        type: "eloOps",
+        ops: [{
+          opId: item.opId,
+          tmdbId: item.tmdbId || "",
+          title: item.title,
+          year: item.year || "",
+          dElo: item.dElo,
+          dGames: item.dGames,
+          dWins: item.dWins,
+          baseElo: item.baseElo,
+          expectRated: item.expectRated,
+        }],
+      }),
+    }).then(function (r) { return r.json(); });
+  }
   if (item.type === "syncElo") {
-    // Resultado de duelo (Cine Elo y Watchlist, ver makeEloSyncItem en
-    // frontend/shared-engine.js): mismo POST por lotes, sin allowCreate.
+    // Duelo con estado completo, de una versión anterior de la app.
     return fetch(SYNC_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },

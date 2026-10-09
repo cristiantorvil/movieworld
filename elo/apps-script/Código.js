@@ -18,6 +18,14 @@ function doPost(e) {
       return handleTmdbMatchBatch(data.items || []);
     }
 
+    if (data && data.type === 'eloOps') {
+      return handleEloOps(data.ops || []);
+    }
+
+    if (data && data.type === 'pullElo') {
+      return handlePullElo(data.opIds || []);
+    }
+
     var items = Array.isArray(data) ? data : [data];
     // Un resultado de duelo (allowCreate ausente) solo puede actualizar
     // filas que ya existen — nunca crear una nueva. Evita que una peli
@@ -224,6 +232,208 @@ function doPost(e) {
     return ContentService.createTextOutput(
       JSON.stringify({ ok: false, error: String(err) })
     ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// ── Duelos como cambios (deltas), no como estado ──
+// Antes cada duelo mandaba el estado COMPLETO de la peli ("elo 1312, 14
+// duelos"). Con dos dispositivos jugando (Android + PC) eso se pisaba: el que
+// no se había enterado de los duelos del otro mandaba un conteo más bajo, que
+// o pisaba la Sheet (los duelos del otro "se reseteaban") o el guard de
+// conteo lo descartaba (y los duelos de ESTE se perdían en silencio). Ahora
+// cada duelo es una operación {opId, dElo, dGames, dWins} que se SUMA a lo
+// que haya en la fila, así los dos dispositivos se combinan.
+//
+// opId: id único por duelo y por peli. La columna elo_ops guarda los últimos
+// ELO_OPS_KEEP aplicados de cada fila, para que un reintento (la respuesta se
+// perdió pero el cambio sí se escribió) no lo cuente dos veces.
+var ELO_OPS_COL = 'elo_ops';
+var ELO_OPS_KEEP = 60;
+
+function _jsonOut_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function _parseRating_(raw) {
+  return typeof raw === 'number' ? raw : parseFloat(String(raw).replace(',', '.')) || 0;
+}
+
+// Lee solo las columnas pedidas (no la hoja entera: overview/cast/etc. son
+// la mayor parte del peso). Devuelve {header, n, col(name) -> índice,
+// get(name) -> array de valores de las filas 2..última}. Crea elo_ops al
+// final del header si falta y se pide con create=true.
+function _readColumns_(sheet, names, create) {
+  var lastCol = sheet.getLastColumn();
+  var header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  if (create && header.indexOf(ELO_OPS_COL) === -1) {
+    sheet.getRange(1, lastCol + 1).setValue(ELO_OPS_COL);
+    header.push(ELO_OPS_COL);
+  }
+  var n = Math.max(sheet.getLastRow() - 1, 0);
+  var data = {};
+  names.forEach(function (name) {
+    var c = header.indexOf(name);
+    data[name] = c === -1 || n === 0
+      ? null
+      : sheet.getRange(2, c + 1, n, 1).getValues().map(function (r) { return r[0]; });
+  });
+  return {
+    header: header,
+    n: n,
+    col: function (name) { return header.indexOf(name); },
+    get: function (name) { return data[name]; },
+  };
+}
+
+// Índice tmdbId -> fila (0-based dentro de los datos), con title|year de
+// fallback solo para filas sin tmdbId — mismo criterio que doPost.
+function _rowIndex_(cols) {
+  var ids = cols.get('id') || [];
+  var titles = cols.get('movie') || [];
+  var years = cols.get('year') || [];
+  var byId = {};
+  var byTitleYear = {};
+  for (var i = 0; i < cols.n; i++) {
+    var id = String(ids[i] || '').trim();
+    if (id) byId[id] = i;
+    else if (titles[i]) byTitleYear[titles[i] + '|' + String(years[i] || '')] = i;
+  }
+  return function (item) {
+    var id = String(item.tmdbId || '').trim();
+    var r = id ? byId[id] : byTitleYear[item.title + '|' + String(item.year || '')];
+    return r === undefined ? -1 : r;
+  };
+}
+
+function handleEloOps(ops) {
+  if (!Array.isArray(ops) || !ops.length) return _jsonOut_({ ok: true, results: [], rows: [] });
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (e) {
+    return _jsonOut_({ ok: false, error: 'La Sheet está ocupada, probá de nuevo.' });
+  }
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var filter = sheet.getFilter();
+    if (filter) filter.remove();
+    var cols = _readColumns_(
+      sheet,
+      ['id', 'movie', 'year', 'rating', 'elo_rating', 'elo_games', 'elo_win', 'elo_loss', ELO_OPS_COL],
+      true
+    );
+    var findRow = _rowIndex_(cols);
+    var ratings = cols.get('rating') || [];
+    var elos = cols.get('elo_rating');
+    var games = cols.get('elo_games');
+    var wins = cols.get('elo_win');
+    var losses = cols.get('elo_loss');
+    var opsCol = cols.get(ELO_OPS_COL) || new Array(cols.n).fill('');
+    if (!elos || !games || !wins || !losses) {
+      return _jsonOut_({ ok: false, error: 'Faltan columnas de elo en MOVIES.' });
+    }
+
+    var results = [];
+    var touched = {}; // fila -> true
+    ops.forEach(function (op) {
+      var r = findRow(op);
+      if (r === -1) {
+        results.push({ opId: op.opId, status: 'missing' });
+        return;
+      }
+      var seen = String(opsCol[r] || '').split(',').filter(String);
+      if (op.opId && seen.indexOf(op.opId) !== -1) {
+        results.push({ opId: op.opId, status: 'duplicate' });
+        if (!touched[r]) touched[r] = 'read';
+        return;
+      }
+      // La peli pasó de watchlist a vista (o al revés) desde que se jugó el
+      // duelo: "Marcar como vista" ya reseteó el elo, este duelo no aplica.
+      if (typeof op.expectRated === 'boolean' && (_parseRating_(ratings[r]) > 0) !== op.expectRated) {
+        results.push({ opId: op.opId, status: 'stale' });
+        return;
+      }
+      var dGames = Number(op.dGames) || 0;
+      var dWins = Number(op.dWins) || 0;
+      var curElo = Number(elos[r]);
+      elos[r] = Math.round((isFinite(curElo) && elos[r] !== '' ? curElo : Number(op.baseElo) || 1200) + (Number(op.dElo) || 0));
+      games[r] = Math.max((Number(games[r]) || 0) + dGames, 0);
+      wins[r] = Math.max((Number(wins[r]) || 0) + dWins, 0);
+      losses[r] = Math.max((Number(losses[r]) || 0) + dGames - dWins, 0);
+      if (op.opId) {
+        seen.push(op.opId);
+        opsCol[r] = seen.slice(-ELO_OPS_KEEP).join(',');
+      }
+      touched[r] = 'write';
+      results.push({ opId: op.opId, status: 'applied' });
+    });
+
+    var c = {
+      elo: cols.col('elo_rating'), games: cols.col('elo_games'), win: cols.col('elo_win'),
+      loss: cols.col('elo_loss'), ops: cols.col(ELO_OPS_COL),
+    };
+    var rows = [];
+    var ids = cols.get('id') || [];
+    var titles = cols.get('movie') || [];
+    var years = cols.get('year') || [];
+    Object.keys(touched).forEach(function (k) {
+      var r = Number(k);
+      if (touched[k] === 'write') {
+        sheet.getRange(r + 2, c.elo + 1).setValue(elos[r]);
+        sheet.getRange(r + 2, c.games + 1).setValue(games[r]);
+        sheet.getRange(r + 2, c.win + 1).setValue(wins[r]);
+        sheet.getRange(r + 2, c.loss + 1).setValue(losses[r]);
+        sheet.getRange(r + 2, c.ops + 1).setValue(opsCol[r]);
+      }
+      rows.push({
+        tmdbId: ids[r], title: String(titles[r]), year: years[r],
+        elo: elos[r], games: games[r], wins: wins[r], losses: losses[r],
+        ops: String(opsCol[r] || '').split(',').filter(String),
+      });
+    });
+    SpreadsheetApp.flush();
+    return _jsonOut_({ ok: true, results: results, rows: rows });
+  } catch (err) {
+    return _jsonOut_({ ok: false, error: String(err) });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Pull liviano: solo lo que cambia con los duelos/ratings (sin metadata de
+// TMDB), en arrays en vez de objetos — unas decenas de KB contra los ~2.5 MB
+// del pull completo. opIds: los duelos que el cliente todavía tiene en su
+// cola; vuelve en `applied` cuáles de esos YA están en la Sheet, para que no
+// los sume dos veces encima de lo que trae este pull.
+function handlePullElo(opIds) {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var names = ['id', 'movie', 'year', 'rating', 'diary_count', 'elo_rating', 'elo_games', 'elo_win', 'elo_loss'];
+    var cols = _readColumns_(sheet, opIds.length ? names.concat([ELO_OPS_COL]) : names, false);
+    var data = names.map(function (n) { return cols.get(n) || []; });
+    var rows = [];
+    for (var i = 0; i < cols.n; i++) {
+      if (!data[1][i]) continue;
+      rows.push(data.map(function (d) { return d[i] === undefined ? '' : d[i]; }));
+    }
+    var applied = [];
+    if (opIds.length) {
+      var want = {};
+      opIds.forEach(function (id) { want[id] = true; });
+      (cols.get(ELO_OPS_COL) || []).forEach(function (cell) {
+        String(cell || '').split(',').forEach(function (id) {
+          if (id && want[id]) applied.push(id);
+        });
+      });
+    }
+    return _jsonOut_({
+      ok: true,
+      cols: ['tmdbId', 'title', 'year', 'rating', 'plays', 'elo', 'games', 'wins', 'losses'],
+      rows: rows,
+      applied: applied,
+    });
+  } catch (err) {
+    return _jsonOut_({ ok: false, error: String(err) });
   }
 }
 
