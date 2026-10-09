@@ -293,6 +293,7 @@
 <script type="module">
 import {
   computeInitialElo,
+  computeWatchlistElo,
   readPendingSync,
   enqueuePendingSync,
   removePendingSync,
@@ -525,6 +526,11 @@ import {
     if (!current) return;
     var ratingVal = ratingSel.value ? Number(ratingSel.value) : 0;
     var playsVal = ratingSel.value ? Math.max(Number(playsInput.value) || 1, 1) : 0;
+    // Sin rating = va a la watchlist: el elo sale del promedio de TMDB, no
+    // de computeInitialElo(0) (que daba 950 fijo para todas).
+    var initialElo = ratingVal > 0
+      ? computeInitialElo(ratingVal, playsVal || 1)
+      : computeWatchlistElo(current.voteAverage, current.voteCount);
 
     var payload = {
       title: current.title,
@@ -532,7 +538,7 @@ import {
       year: current.year,
       rating: ratingVal,
       plays: playsVal,
-      elo: computeInitialElo(ratingVal, playsVal || 1),
+      elo: initialElo,
       games: 0,
       wins: 0,
       losses: 0,
@@ -560,7 +566,7 @@ import {
       year: current.year || null,
       rating: ratingVal,
       plays: playsVal,
-      elo: computeInitialElo(ratingVal, playsVal || 1),
+      elo: initialElo,
       comparisons: 0,
       wins: 0,
       tmdbId: current.tmdbId || "",
