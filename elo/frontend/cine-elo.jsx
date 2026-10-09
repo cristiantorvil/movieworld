@@ -14,7 +14,11 @@ import {
   computeWatchlistElo,
   defaultEloFor,
   isWatchlistMovie,
-  makeEloSyncItem,
+  makeEloDeltaItem,
+  syncEloDurable,
+  setEloRowsListener,
+  overlayEloRows,
+  pullEloLight,
   movieKey,
   reconcileWithPending,
   readPendingSync,
@@ -308,6 +312,27 @@ function protectLocalEdits(current, sheetMovies, since) {
   });
 }
 const PULL_FRESH_MS = 60000;
+// Pull liviano (solo elo/duelos) mientras la app está abierta.
+const LIGHT_PULL_INTERVAL_MS = 3 * 60000;
+const LIGHT_PULL_MIN_GAP_MS = 30000;
+// El pull completo (con metadata de TMDB, ~2.5 MB / ~20s) solo hace falta de
+// vez en cuando: al abrir, si el último fue hace más que esto.
+const FULL_PULL_MAX_AGE_MS = 6 * 3600000;
+const LAST_FULL_PULL_KEY = "cine-elo-last-full-pull";
+function markFullPull() {
+  try {
+    localStorage.setItem(LAST_FULL_PULL_KEY, String(Date.now()));
+  } catch (e) {
+    // storage bloqueado: la próxima carga hace el pull completo, nada más
+  }
+}
+function fullPullIsStale() {
+  try {
+    return Date.now() - (Number(localStorage.getItem(LAST_FULL_PULL_KEY)) || 0) > FULL_PULL_MAX_AGE_MS;
+  } catch (e) {
+    return true;
+  }
+}
 
 function CineEloApp({ mode = "vistas", onModeChange }) {
   const isWL = mode === "watchlist";
@@ -384,38 +409,81 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     return () => clearInterval(interval);
   }, [refreshPending]);
 
-  // Encola (durable) y manda el elo/duelos de estas películas — el único
-  // camino para guardar un duelo, en los dos modos (ver makeEloSyncItem).
+  // Encola (durable) y manda los cambios de UN duelo — el único camino para
+  // guardar un duelo, en los dos modos. changes: [{movie (estado antes del
+  // duelo), dElo, dGames, dWins}] — van como delta (ver makeEloDeltaItem):
+  // la Sheet los suma, así los duelos de otro dispositivo no se pisan.
   const syncElo = useCallback(
-    (list, opts) => {
-      if (!list.length) return;
-      list.forEach(markLocalEdit);
+    (changes) => {
+      if (!changes.length) return;
+      changes.forEach((c) => markLocalEdit(c.movie));
       setSyncStatus("syncing");
-      Promise.all(list.map((m) => syncDurable(makeEloSyncItem(m, "comparisons", opts), refreshPending))).then((results) => {
-        setSyncStatus(results.every((r) => r && r.ok) ? "ok" : "error");
+      syncEloDurable(changes.map(makeEloDeltaItem), refreshPending).then((r) => {
+        setSyncStatus(r && r.ok ? "ok" : "error");
       });
     },
     [refreshPending]
   );
 
+  // Cada guardado de duelos devuelve el valor real de esas filas en la
+  // Sheet (con lo que se haya jugado en otro dispositivo): se aplica acá,
+  // sumando encima los duelos de este navegador que todavía no llegaron.
+  useEffect(() => {
+    setEloRowsListener((rows, results) => {
+      readPendingSync()
+        .catch(() => [])
+        .then((queue) => {
+          setMovies((current) => overlayEloRows(current, rows, queue));
+        });
+      const dropped = results.filter((r) => r.status === "stale" || r.status === "missing").length;
+      if (dropped) {
+        showToast(
+          `${dropped} duelo${dropped === 1 ? "" : "s"} no se guardó: la peli ya no está en la Sheet o cambió de vista/watchlist.`,
+          { isError: true }
+        );
+      }
+    });
+    return () => setEloRowsListener(null);
+  }, [showToast]);
+
+  // "Sincronizar": primero SUBE lo pendiente de este navegador, después TRAE
+  // la Sheet (pull liviano) — siempre en ese orden, y diciendo qué hizo.
   const syncNow = () => {
     if (forcedSyncRef.current) return;
     forcedSyncRef.current = true;
-    setForcedSync("Sincronizando…");
-    flushAllPending((p) =>
-      setForcedSync(
-        `Sincronizando… ${p.done} de ${p.total}` + (p.failed ? ` (${p.failed} sin respuesta)` : "")
-      )
-    )
+    setForcedSync("Subiendo cambios…");
+    let uploaded = 0;
+    flushAllPending((p) => {
+      uploaded = p.itemsDone;
+      if (p.items) {
+        setForcedSync(
+          `Subiendo ${p.itemsDone} de ${p.items} cambios…` + (p.failed ? ` (${p.failed} sin respuesta)` : "")
+        );
+      }
+    })
       .then((stats) => {
         if (stats.stopped) {
           showToast("Apps Script no está contestando — reintentá en unos minutos.", { isError: true });
-        } else if (stats.rejected) {
-          showToast(
-            `${stats.rejected} cambio${stats.rejected === 1 ? "" : "s"} rechazado${stats.rejected === 1 ? "" : "s"} por la Sheet (probablemente pelis que ya no existen).`,
-            { isError: true }
-          );
+          return;
         }
+        setForcedSync("Trayendo de la Sheet…");
+        return refreshFromSheet({ force: true, light: true, retries: 2 }).then((r) => {
+          const parts = [];
+          parts.push(uploaded ? `${uploaded} cambio${uploaded === 1 ? "" : "s"} subido${uploaded === 1 ? "" : "s"}` : "nada pendiente para subir");
+          if (r.ok) {
+            parts.push(
+              r.changedCount
+                ? `${r.changedCount} peli${r.changedCount === 1 ? "" : "s"} actualizada${r.changedCount === 1 ? "" : "s"} desde la Sheet`
+                : "la Sheet no tenía nada nuevo"
+            );
+          } else {
+            parts.push("no se pudo traer la Sheet");
+          }
+          if (stats.rejected) parts.push(`${stats.rejected} rechazado${stats.rejected === 1 ? "" : "s"} por la Sheet`);
+          showToast((r.ok && !stats.rejected ? "Sincronizado ✓ — " : "") + parts.join(" · "), {
+            isError: !r.ok || !!stats.rejected,
+          });
+        });
       })
       .catch(() => {
         showToast("No se pudo leer la cola de cambios pendientes.", { isError: true });
@@ -647,7 +715,10 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       return m;
     });
     setMovies(next);
-    syncElo(next.filter((m) => m.id === winnerId || m.id === loserId));
+    syncElo([
+      { movie: winnerMovie, dElo: winnerDelta, dGames: 1, dWins: 1 },
+      { movie: loserMovie, dElo: loserDelta, dGames: 1, dWins: 0 },
+    ]);
 
     const nextTournament = advanceTournament(
       tournament,
@@ -880,13 +951,24 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
         flushPendingSync(),
         new Promise((resolve) => setTimeout(resolve, 3000)),
       ]);
-      // ~6000 filas: el pull pesa varios MB y con la Sheet cargada tarda
-      // bastante más que un guardado suelto — 30s antes de darlo por caído.
-      const data = await fetchJsonWithRetry(`${DEFAULT_SYNC_URL}?action=pull`, {}, o.retries == null ? 1 : o.retries, 30000);
+      let data;
+      let applied;
+      if (o.light) {
+        // Pull liviano: solo elo/duelos/rating (decenas de KB). La metadata
+        // de TMDB queda la local; pelis nuevas de otro dispositivo llegan
+        // con el próximo pull completo (se pide abajo si aparece alguna).
+        const light = await pullEloLight();
+        data = { ok: true, movies: light.movies };
+        applied = light.applied;
+      } else {
+        // ~6000 filas: el pull pesa varios MB y con la Sheet cargada tarda
+        // bastante más que un guardado suelto — 30s antes de darlo por caído.
+        data = await fetchJsonWithRetry(`${DEFAULT_SYNC_URL}?action=pull`, {}, o.retries == null ? 1 : o.retries, 30000);
+      }
       if (!data || !data.ok || !Array.isArray(data.movies) || data.movies.length === 0) {
         throw new Error((data && data.error) || "pull vacío o inválido");
       }
-      const reconciled = await reconcileWithPending(data.movies);
+      const reconciled = await reconcileWithPending(data.movies, applied);
       // El resumen (cuántas cambiaron, si el pull vino sospechosamente
       // corto) se calcula sobre lo último renderizado; el merge real va en
       // el updater, sobre el estado más nuevo — por si justo en el medio se
@@ -905,14 +987,29 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
           return result.skipped ? current : result.merged;
         });
       }
-      if (!skipped) lastPullAt = Date.now();
+      if (!skipped) {
+        lastPullAt = Date.now();
+        if (!o.light) markFullPull();
+      }
       setSheetStale(skipped);
       refreshPending();
+      // Cuántas pelis cambiaron de verdad (elo/duelos/rating) contra lo que
+      // había en pantalla — para decirle al usuario qué trajo la Sheet.
+      let changedCount = 0;
+      if (!skipped) {
+        const before = new Map((moviesRef.current || []).map((m) => [movieKey(m), m]));
+        outcome.merged.forEach((m) => {
+          const b = before.get(movieKey(m));
+          if (!b || b.elo !== m.elo || b.comparisons !== m.comparisons || b.rating !== m.rating) changedCount++;
+        });
+        if (o.light && outcome.newCount > 0) refreshFromSheetRef.current({ force: true });
+      }
       return {
         ok: !skipped,
         skipped,
         updatedCount: outcome.updatedCount,
         newCount: outcome.newCount,
+        changedCount,
         total: data.movies.length,
       };
     } catch (e) {
@@ -920,6 +1017,26 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       return { ok: false, error: e };
     }
   }, [refreshPending]);
+  const refreshFromSheetRef = useRef(refreshFromSheet);
+  refreshFromSheetRef.current = refreshFromSheet;
+
+  // Mientras la app está abierta, trae seguido lo que se jugó en OTRO
+  // dispositivo (pull liviano): al volver a la pestaña y cada pocos
+  // minutos. Antes la Sheet solo se leía al abrir la app, y una pestaña
+  // abierta horas nunca se enteraba de los duelos del celular.
+  useEffect(() => {
+    const lightRefresh = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastPullAt < LIGHT_PULL_MIN_GAP_MS) return;
+      refreshFromSheetRef.current({ force: true, light: true });
+    };
+    const interval = setInterval(lightRefresh, LIGHT_PULL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", lightRefresh);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", lightRefresh);
+    };
+  }, []);
 
   // load
   useEffect(() => {
@@ -988,7 +1105,11 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
           // aunque el Sheet (la fuente real) haya cambiado desde otro lado.
           // Si falla, refreshFromSheet prende el aviso de "mostrando lo
           // último guardado" y seguimos con lo local.
-          refreshFromSheet();
+          // Primero el pull liviano (elo/duelos, rápido); el completo con
+          // metadata solo si hace rato que no se hace.
+          refreshFromSheet({ light: true }).then(() => {
+            if (fullPullIsStale()) refreshFromSheet({ force: true });
+          });
         } else {
           // Navegador sin progreso local: antes de arrancar de cero, intentamos
           // traer el progreso real desde el Sheet, para no pisarlo con valores
@@ -1006,6 +1127,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
             const pullData = await fetchJsonWithRetry(`${DEFAULT_SYNC_URL}?action=pull`, {}, 1, 30000);
             if (pullData && pullData.ok && Array.isArray(pullData.movies)) {
               lastPullAt = Date.now();
+              markFullPull();
               const reconciledPull = await reconcileWithPending(pullData.movies);
               reconciledPull.forEach((m) => {
                 if (m.tmdbId) sheetById.set(String(m.tmdbId), m);
@@ -2066,11 +2188,15 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       };
     });
 
+    const changes = ordered.map((m) => ({
+      movie: movies.find((x) => x.id === m.id) || m,
+      dElo: totalDelta.get(m.id),
+      dGames: gamesAdded.get(m.id),
+      dWins: winsAdded.get(m.id),
+    }));
     setMovies(next);
-    setLastAction({ prevMovies, affectedIds });
-
-    const updatedContenders = next.filter((m) => affectedIds.includes(m.id));
-    syncElo(updatedContenders);
+    setLastAction({ prevMovies, affectedIds, changes });
+    syncElo(changes);
 
     // Contador de duelos + snapshot periódico de posiciones del ranking
     const newDuelCount = duelCount + 1;
@@ -2112,13 +2238,22 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
 
   const undoLastDuel = () => {
     if (!lastAction) return;
-    setMovies(lastAction.prevMovies);
-    const revertItems = lastAction.prevMovies.filter((m) =>
-      lastAction.affectedIds.includes(m.id)
+    // Deshacer = el mismo delta con signo contrario, aplicado sobre lo
+    // ACTUAL (no volver a la foto de antes del duelo: en el medio pudieron
+    // llegar duelos de otro dispositivo, que no hay que borrar).
+    const byId = new Map(lastAction.changes.map((c) => [c.movie.id, c]));
+    setMovies((current) =>
+      current.map((m) => {
+        const c = byId.get(m.id);
+        if (!c) return m;
+        const comparisons = Math.max((m.comparisons || 0) - c.dGames, 0);
+        const wins = Math.max((m.wins || 0) - c.dWins, 0);
+        return { ...m, elo: m.elo - c.dElo, comparisons, wins };
+      })
     );
-    // Deshacer BAJA el conteo de duelos a propósito: sin esta marca el
-    // backend lo tomaría por un guardado viejo y lo ignoraría.
-    syncElo(revertItems, { allowDecrease: true });
+    syncElo(
+      lastAction.changes.map((c) => ({ movie: c.movie, dElo: -c.dElo, dGames: -c.dGames, dWins: -c.dWins }))
+    );
     setLastAction(null);
     setResult(null);
     setRankingPicks([]);
@@ -2470,17 +2605,18 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
               🍿 Watchlist
             </button>
           </div>
-          {(pendingCount > 0 || forcedSync) && (
-            <p className="status-line">
-              <span>
-                {forcedSync ||
-                  `● ${pendingCount} cambio${pendingCount === 1 ? "" : "s"} sin confirmar todavía`}
-              </span>
-              <button type="button" className="status-btn" onClick={syncNow} disabled={!!forcedSync}>
-                {forcedSync ? "Sincronizando…" : "Sincronizar ahora"}
-              </button>
-            </p>
-          )}
+          {/* Siempre visible: sube lo pendiente y después trae la Sheet. */}
+          <p className="status-line">
+            <span>
+              {forcedSync ||
+                (pendingCount > 0
+                  ? `● ${pendingCount} cambio${pendingCount === 1 ? "" : "s"} sin subir todavía`
+                  : "✓ Todo subido a la Sheet")}
+            </span>
+            <button type="button" className="status-btn" onClick={syncNow} disabled={!!forcedSync}>
+              {forcedSync ? "Sincronizando…" : "⟳ Sincronizar"}
+            </button>
+          </p>
           {sheetStale && (
             <p className="status-line status-warn">
               <span>⚠ No se pudo traer la Sheet, mostrando lo último guardado.</span>
