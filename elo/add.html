@@ -239,8 +239,8 @@
     </header>
 
     <div class="field">
-      <label for="search">Título</label>
-      <input type="text" id="search" placeholder="Ej. Stalker" autocomplete="off" />
+      <label for="search">Título o ID de TMDB</label>
+      <input type="text" id="search" placeholder="Ej. Stalker, 1398 o un link de TMDB" autocomplete="off" />
       <div class="results" id="results"></div>
       <p class="hint" id="hint"></p>
     </div>
@@ -446,17 +446,51 @@ import {
     });
   }
 
+  // ID de TMDB escrito a mano ("1398") o pegado como link
+  // (themoviedb.org/movie/1398-el): para títulos que la búsqueda por texto
+  // no encuentra, como "Él" de Buñuel.
+  function parseTmdbId(query) {
+    var link = query.match(/themoviedb\.org\/(?:[a-z-]+\/)?movie\/(\d+)/i);
+    if (link) return { id: link[1], isLink: true };
+    if (/^\d+$/.test(query)) return { id: query, isLink: false };
+    return null;
+  }
+
+  function lookupById(id) {
+    return fetchJsonWithRetry(SYNC_URL + "?action=tmdbDetails&id=" + encodeURIComponent(id), {})
+      .then(function (data) {
+        return data.ok && data.title
+          ? [{ tmdbId: id, title: data.title, year: data.year, poster: data.poster }]
+          : [];
+      })
+      .catch(function () { return []; });
+  }
+
   function doSearch(query) {
-    if (!query || query.length < 2) {
+    var byId = parseTmdbId(query || "");
+    if (!byId && (!query || query.length < 2)) {
       clearResults();
       hintEl.textContent = "";
       return;
     }
     hintEl.textContent = "Buscando…";
-    fetchJsonWithRetry(SYNC_URL + "?action=tmdbSearch&query=" + encodeURIComponent(query), {})
-      .then(function (data) {
-        if (data.ok) renderResults(data.results || []);
-        else hintEl.textContent = "Error buscando en TMDB.";
+    // Un número suelto puede ser un ID o un título ("1917", "2046"): se
+    // buscan las dos cosas y el match por ID va primero. Un link es solo ID.
+    var byTitle = byId && byId.isLink
+      ? Promise.resolve({ ok: true, results: [] })
+      : fetchJsonWithRetry(SYNC_URL + "?action=tmdbSearch&query=" + encodeURIComponent(query), {});
+    Promise.all([byId ? lookupById(byId.id) : [], byTitle])
+      .then(function (res) {
+        var idResults = res[0];
+        var data = res[1];
+        if (!data.ok && !idResults.length) {
+          hintEl.textContent = "Error buscando en TMDB.";
+          return;
+        }
+        var textResults = (data.results || []).filter(function (r) {
+          return !idResults.length || String(r.tmdbId) !== String(idResults[0].tmdbId);
+        });
+        renderResults(idResults.concat(textResults));
       })
       .catch(function () {
         hintEl.textContent = "No se pudo conectar con el backend.";
