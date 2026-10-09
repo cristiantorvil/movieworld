@@ -22,6 +22,10 @@ function doPost(e) {
       return handleEloOps(data.ops || []);
     }
 
+    if (data && data.type === 'setFieldsBatch') {
+      return handleSetFieldsBatch(data.items || []);
+    }
+
     if (data && data.type === 'pullElo') {
       return handlePullElo(data.opIds || []);
     }
@@ -2195,15 +2199,58 @@ function handleSetFields(tmdbId, changesJson, title, year) {
     var filter = sheet.getFilter();
     if (filter) filter.remove();
     var values = sheet.getDataRange().getValues();
+    var result = _applySetFields_(sheet, values, tmdbId, changes, title, year);
+    SpreadsheetApp.flush();
+    return _jsonOut_(result);
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({ ok: false, error: String(err) })
+    ).setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Varios setFields (de distintas pelis) en un solo pedido: un lock y UNA
+// lectura de la hoja para todos, en vez de un pedido de 10-20s por cambio —
+// con una cola de 100+ cambios pendientes eso era media hora. Cada item se
+// aplica en orden; los que fallan (peli no encontrada) vuelven en results
+// con ok:false, sin frenar al resto.
+function handleSetFieldsBatch(items) {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (e) {
+    return _jsonOut_({ ok: false, error: 'La Sheet está ocupada, probá de nuevo.' });
+  }
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('MOVIES');
+    var filter = sheet.getFilter();
+    if (filter) filter.remove();
+    var values = sheet.getDataRange().getValues();
+    var results = (items || []).map(function (it) {
+      if (!it || !Array.isArray(it.changes) || !it.changes.length) {
+        return { ok: false, title: it && it.title, error: 'No hay cambios para guardar.' };
+      }
+      return _applySetFields_(sheet, values, it.tmdbId || '', it.changes, it.title || '', it.year || '');
+    });
+    SpreadsheetApp.flush();
+    return _jsonOut_({ ok: true, results: results });
+  } catch (err) {
+    return _jsonOut_({ ok: false, error: String(err) });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Núcleo de handleSetFields, sin lock ni lectura propia: escribe en la hoja
+// y también actualiza `values` en memoria, para que el próximo item de un
+// mismo lote vea lo que este dejó escrito (ej. el rating recién puesto).
+function _applySetFields_(sheet, values, tmdbId, changes, title, year) {
     var header = values[0];
     var found = findMovieRowByTmdbId_(values, header, tmdbId, title, year);
     if (found.rowIndex === -1) {
-      return ContentService.createTextOutput(
-        JSON.stringify({
-          ok: false,
-          error: movieNotFoundError_(found, tmdbId, title, year),
-        })
-      ).setMimeType(ContentService.MimeType.JSON);
+      return { ok: false, title: title, error: movieNotFoundError_(found, tmdbId, title, year) };
     }
     var rowIndex = found.rowIndex;
 
@@ -2243,20 +2290,10 @@ function handleSetFields(tmdbId, changesJson, title, year) {
         return;
       }
       sheet.getRange(rowIndex + 1, colIdx + 1).setValue(c.value);
+      values[rowIndex][colIdx] = c.value;
       applied.push({ col: c.col, value: c.value });
     });
-    SpreadsheetApp.flush();
-
-    return ContentService.createTextOutput(
-      JSON.stringify({ ok: true, title: title, applied: applied, failed: failed })
-    ).setMimeType(ContentService.MimeType.JSON);
-  } catch (err) {
-    return ContentService.createTextOutput(
-      JSON.stringify({ ok: false, error: String(err) })
-    ).setMimeType(ContentService.MimeType.JSON);
-  } finally {
-    lock.releaseLock();
-  }
+    return { ok: true, title: title, applied: applied, failed: failed };
 }
 
 // Identificamos la fila por el tmdbId VIEJO que el cliente ya tiene cargado

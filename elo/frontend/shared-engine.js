@@ -497,7 +497,7 @@ export function fetchJsonWithRetry(url, options, retries, timeoutMs) {
     });
 }
 
-export function postJson(payload, allowCreate, timeoutMs) {
+export function postJson(payload, allowCreate, timeoutMs, retries) {
   const url = allowCreate ? SYNC_URL + "?allowCreate=1" : SYNC_URL;
   return fetchJsonWithRetry(
     url,
@@ -506,7 +506,7 @@ export function postJson(payload, allowCreate, timeoutMs) {
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify(payload),
     },
-    2,
+    retries == null ? 2 : retries,
     timeoutMs
   );
 }
@@ -523,6 +523,7 @@ export function postJson(payload, allowCreate, timeoutMs) {
 // items que quizás sí hubieran llegado a confirmarse con un poco más de
 // margen atascados en la cola para siempre.
 const PENDING_SYNC_TIMEOUT_MS = 20000;
+const BATCH_TIMEOUT_MS = 60000;
 
 // ── Resultado de duelo (mismo camino para Cine Elo y Watchlist) ──
 // Antes cada página escribía los duelos distinto: Cine Elo con un POST
@@ -603,7 +604,13 @@ export function setEloRowsListener(fn) {
 }
 
 function sendEloOps(items) {
-  return postJson({ type: "eloOps", ops: items.map(eloOpPayload) }, false, PENDING_SYNC_TIMEOUT_MS).then((data) => {
+  const big = items.length > 5;
+  return postJson(
+    { type: "eloOps", ops: items.map(eloOpPayload) },
+    false,
+    big ? BATCH_TIMEOUT_MS : PENDING_SYNC_TIMEOUT_MS,
+    big ? 1 : 2
+  ).then((data) => {
     if (data && data.ok && eloRowsListener) {
       try {
         eloRowsListener(data.rows || [], data.results || []);
@@ -651,6 +658,31 @@ export function syncPendingItem(item) {
   // ahorra muchísimo.
   if (item.type === "eloBatch") {
     return sendEloOps(item.items);
+  }
+  // Lotes armados por batchGroups: un solo pedido para muchas pelis. Más
+  // margen de tiempo (un lote grande tarda más) y un solo reintento — los
+  // dos son idempotentes (pisan con el mismo valor), reintentar no rompe.
+  if (item.type === "eloStateBatch") {
+    return postJson(item.items.map(eloPayload), false, BATCH_TIMEOUT_MS, 1);
+  }
+  if (item.type === "fieldsBatch") {
+    return postJson(
+      {
+        type: "setFieldsBatch",
+        items: item.items.map((i) => ({ tmdbId: i.tmdbId || "", title: i.title || "", year: i.year || "", changes: i.changes })),
+      },
+      false,
+      BATCH_TIMEOUT_MS,
+      1
+    ).then((data) => {
+      // Las filas que la Sheet no encontró (peli borrada) salen igual de la
+      // cola — quedaban trabadas para siempre — pero se cuentan como
+      // rechazadas para avisarle al usuario.
+      if (data && data.ok && Array.isArray(data.results)) {
+        data.rejectedCount = data.results.filter((r) => !r.ok).length;
+      }
+      return data;
+    });
   }
   // Duelos con estado completo encolados por una versión anterior de la app.
   if (item.type === "syncElo") {
@@ -812,7 +844,7 @@ function coalescePending(queue) {
     else open.delete(key);
     groups.push(group);
   });
-  return groups.map((g) => {
+  const coalesced = groups.map((g) => {
     if (g.eloBatch) {
       return { item: { type: "eloBatch", items: g.items, title: "(lote de duelos)" }, ids: g.ids };
     }
@@ -826,7 +858,49 @@ function coalescePending(queue) {
     }
     return { item: g.latest || g.item, ids: g.ids };
   });
+  return batchGroups(coalesced);
 }
+
+// Segunda pasada: junta los grupos de setFields y de syncElo (formato viejo
+// de duelo) de DISTINTAS pelis en lotes de un solo pedido cada uno — cada
+// pedido a Apps Script tarda 10-20s (lee la hoja entera), y una cola de 100+
+// cambios mandada de a uno tardaba media hora. Un grupo se suma a un lote
+// abierto (que se ejecuta en la posición de su primer miembro) solo si
+// ningún otro grupo de esa misma peli quedó en el medio — así el orden por
+// peli se respeta igual que antes.
+const BATCHABLE = { setFields: "fieldsBatch", syncElo: "eloStateBatch" };
+function batchGroups(groups) {
+  const out = [];
+  const openBatch = {}; // tipo de lote -> {pos, group}
+  const lastPos = new Map(); // movieKey -> posición en `out` de su último grupo
+  groups.forEach((g) => {
+    const batchType = BATCHABLE[g.item.type];
+    const keys = g.item.type === "eloBatch" ? g.item.items.map(movieKey) : [movieKey(g.item)];
+    if (batchType) {
+      const key = keys[0];
+      const b = openBatch[batchType];
+      const prev = lastPos.get(key);
+      if (b && b.group.item.items.length < ELO_BATCH_SIZE && (prev === undefined || prev <= b.pos)) {
+        b.group.item.items.push(g.item);
+        b.group.ids.push(...g.ids);
+        lastPos.set(key, b.pos);
+        return;
+      }
+      const group = { item: { type: batchType, items: [g.item], title: "(lote)" }, ids: g.ids.slice() };
+      openBatch[batchType] = { pos: out.length, group };
+      lastPos.set(key, out.length);
+      out.push(group);
+      return;
+    }
+    keys.forEach((k) => lastPos.set(k, out.length));
+    out.push(g);
+  });
+  // Un lote de un solo item viaja como el item suelto, igual que siempre.
+  return out.map((g) =>
+    BATCHABLE_TYPES.has(g.item.type) && g.item.items.length === 1 ? { item: g.item.items[0], ids: g.ids } : g
+  );
+}
+const BATCHABLE_TYPES = new Set(Object.values(BATCHABLE));
 
 function removeGroup(group) {
   return Promise.all(group.ids.map((id) => removePendingSync(id)));
@@ -868,6 +942,7 @@ export function flushAllPending(onProgress) {
                 consecutiveFails = 0;
                 stats.done++;
                 stats.itemsDone += group.ids.length;
+                stats.rejected += data.rejectedCount || 0;
                 return removeGroup(group);
               }
               consecutiveFails = 0;

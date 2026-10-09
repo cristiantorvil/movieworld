@@ -457,7 +457,8 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       uploaded = p.itemsDone;
       if (p.items) {
         setForcedSync(
-          `Subiendo ${p.itemsDone} de ${p.items} cambios…` + (p.failed ? ` (${p.failed} sin respuesta)` : "")
+          (p.itemsDone ? `Subiendo… ${p.itemsDone} de ${p.items} cambios` : `Subiendo ${p.items} cambios…`) +
+            (p.failed ? ` (${p.failed} sin respuesta)` : "")
         );
       }
     })
@@ -2605,16 +2606,25 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
               🍿 Watchlist
             </button>
           </div>
-          {/* Siempre visible: sube lo pendiente y después trae la Sheet. */}
+          {/* Todo es automático (cada duelo se sube al toque, lo pendiente se
+              reintenta solo cada 20s, y la Sheet se relee al volver a la
+              pestaña y cada 3 min). El ⟳ solo fuerza hacerlo ya. */}
           <p className="status-line">
             <span>
               {forcedSync ||
                 (pendingCount > 0
-                  ? `● ${pendingCount} cambio${pendingCount === 1 ? "" : "s"} sin subir todavía`
-                  : "✓ Todo subido a la Sheet")}
+                  ? `⟳ Subiendo ${pendingCount} cambio${pendingCount === 1 ? "" : "s"} a la Sheet…`
+                  : "✓ Sincronizado con la Sheet")}
             </span>
-            <button type="button" className="status-btn" onClick={syncNow} disabled={!!forcedSync}>
-              {forcedSync ? "Sincronizando…" : "⟳ Sincronizar"}
+            <button
+              type="button"
+              className="status-btn"
+              onClick={syncNow}
+              disabled={!!forcedSync}
+              title="Sincronizar ahora (subir y traer de la Sheet)"
+              aria-label="Sincronizar ahora"
+            >
+              ⟳
             </button>
           </p>
           {sheetStale && (
