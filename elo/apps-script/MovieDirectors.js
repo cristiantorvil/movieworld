@@ -159,6 +159,30 @@ function _mdRewriteDirectorFormulas_(ss) {
       return '=IF(COUNTIF(' + md + '$B:$B,' + a + ')=0,"",MINIFS(' + md + '$D:$D,' + md + '$B:$B,' + a + '))';
     }
   };
+  // Con un filtro activo en DIRECTORS, las fórmulas escritas en filas
+  // ocultas por el filtro no quedaban (volvían a la anterior). Se quitan los
+  // criterios mientras se escribe y se restauran al final.
+  var filter = dirs.getFilter();
+  var savedCriteria = [];
+  if (filter) {
+    var fr = filter.getRange();
+    for (var c = fr.getColumn(); c <= fr.getLastColumn(); c++) {
+      var crit = filter.getColumnFilterCriteria(c);
+      if (crit) {
+        savedCriteria.push([c, crit]);
+        filter.removeColumnFilterCriteria(c);
+      }
+    }
+    SpreadsheetApp.flush();
+  }
+  try {
+    return _mdWriteDirectorFormulas_(ss, dirs, dh, n, build, nameCol);
+  } finally {
+    savedCriteria.forEach(function (sc) { filter.setColumnFilterCriteria(sc[0], sc[1]); });
+  }
+}
+
+function _mdWriteDirectorFormulas_(ss, dirs, dh, n, build, nameCol) {
   var log = [];
   Object.keys(build).forEach(function (col) {
     if (dh[col] === undefined) throw new Error('DIRECTORS no tiene la columna "' + col + '"');
@@ -166,14 +190,27 @@ function _mdRewriteDirectorFormulas_(ss) {
     var f = range.getFormulas();
     var vals = range.getValues();
     var count = 0;
-    range.setValues(f.map(function (r, i) {
-      if (!r[0]) return [vals[i][0]];
+    var want = f.map(function (r, i) {
+      if (!r[0]) return null;
       count++;
-      return [build[col](nameCol + (i + 2))];
-    }));
-    log.push(col + ': ' + count + ' fórmulas');
+      return build[col](nameCol + (i + 2));
+    });
+    if (count === n) {
+      range.setFormulas(want.map(function (w) { return [w]; }));
+    } else {
+      range.setValues(want.map(function (w, i) { return [w === null ? vals[i][0] : w]; }));
+    }
+    SpreadsheetApp.flush();
+    // Releer y comparar: si algo (otra regla, otra pestaña, un script) la
+    // vuelve a cambiar, queda registrado cuántas y cuál quedó en su lugar.
+    var got = range.getFormulas();
+    var bad = [];
+    want.forEach(function (w, i) {
+      if (w !== null && got[i][0] !== w) bad.push('fila ' + (i + 2) + ': ' + got[i][0]);
+    });
+    log.push(col + ': ' + count + ' fórmulas, ' + bad.length + ' no quedaron' +
+      (bad.length ? ' (ej. ' + bad[0] + ')' : ''));
   });
-  SpreadsheetApp.flush();
-  return 'DIRECTORS -> MOVIE_DIRECTORS. ' + log.join(', ') + '. Ejemplo fila 2: ' +
-    dirs.getRange(2, dh.appearances + 1).getFormula();
+  return 'DIRECTORS -> MOVIE_DIRECTORS. ' + log.join(' | ') +
+    ' | hoja: ' + dirs.getName() + ' de ' + ss.getName() + ' (' + ss.getId() + ')';
 }
