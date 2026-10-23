@@ -217,6 +217,40 @@ function _mdSetupFormulas_(ss) {
   });
 }
 
+// max relations de DIRECTORS con tope para que el grafo no se vuelva una
+// maraña (~1.500 relaciones en total en vez de ~2.150): el puntaje se escala
+// por 0,65, nunca baja de 0 (antes daba negativos), un promedio >= 4 asegura
+// al menos 1, y nadie pasa de 40. El bono +2 por tener "out" se mantiene.
+function aplicarMaxRelations() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var dirs = ss.getSheetByName('DIRECTORS');
+  var dh = _mdHeaderCols_(dirs);
+  ['max relations', 'appearances', 'rating_sum', 'rating_avg', 'plays', 'out'].forEach(function (c) {
+    if (dh[c] === undefined) throw new Error('DIRECTORS no tiene la columna "' + c + '"');
+  });
+  var col = function (name) { return _relColLetter_(dh[name] + 1); };
+  var n = dirs.getLastRow() - 1;
+  var want = [];
+  for (var r = 2; r <= n + 1; r++) {
+    var B = col('appearances') + r, C = col('rating_sum') + r, D = col('rating_avg') + r;
+    var E = col('plays') + r, J = col('out') + r;
+    want.push(['=MIN(40,MAX(IF(AND(' + B + '>0,' + D + '>=4),1,0),IF(OR(' + B + '=0,' + D + '=""),0,ROUND(0.65*(' +
+      C + '^0.793*(' + D + '/3.5)^3-3.9)*MAX(0.5,1+0.5*(' + E + '/' + B + '-1)),0))+IF(' + J + '>0,2,0)))']);
+  }
+  var msg = _mdWithoutFilter_(dirs, function () {
+    var range = dirs.getRange(2, dh['max relations'] + 1, n, 1);
+    range.setFormulas(want);
+    SpreadsheetApp.flush();
+    var got = range.getFormulas();
+    var bad = got.filter(function (g, i) { return g[0] !== want[i][0]; }).length;
+    var total = range.getValues().reduce(function (s, v) { return s + (Number(v[0]) || 0); }, 0);
+    return 'max relations: ' + n + ' fórmulas, ' + bad + ' no quedaron. Suma = ' + total +
+      ' (~' + Math.round(total / 2) + ' relaciones)';
+  });
+  Logger.log(msg);
+  return msg;
+}
+
 // Con un filtro activo, lo escrito en filas ocultas por el filtro no
 // quedaba. Se quitan los criterios mientras se escribe y se restauran.
 function _mdWithoutFilter_(sheet, fn) {
