@@ -12,20 +12,19 @@
 var MD_SHEET = 'MOVIE_DIRECTORS';
 var MD_SEP = /\s*(?:&|,|\s+y\s+|\s+and\s+)\s*/;
 
-// Correr UNA vez desde el editor: crea la hoja, la llena y pasa las fórmulas
-// de DIRECTORS a contar sobre ella.
+// Correr desde el editor: crea/llena la hoja y (re)arma las fórmulas de
+// MOVIE_DIRECTORS y DIRECTORS. Se puede correr las veces que haga falta.
 function armarMovieDirectors() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var msg = sincronizarMovieDirectors();
-  msg += '\n' + _mdRewriteDirectorFormulas_(ss);
+  msg += '\n' + _mdSetupFormulas_(ss);
   Logger.log(msg);
   return msg;
 }
 
-// Solo el cambio de fórmulas de DIRECTORS (por si la hoja ya se creó sola
-// desde onOpen y armarMovieDirectors no llegó a correr).
-function pasarDirectorsAMovieDirectors() {
-  var msg = _mdRewriteDirectorFormulas_(SpreadsheetApp.getActiveSpreadsheet());
+// Solo las fórmulas (sin sincronizar filas).
+function optimizarLibro() {
+  var msg = _mdSetupFormulas_(SpreadsheetApp.getActiveSpreadsheet());
   Logger.log(msg);
   return msg;
 }
@@ -47,29 +46,57 @@ function sincronizarMovieDirectors() {
   var movies = ss.getSheetByName('MOVIES');
   var md = _mdEnsureSheet_(ss, movies);
 
+  // Último movie_id real (getLastRow de la hoja cuenta también las columnas
+  // de agregados, que no tienen por qué terminar en la misma fila).
+  var ids = md.getRange(2, 1, Math.max(md.getMaxRows() - 1, 1), 1).getValues();
+  var lastIdRow = 1;
   var known = {};
-  if (md.getLastRow() > 1) {
-    md.getRange(2, 1, md.getLastRow() - 1, 1).getValues().forEach(function (r) {
-      if (r[0] !== '') known[String(r[0])] = true;
-    });
-  }
+  ids.forEach(function (r, i) {
+    if (r[0] === '' || r[0] === null) return;
+    known[String(r[0])] = true;
+    lastIdRow = i + 2;
+  });
 
+  // Solo las columnas id y director: MOVIES trae overview/cast/etc. y leerla
+  // entera en cada onOpen hacía lenta la apertura.
   var mh = _mdHeaderCols_(movies);
-  var vals = movies.getRange(2, 1, movies.getLastRow() - 1, movies.getLastColumn()).getValues();
+  var n = movies.getLastRow() - 1;
+  var idVals = movies.getRange(2, mh.id + 1, n, 1).getValues();
+  var dirVals = movies.getRange(2, mh.director + 1, n, 1).getValues();
   var entities = _mdEntities_(ss);
   var rows = [], separadas = 0;
-  vals.forEach(function (row) {
-    var id = row[mh.id];
+  idVals.forEach(function (r, i) {
+    var id = r[0];
     if (id === '' || id === null || known[String(id)]) return;
     known[String(id)] = true;
-    var names = _mdSplitCredit_(row[mh.director], entities);
+    var names = _mdSplitCredit_(dirVals[i][0], entities);
     if (names.length > 1) separadas++;
     names.forEach(function (name) { rows.push([id, name]); });
   });
   if (rows.length) {
-    md.getRange(md.getLastRow() + 1, 1, rows.length, 2).setValues(rows);
+    md.getRange(lastIdRow + 1, 1, rows.length, 2).setValues(rows);
+    lastIdRow += rows.length;
   }
-  return 'MOVIE_DIRECTORS: ' + rows.length + ' filas nuevas (' + separadas + ' películas con varios directores)';
+  var borradas = _mdRemoveOrphans_(md, lastIdRow, idVals);
+  return 'MOVIE_DIRECTORS: ' + rows.length + ' filas nuevas (' + separadas +
+    ' películas con varios directores), ' + borradas + ' filas de películas que ya no están en MOVIES';
+}
+
+// Películas borradas de MOVIES dejan filas huérfanas que ya no aportan nada
+// (sin título/rating) y confunden. Se reescribe solo A:B sin ellas. Si de
+// repente faltara una parte grande de MOVIES (lectura a medias), no se toca.
+function _mdRemoveOrphans_(md, lastIdRow, idVals) {
+  if (lastIdRow < 2) return 0;
+  var inMovies = {};
+  idVals.forEach(function (r) { if (r[0] !== '' && r[0] !== null) inMovies[String(r[0])] = true; });
+  var range = md.getRange(2, 1, lastIdRow - 1, 2);
+  var vals = range.getValues();
+  var keep = vals.filter(function (r) { return r[0] === '' || r[0] === null || inMovies[String(r[0])]; });
+  var removed = vals.length - keep.length;
+  if (!removed || removed > vals.length * 0.1) return 0;
+  range.clearContent();
+  md.getRange(2, 1, keep.length, 2).setValues(keep);
+  return removed;
 }
 
 function _mdHeaderCols_(sheet) {
@@ -119,98 +146,96 @@ function _mdSplitCredit_(credit, entities) {
   return out;
 }
 
-// Columnas C-F se calculan desde MOVIES por id con un ARRAYFORMULA en la fila
-// de encabezado, así las filas que se agreguen (a mano o por el script) se
-// completan solas.
+// MOVIE_DIRECTORS: A movie_id, B director (a mano / por el script),
+// C-F movie/year/rating/diary_count traídos de MOVIES, H-J y L-N agregados
+// por director que usa DIRECTORS.
 function _mdEnsureSheet_(ss, movies) {
   var md = ss.getSheetByName(MD_SHEET);
   if (md) return md;
   md = ss.insertSheet(MD_SHEET);
-  var mh = _mdHeaderCols_(movies);
-  var L = function (i) { return _relColLetter_(i + 1); };
-  var look = function (title, col) {
-    return '={"' + title + '";ARRAYFORMULA(IF(A2:A="",,XLOOKUP(A2:A,MOVIES!$' + L(mh.id) + ':$' + L(mh.id) +
-      ',MOVIES!$' + L(col) + ':$' + L(col) + ',"")))}';
-  };
   md.getRange(1, 1, 1, 2).setValues([['movie_id', 'director']]);
-  md.getRange(1, 3, 1, 4).setFormulas([[
-    look('movie', mh.movie), look('year', mh.year), look('rating', mh.rating), look('diary_count', mh.diary_count)
-  ]]);
   md.setFrozenRows(1);
-  md.getRange(1, 1, 1, 6).setFontWeight('bold');
   return md;
 }
 
-// appearances / rating_sum / plays / year de DIRECTORS pasan a contar sobre
-// MOVIE_DIRECTORS (antes: coincidencia exacta con MOVIES.director, y year con
-// FIND, que sí encontraba al director dentro de un crédito compartido). Solo
-// se reescriben las celdas que ya tenían fórmula.
-function _mdRewriteDirectorFormulas_(ss) {
+// Fórmulas pensadas para recalcular poco:
+//  - MOVIE_DIRECTORS C-F: UN solo VLOOKUP por fila que devuelve las 4
+//    columnas (antes 4 XLOOKUP por fila, cada uno recorriendo MOVIES).
+//  - H-J / L-N: dos QUERY que agrupan MOVIE_DIRECTORS por director una vez.
+//  - DIRECTORS appearances/rating_sum/plays/year: un ARRAYFORMULA por
+//    columna que busca en esos agregados (antes ~12.700 COUNTIFS/SUMIF/MINIFS,
+//    cada una recorriendo MOVIE_DIRECTORS entera).
+function _mdSetupFormulas_(ss) {
+  var movies = ss.getSheetByName('MOVIES');
+  var md = _mdEnsureSheet_(ss, movies);
   var dirs = ss.getSheetByName('DIRECTORS');
+  var mh = _mdHeaderCols_(movies);
   var dh = _mdHeaderCols_(dirs);
-  var n = dirs.getLastRow() - 1;
-  var md = MD_SHEET + '!';
-  var nameCol = _relColLetter_(dh.director + 1);
-  var build = {
-    appearances: function (a) { return '=COUNTIFS(' + md + '$B:$B,' + a + ',' + md + '$E:$E,">0")'; },
-    rating_sum: function (a) { return '=SUMIF(' + md + '$B:$B,' + a + ',' + md + '$E:$E)'; },
-    plays: function (a) { return '=SUMIF(' + md + '$B:$B,' + a + ',' + md + '$F:$F)'; },
-    year: function (a) {
-      return '=IF(COUNTIF(' + md + '$B:$B,' + a + ')=0,"",MINIFS(' + md + '$D:$D,' + md + '$B:$B,' + a + '))';
-    }
+  var L = function (i) { return _relColLetter_(i + 1); };
+  var mcol = function (name) { return 'MOVIES!$' + L(mh[name]) + '$2:$' + L(mh[name]); };
+
+  md.getRange(1, 3, md.getMaxRows(), 12).clearContent();
+  md.getRange(1, 3).setFormula(
+    '={"movie","year","rating","diary_count";ARRAYFORMULA(IF(A2:A="",,IFERROR(VLOOKUP(A2:A,{' +
+    [mcol('id'), mcol('movie'), mcol('year'), mcol('rating'), mcol('diary_count')].join(',') +
+    '},{2,3,4,5},FALSE))))}');
+  md.getRange(1, 8).setFormula(
+    '={"agg_director","appearances","rating_sum";IFERROR(QUERY(B2:F,' +
+    '"select B, count(E), sum(E) where B is not null and E > 0 group by B label count(E) \'\', sum(E) \'\'",0))}');
+  md.getRange(1, 12).setFormula(
+    '={"agg_director","plays","year";IFERROR(QUERY(B2:F,' +
+    '"select B, sum(F), min(D) where B is not null group by B label sum(F) \'\', min(D) \'\'",0))}');
+  md.getRange(1, 1, 1, 14).setFontWeight('bold');
+
+  var a = 'A2:A';
+  var agg = {
+    appearances: 'IFERROR(VLOOKUP(' + a + ',MOVIE_DIRECTORS!$H:$J,2,FALSE)*1,0)',
+    rating_sum: 'IFERROR(VLOOKUP(' + a + ',MOVIE_DIRECTORS!$H:$J,3,FALSE)*1,0)',
+    plays: 'IFERROR(VLOOKUP(' + a + ',MOVIE_DIRECTORS!$L:$N,2,FALSE)*1,0)',
+    year: 'IFNA(VLOOKUP(' + a + ',MOVIE_DIRECTORS!$L:$N,3,FALSE),"")'
   };
-  // Con un filtro activo en DIRECTORS, las fórmulas escritas en filas
-  // ocultas por el filtro no quedaban (volvían a la anterior). Se quitan los
-  // criterios mientras se escribe y se restauran al final.
-  var filter = dirs.getFilter();
-  var savedCriteria = [];
+  if (dh.director !== 0) throw new Error('DIRECTORS: se esperaba "director" en la columna A');
+  return _mdWithoutFilter_(dirs, function () {
+    Object.keys(agg).forEach(function (col) {
+      if (dh[col] === undefined) throw new Error('DIRECTORS no tiene la columna "' + col + '"');
+      var c = dh[col] + 1;
+      dirs.getRange(2, c, dirs.getMaxRows() - 1, 1).clearContent();
+      dirs.getRange(1, c).setFormula('={"' + col + '";ARRAYFORMULA(IF(' + a + '="",,' + agg[col] + '))}');
+    });
+    SpreadsheetApp.flush();
+    var n = dirs.getLastRow() - 1;
+    var log = [];
+    Object.keys(agg).forEach(function (col) {
+      var vals = dirs.getRange(1, dh[col] + 1, n + 1, 1).getDisplayValues();
+      var errs = vals.filter(function (v) { return String(v[0]).charAt(0) === '#'; }).length;
+      log.push(col + ': ' + errs + ' errores');
+    });
+    var mdErr = md.getRange(1, 3, 2, 12).getDisplayValues().join(',').split(',')
+      .filter(function (v) { return v.charAt(0) === '#'; }).length;
+    return 'Fórmulas optimizadas. MOVIE_DIRECTORS errores en encabezado/fila 2: ' + mdErr +
+      ' | DIRECTORS ' + log.join(', ');
+  });
+}
+
+// Con un filtro activo, lo escrito en filas ocultas por el filtro no
+// quedaba. Se quitan los criterios mientras se escribe y se restauran.
+function _mdWithoutFilter_(sheet, fn) {
+  var filter = sheet.getFilter();
+  var saved = [];
   if (filter) {
     var fr = filter.getRange();
     for (var c = fr.getColumn(); c <= fr.getLastColumn(); c++) {
       var crit = filter.getColumnFilterCriteria(c);
       if (crit) {
-        savedCriteria.push([c, crit]);
+        saved.push([c, crit]);
         filter.removeColumnFilterCriteria(c);
       }
     }
     SpreadsheetApp.flush();
   }
   try {
-    return _mdWriteDirectorFormulas_(ss, dirs, dh, n, build, nameCol);
+    return fn();
   } finally {
-    savedCriteria.forEach(function (sc) { filter.setColumnFilterCriteria(sc[0], sc[1]); });
+    saved.forEach(function (sc) { filter.setColumnFilterCriteria(sc[0], sc[1]); });
   }
-}
-
-function _mdWriteDirectorFormulas_(ss, dirs, dh, n, build, nameCol) {
-  var log = [];
-  Object.keys(build).forEach(function (col) {
-    if (dh[col] === undefined) throw new Error('DIRECTORS no tiene la columna "' + col + '"');
-    var range = dirs.getRange(2, dh[col] + 1, n, 1);
-    var f = range.getFormulas();
-    var vals = range.getValues();
-    var count = 0;
-    var want = f.map(function (r, i) {
-      if (!r[0]) return null;
-      count++;
-      return build[col](nameCol + (i + 2));
-    });
-    if (count === n) {
-      range.setFormulas(want.map(function (w) { return [w]; }));
-    } else {
-      range.setValues(want.map(function (w, i) { return [w === null ? vals[i][0] : w]; }));
-    }
-    SpreadsheetApp.flush();
-    // Releer y comparar: si algo (otra regla, otra pestaña, un script) la
-    // vuelve a cambiar, queda registrado cuántas y cuál quedó en su lugar.
-    var got = range.getFormulas();
-    var bad = [];
-    want.forEach(function (w, i) {
-      if (w !== null && got[i][0] !== w) bad.push('fila ' + (i + 2) + ': ' + got[i][0]);
-    });
-    log.push(col + ': ' + count + ' fórmulas, ' + bad.length + ' no quedaron' +
-      (bad.length ? ' (ej. ' + bad[0] + ')' : ''));
-  });
-  return 'DIRECTORS -> MOVIE_DIRECTORS. ' + log.join(' | ') +
-    ' | hoja: ' + dirs.getName() + ' de ' + ss.getName() + ' (' + ss.getId() + ')';
 }
