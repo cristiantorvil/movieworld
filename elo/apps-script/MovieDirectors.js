@@ -218,8 +218,8 @@ function _mdSetupFormulas_(ss) {
 }
 
 // max relations de DIRECTORS con tope para que el grafo no se vuelva una
-// maraña (~1.500 relaciones en total en vez de ~2.150): el puntaje se escala
-// por 0,65, nunca baja de 0 (antes daba negativos), un promedio >= 4 asegura
+// maraña (~2.000 relaciones en total en vez de ~2.150): el puntaje se escala
+// por 0,94, nunca baja de 0 (antes daba negativos), un promedio >= 4 asegura
 // al menos 1, y nadie pasa de 40. El bono +2 por tener "out" se mantiene.
 function aplicarMaxRelations() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -234,7 +234,7 @@ function aplicarMaxRelations() {
   for (var r = 2; r <= n + 1; r++) {
     var B = col('appearances') + r, C = col('rating_sum') + r, D = col('rating_avg') + r;
     var E = col('plays') + r, J = col('out') + r;
-    want.push(['=MIN(40,MAX(IF(AND(' + B + '>0,' + D + '>=4),1,0),IF(OR(' + B + '=0,' + D + '=""),0,ROUND(0.65*(' +
+    want.push(['=MIN(40,MAX(IF(AND(' + B + '>0,' + D + '>=4),1,0),IF(OR(' + B + '=0,' + D + '=""),0,ROUND(0.94*(' +
       C + '^0.793*(' + D + '/3.5)^3-3.9)*MAX(0.5,1+0.5*(' + E + '/' + B + '-1)),0))+IF(' + J + '>0,2,0)))']);
   }
   var msg = _mdWithoutFilter_(dirs, function () {
