@@ -37,8 +37,10 @@ const SNAPSHOT_INTERVAL = 25; // guardar posiciones cada N duelos
 const MAX_SNAPSHOTS = 15; // tope de cortes guardados en el historial
 const SNAPSHOT_TOP_N = 1000; // solo se guarda el top 1000 en cada corte
 // Filtro "Máximo de duelos jugados": el slider va de 0 a este tope; un paso
-// más allá (CAP + 1) es "Todas" (sin tope), mismo valor en watchlist.html.
+// más allá (CAP + 1) es "Todas" (sin tope). La watchlist llega a 100: ahí
+// las pelis acumulan muchos más duelos (no hay rating que las asiente).
 const MAX_DUELOS_FILTER_CAP = 50;
+const MAX_DUELOS_FILTER_CAP_WL = 100;
 
 // Celda de elo de la Sheet utilizable ("" = vacía, no 0).
 function hasSheetElo(v) {
@@ -501,6 +503,9 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   const [duelCountry, setDuelCountry] = useState("");
   const [duelLanguage, setDuelLanguage] = useState("");
   const [maxDuelosFilter, setMaxDuelosFilter] = useState(null); // null = sin tope
+  const maxDuelosCap = isWL ? MAX_DUELOS_FILTER_CAP_WL : MAX_DUELOS_FILTER_CAP;
+  // Solo cortos (40 min o menos, mismo corte que el filtro del Ranking).
+  const [duelShortsOnly, setDuelShortsOnly] = useState(false);
   const [duelGoldMin, setDuelGoldMin] = useState(1);
   const [duelGoldMax, setDuelGoldMax] = useState(10);
   const [duelSilverMin, setDuelSilverMin] = useState(0);
@@ -1849,6 +1854,9 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     if (maxDuelosFilter != null) {
       pool = pool.filter((m) => m.comparisons <= maxDuelosFilter);
     }
+    if (duelShortsOnly) {
+      pool = pool.filter((m) => m.runtime > 0 && m.runtime <= 40);
+    }
     if (!isWL && (duelGoldMin > 1 || duelGoldMax < 10)) {
       pool = pool.filter((m) => {
         const gold = Number(m.rating) * 2;
@@ -1877,6 +1885,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     duelCountry,
     duelLanguage,
     maxDuelosFilter,
+    duelShortsOnly,
     duelGenre,
     duelGoldMin,
     duelGoldMax,
@@ -2400,6 +2409,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     duelCountry ||
     duelLanguage ||
     maxDuelosFilter != null ||
+    duelShortsOnly ||
     duelRankMin > 1 ||
     (duelRankMax > 0 && duelRankMax < modeRanking.length) ||
     (duelYearMin != null && duelYearMin > decadeBounds[0]) ||
@@ -2443,6 +2453,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       setDuelCountry("");
       setDuelLanguage("");
       setMaxDuelosFilter(null);
+      setDuelShortsOnly(false);
       setDuelRankMin(1);
       setDuelRankMax(0);
       setDuelYearMin(decadeBounds[0]);
@@ -3080,19 +3091,31 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                         type="range"
                         className="filter-range"
                         min={0}
-                        max={MAX_DUELOS_FILTER_CAP + 1}
+                        max={maxDuelosCap + 1}
                         step={1}
                         value={
                           maxDuelosFilter == null
-                            ? MAX_DUELOS_FILTER_CAP + 1
+                            ? maxDuelosCap + 1
                             : maxDuelosFilter
                         }
                         onChange={(e) => {
                           const v = Number(e.target.value);
-                          setMaxDuelosFilter(v > MAX_DUELOS_FILTER_CAP ? null : v);
+                          setMaxDuelosFilter(v > maxDuelosCap ? null : v);
                           setPair(null);
                         }}
                       />
+                    </label>
+
+                    <label className="filter-label filter-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={duelShortsOnly}
+                        onChange={(e) => {
+                          setDuelShortsOnly(e.target.checked);
+                          setPair(null);
+                        }}
+                      />
+                      Solo cortos (40 min o menos)
                     </label>
 
                     {hasActiveFilters && (
@@ -3104,6 +3127,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                           setDuelCountry("");
                           setDuelLanguage("");
                           setMaxDuelosFilter(null);
+                          setDuelShortsOnly(false);
                           setDuelRankRange(1, 0);
                           setDuelYearRange(decadeBounds[0], decadeBounds[1]);
                           setDuelYearExact("");
