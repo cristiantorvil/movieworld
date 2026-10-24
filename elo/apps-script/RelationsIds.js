@@ -179,3 +179,67 @@ function _relColLetter_(n) {
   while (n > 0) { var r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
   return s;
 }
+
+// Correr UNA vez: "Formative director" pasa a ser el tipo 4 y "Specific
+// reference" el 5. Cambia el texto en TYPES (la lista desplegable de
+// RELATIONS.type), RELATIONS y las notas de DIRECTORS, reordena TYPES y
+// cambia los colores del formato condicional para que cada tipo conserve el
+// suyo. Si TYPES ya tiene "4-Formative director" no hace nada (correrla dos
+// veces desharía el cambio).
+function intercambiarTipos4y5() {
+  var OLD4 = '4-Specific reference', OLD5 = '5-Formative director';
+  var NEW4 = '4-Formative director', NEW5 = '5-Specific reference';
+  var TMP = '##TIPO-5-TEMPORAL##';
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var types = ss.getSheetByName('TYPES');
+  var typeNames = types.getRange(2, 1, types.getLastRow() - 1, 1).getValues().map(function (r) { return r[0]; });
+  if (typeNames.indexOf(NEW4) !== -1) return 'TYPES ya tiene "' + NEW4 + '": no se cambió nada.';
+  if (typeNames.indexOf(OLD5) === -1 || typeNames.indexOf(OLD4) === -1) {
+    throw new Error('TYPES no tiene "' + OLD4 + '" y "' + OLD5 + '"');
+  }
+
+  var log = [];
+  ['TYPES', 'RELATIONS', 'DIRECTORS'].forEach(function (name) {
+    var sh = ss.getSheetByName(name);
+    var n = _mdWithoutFilter_(sh, function () {
+      var a = sh.createTextFinder(OLD4).matchCase(true).replaceAllWith(TMP);
+      var b = sh.createTextFinder(OLD5).matchCase(true).replaceAllWith(NEW4);
+      sh.createTextFinder(TMP).matchCase(true).replaceAllWith(NEW5);
+      return a + b;
+    });
+    log.push(name + ': ' + n + ' celdas');
+  });
+  types.getRange(2, 1, types.getLastRow() - 1, types.getLastColumn()).sort(1);
+
+  // Formato condicional de RELATIONS.type: los colores van con el tipo, así
+  // que se intercambian entre las reglas "empieza con 4-" y "empieza con 5-".
+  var rel = ss.getSheetByName('RELATIONS');
+  var rules = rel.getConditionalFormatRules();
+  var colorsOf = function (prefix) {
+    for (var i = 0; i < rules.length; i++) {
+      var c = rules[i].getBooleanCondition();
+      if (c && c.getCriteriaType() === SpreadsheetApp.BooleanCriteria.TEXT_STARTS_WITH &&
+          c.getCriteriaValues()[0] === prefix) {
+        return { bg: c.getBackground(), fg: c.getFontColor() };
+      }
+    }
+    return null;
+  };
+  var c4 = colorsOf('4-'), c5 = colorsOf('5-'), swapped = 0;
+  if (c4 && c5) {
+    rules = rules.map(function (rule) {
+      var c = rule.getBooleanCondition();
+      if (!c || c.getCriteriaType() !== SpreadsheetApp.BooleanCriteria.TEXT_STARTS_WITH) return rule;
+      var p = c.getCriteriaValues()[0];
+      var to = p === '4-' ? c5 : p === '5-' ? c4 : null;
+      if (!to) return rule;
+      swapped++;
+      return rule.copy().setBackground(to.bg).setFontColor(to.fg).build();
+    });
+    rel.setConditionalFormatRules(rules);
+  }
+  log.push('reglas de color intercambiadas: ' + swapped);
+  var msg = 'Tipos 4 y 5 intercambiados. ' + log.join(' | ');
+  Logger.log(msg);
+  return msg;
+}
