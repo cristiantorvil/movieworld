@@ -3404,6 +3404,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                     onDuel={duelSpecificMovie}
                     onRate={isWL ? saveMovieRating : null}
                     onRemove={isWL ? removeMovie : null}
+                    showRuntime={isWL}
                   />
                 )}
               </>
@@ -4948,7 +4949,17 @@ function MarkWatchedButton({ movie, onSave }) {
   );
 }
 
-function RankingList({ ranking, filterText, globalRanking, projectedRating, onDuel, onRate, onRemove }) {
+// 112 -> "1 h 52 min", 48 -> "48 min". Vacío si TMDB no trajo duración.
+function formatRuntime(minutes) {
+  const n = Math.round(Number(minutes));
+  if (!(n > 0)) return "";
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  if (!h) return `${m} min`;
+  return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+function RankingList({ ranking, filterText, globalRanking, projectedRating, onDuel, onRate, onRemove, showRuntime }) {
   const source = globalRanking || ranking;
   const q = filterText.trim().toLowerCase();
   const filtered = q
@@ -5005,6 +5016,8 @@ function RankingList({ ranking, filterText, globalRanking, projectedRating, onDu
                   )}
                 </span>
                 <span className="rank-meta">
+                  {/* En la Watchlist la duración ayuda a elegir qué ver. */}
+                  {showRuntime && formatRuntime(m.runtime) ? `⏱ ${formatRuntime(m.runtime)} · ` : ""}
                   {m.comparisons} duelos · {m.wins} ganados
                   {m.plays ? ` · vista ${m.plays}x` : ""}
                 </span>
