@@ -4550,7 +4550,7 @@ function DuelResult({ result, onNext, projectedRating }) {
   // El hint de abajo describe por qué la GANADORA sumó lo que sumó — así que
   // tiene que basarse en su Elo viejo contra el de las rivales que venció,
   // no en la magnitud de lo que sumó. Esa magnitud también depende del
-  // K-factor (32/20/12 según cuántos duelos jugó cada una, ver getKFactor),
+  // K-factor (64/40/24 según cuántos duelos jugó cada una, ver getKFactor),
   // así que una peli nueva puede sumar "mucho" sin haber vencido a nadie
   // mejor puntuada, y el texto quedaba contradiciendo lo que mostraban las
   // fichas de arriba (#rank viejo → nuevo, Elo viejo → nuevo).
