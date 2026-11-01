@@ -3779,30 +3779,6 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
               </div>
             ) : (
               <div className="summary-grid">
-                <div className="summary-card">
-                  <p className="summary-card-title">Top 10</p>
-                  <p className="summary-card-sub">
-                    {isWL ? "las de mayor Elo — más ganas de verlas" : "las de mayor Elo"}
-                  </p>
-                  <SummaryList
-                    onDuel={duelSpecificMovie}
-                    items={summaryStats.top10}
-                    render={(m) => `${Math.round(m.elo)}`}
-                  />
-                </div>
-
-                <div className="summary-card">
-                  <p className="summary-card-title">Bottom 10</p>
-                  <p className="summary-card-sub">
-                    {isWL ? "las de menor Elo — menos prioridad para ver" : "las de menor Elo"}
-                  </p>
-                  <SummaryList
-                    onDuel={duelSpecificMovie}
-                    items={summaryStats.bottom10}
-                    render={(m) => `${Math.round(m.elo)}`}
-                  />
-                </div>
-
                 {!isWL && (
                 <>
                 <div className="summary-card">
@@ -3846,6 +3822,30 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                 </div>
                 </>
                 )}
+
+                <div className="summary-card">
+                  <p className="summary-card-title">Top 10</p>
+                  <p className="summary-card-sub">
+                    {isWL ? "las de mayor Elo — más ganas de verlas" : "las de mayor Elo"}
+                  </p>
+                  <SummaryList
+                    onDuel={duelSpecificMovie}
+                    items={summaryStats.top10}
+                    render={(m) => `${Math.round(m.elo)}`}
+                  />
+                </div>
+
+                <div className="summary-card">
+                  <p className="summary-card-title">Bottom 10</p>
+                  <p className="summary-card-sub">
+                    {isWL ? "las de menor Elo — menos prioridad para ver" : "las de menor Elo"}
+                  </p>
+                  <SummaryList
+                    onDuel={duelSpecificMovie}
+                    items={summaryStats.bottom10}
+                    render={(m) => `${Math.round(m.elo)}`}
+                  />
+                </div>
 
                 {summaryStats.eloGainers.length > 0 && (
                   <div className="summary-card">
