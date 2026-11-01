@@ -23,13 +23,12 @@ export const START_ELO = 1200;
 // K dinámico: mientras menos duelos lleva una película, más se mueve su elo
 // por cada resultado nuevo (todavía estamos "descubriendo" dónde va) — y
 // una vez asentada, cada duelo pesa menos. Mismo criterio que usan las
-// federaciones de ajedrez con jugadores nuevos vs. establecidos. Valores
-// duplicados respecto de los originales (32/20/12) para que cada duelo
-// mueva el doble, tanto a la ganadora como a la perdedora.
-export function getKFactor(comparisons) {
-  if (comparisons < 10) return 64;
-  if (comparisons < 30) return 40;
-  return 24;
+// federaciones de ajedrez con jugadores nuevos vs. establecidos. Las vistas
+// usan 32/20/12; la watchlist el doble (64/40/24), para que cada duelo
+// mueva más a la ganadora y a la perdedora.
+export function getKFactor(comparisons, watchlist = false) {
+  const k = comparisons < 10 ? 32 : comparisons < 30 ? 20 : 12;
+  return watchlist ? k * 2 : k;
 }
 
 export function expectedScore(a, b) {

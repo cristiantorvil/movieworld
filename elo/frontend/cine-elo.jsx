@@ -708,8 +708,8 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
 
     const expWinner = expectedScore(winnerMovie.elo, loserMovie.elo);
     const expLoser = expectedScore(loserMovie.elo, winnerMovie.elo);
-    const winnerDelta = Math.round(getKFactor(winnerMovie.comparisons) * (1 - expWinner));
-    const loserDelta = Math.round(getKFactor(loserMovie.comparisons) * (0 - expLoser));
+    const winnerDelta = Math.round(getKFactor(winnerMovie.comparisons, isWL) * (1 - expWinner));
+    const loserDelta = Math.round(getKFactor(loserMovie.comparisons, isWL) * (0 - expLoser));
 
     const next = movies.map((m) => {
       if (m.id === winnerId) {
@@ -2174,8 +2174,8 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
         const eloB = eloRunning.get(b.id);
         const expA = expectedScore(eloA, eloB);
         const expB = expectedScore(eloB, eloA);
-        const deltaA = Math.round(getKFactor(comparisonsRunning.get(a.id)) * (1 - expA));
-        const deltaB = Math.round(getKFactor(comparisonsRunning.get(b.id)) * (0 - expB));
+        const deltaA = Math.round(getKFactor(comparisonsRunning.get(a.id), isWL) * (1 - expA));
+        const deltaB = Math.round(getKFactor(comparisonsRunning.get(b.id), isWL) * (0 - expB));
         eloRunning.set(a.id, eloA + deltaA);
         eloRunning.set(b.id, eloB + deltaB);
         comparisonsRunning.set(a.id, comparisonsRunning.get(a.id) + 1);
@@ -4550,8 +4550,8 @@ function DuelResult({ result, onNext, projectedRating }) {
   // El hint de abajo describe por qué la GANADORA sumó lo que sumó — así que
   // tiene que basarse en su Elo viejo contra el de las rivales que venció,
   // no en la magnitud de lo que sumó. Esa magnitud también depende del
-  // K-factor (64/40/24 según cuántos duelos jugó cada una, ver getKFactor),
-  // así que una peli nueva puede sumar "mucho" sin haber vencido a nadie
+  // K-factor (32/20/12 en vistas, el doble en watchlist, según cuántos
+  // duelos jugó cada una, ver getKFactor), así que una peli nueva puede sumar "mucho" sin haber vencido a nadie
   // mejor puntuada, y el texto quedaba contradiciendo lo que mostraban las
   // fichas de arriba (#rank viejo → nuevo, Elo viejo → nuevo).
   const winner = ranking[0];
