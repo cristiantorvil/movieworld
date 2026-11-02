@@ -218,8 +218,8 @@ function _mdSetupFormulas_(ss) {
 }
 
 // max relations de DIRECTORS por puntos: cada película suma
-// (rating − 2,5) × vistas, y el máximo es la suma redondeada. Una sola
-// película da 1 con 3,5, 2 con 4,5 y 3 con 5; una de 4 vista 3 veces cuenta
+// (rating − 2,5) × vistas, y el máximo es la suma redondeada hacia abajo.
+// Una sola película da 0 con 3, 1 con 3,5 o 4, 2 con 4,5 o 5; una de 4 vista 3 veces cuenta
 // igual que tres películas de 4. Las de 2,5 o menos no suman ni restan. Se
 // agregan 2 si el director tiene "out", con tope MR_TOPE.
 var MR_TOPE = 60;
@@ -244,7 +244,7 @@ function aplicarMaxRelations() {
   var n = dirs.getLastRow() - 1;
   var want = [];
   for (var r = 2; r <= n + 1; r++) {
-    want.push(['=MIN(' + MR_TOPE + ',ROUND(IFERROR(VLOOKUP(' + col('director') + r + ',' +
+    want.push(['=MIN(' + MR_TOPE + ',ROUNDDOWN(IFERROR(VLOOKUP(' + col('director') + r + ',' +
       MD_SHEET + '!$R:$S,2,FALSE),0))+IF(' + col('out') + r + '>0,2,0))']);
   }
   var msg = _mdWithoutFilter_(dirs, function () {
