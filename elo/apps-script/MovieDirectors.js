@@ -218,10 +218,10 @@ function _mdSetupFormulas_(ss) {
 }
 
 // max relations de DIRECTORS por puntos: cada película suma
-// (rating − 3)² × vistas. Una sola película da 0 con 3,5 (0,25), 1 con 4,
-// 2 con 4,5 (2,25) y 4 con 5; una de 4 vista 3 veces cuenta igual que tres
-// películas de 4. Las de 3 o menos no suman ni restan. El máximo es la suma
-// redondeada, más 2 si el director tiene "out", con tope MR_TOPE.
+// (rating − 2,5) × vistas, y el máximo es la suma redondeada. Una sola
+// película da 1 con 3,5, 2 con 4,5 y 3 con 5; una de 4 vista 3 veces cuenta
+// igual que tres películas de 4. Las de 2,5 o menos no suman ni restan. Se
+// agregan 2 si el director tiene "out", con tope MR_TOPE.
 var MR_TOPE = 60;
 
 function aplicarMaxRelations() {
@@ -235,7 +235,7 @@ function aplicarMaxRelations() {
   // MOVIE_DIRECTORS P: puntos por fila; R-S: puntos agrupados por director.
   md.getRange(1, 16, md.getMaxRows(), 4).clearContent();
   md.getRange(1, 16).setFormula('={"points";ARRAYFORMULA(IF(B2:B="",,' +
-    'IF(E2:E>3,(E2:E-3)^2*IF(F2:F>0,F2:F,1),0)))}');
+    'IF(E2:E>2.5,(E2:E-2.5)*IF(F2:F>0,F2:F,1),0)))}');
   md.getRange(1, 18).setFormula('={"agg_director","points";IFERROR(QUERY(B2:P,' +
     '"select B, sum(P) where B is not null and P > 0 group by B label sum(P) \'\'",0))}');
   md.getRange(1, 16, 1, 4).setFontWeight('bold');
