@@ -218,13 +218,11 @@ function _mdSetupFormulas_(ss) {
 }
 
 // max relations de DIRECTORS por puntos: cada película suma
-// (rating − 2,5) × vistas, así que una de 4 vista 3 veces cuenta igual que
-// tres películas de 4, y las de 2,5 o menos no suman (tampoco restan). El
-// máximo es k × puntos, más 2 si el director tiene "out", con tope MR_TOPE.
-// k se calcula en cada corrida para que el total quede cerca de MR_OBJETIVO
-// relaciones (la suma de max relations cuenta cada relación dos veces).
+// (rating − 3)² × vistas. Una sola película da 0 con 3,5 (0,25), 1 con 4,
+// 2 con 4,5 (2,25) y 4 con 5; una de 4 vista 3 veces cuenta igual que tres
+// películas de 4. Las de 3 o menos no suman ni restan. El máximo es la suma
+// redondeada, más 2 si el director tiene "out", con tope MR_TOPE.
 var MR_TOPE = 60;
-var MR_OBJETIVO = 2000;
 
 function aplicarMaxRelations() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -237,36 +235,16 @@ function aplicarMaxRelations() {
   // MOVIE_DIRECTORS P: puntos por fila; R-S: puntos agrupados por director.
   md.getRange(1, 16, md.getMaxRows(), 4).clearContent();
   md.getRange(1, 16).setFormula('={"points";ARRAYFORMULA(IF(B2:B="",,' +
-    'IF(E2:E>2.5,(E2:E-2.5)*IF(F2:F>0,F2:F,1),0)))}');
+    'IF(E2:E>3,(E2:E-3)^2*IF(F2:F>0,F2:F,1),0)))}');
   md.getRange(1, 18).setFormula('={"agg_director","points";IFERROR(QUERY(B2:P,' +
     '"select B, sum(P) where B is not null and P > 0 group by B label sum(P) \'\'",0))}');
   md.getRange(1, 16, 1, 4).setFontWeight('bold');
-  SpreadsheetApp.flush();
-
-  var pts = {};
-  md.getRange(2, 18, Math.max(md.getLastRow() - 1, 1), 2).getValues().forEach(function (r) {
-    if (r[0] !== '') pts[String(r[0])] = Number(r[1]) || 0;
-  });
-  var n = dirs.getLastRow() - 1;
-  var rows = dirs.getRange(2, 1, n, dirs.getLastColumn()).getValues().map(function (r) {
-    return { p: pts[String(r[dh.director])] || 0, bono: Number(r[dh.out]) > 0 ? 2 : 0 };
-  });
-  var suma = function (k) {
-    return rows.reduce(function (s, d) {
-      return s + Math.min(MR_TOPE, Math.round(k * d.p) + d.bono);
-    }, 0);
-  };
-  var lo = 0, hi = 10;
-  for (var i = 0; i < 50; i++) {
-    var mid = (lo + hi) / 2;
-    if (suma(mid) < 2 * MR_OBJETIVO) lo = mid; else hi = mid;
-  }
-  var k = Math.round(hi * 10000) / 10000;
 
   var col = function (name) { return _relColLetter_(dh[name] + 1); };
+  var n = dirs.getLastRow() - 1;
   var want = [];
   for (var r = 2; r <= n + 1; r++) {
-    want.push(['=MIN(' + MR_TOPE + ',ROUND(' + k + '*IFERROR(VLOOKUP(' + col('director') + r + ',' +
+    want.push(['=MIN(' + MR_TOPE + ',ROUND(IFERROR(VLOOKUP(' + col('director') + r + ',' +
       MD_SHEET + '!$R:$S,2,FALSE),0))+IF(' + col('out') + r + '>0,2,0))']);
   }
   var msg = _mdWithoutFilter_(dirs, function () {
@@ -279,9 +257,9 @@ function aplicarMaxRelations() {
     var total = vals.reduce(function (s, v) { return s + v; }, 0);
     var enTope = vals.filter(function (v) { return v >= MR_TOPE; }).length;
     var enCero = vals.filter(function (v) { return v === 0; }).length;
-    return 'max relations: ' + n + ' fórmulas, ' + bad + ' no quedaron. k = ' + k +
-      '. Suma = ' + total + ' (~' + Math.round(total / 2) + ' relaciones). En tope (' +
-      MR_TOPE + '): ' + enTope + ', en 0: ' + enCero;
+    return 'max relations: ' + n + ' fórmulas, ' + bad + ' no quedaron. Suma = ' + total +
+      ' (~' + Math.round(total / 2) + ' relaciones). En tope (' + MR_TOPE + '): ' + enTope +
+      ', en 0: ' + enCero;
   });
   Logger.log(msg);
   return msg;
