@@ -535,6 +535,8 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   // Corto = 40 min o menos (mismo corte que usa la Academia para "Short
   // Film" — el runtime de TMDB no siempre lo marca como género aparte).
   const [rankFilterShorts, setRankFilterShorts] = useState(false);
+  // Veces vista: "all", un número exacto ("3") o "2+" (solo revistas).
+  const [rankFilterPlays, setRankFilterPlays] = useState("all");
   const [rankReversed, setRankReversed] = useState(false);
   const [showRankFilters, setShowRankFilters] = useState(false);
   const [syncUrl, setSyncUrl] = useState(DEFAULT_SYNC_URL);
@@ -1756,6 +1758,17 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [modeMovies]);
 
+  // Cantidades de vistas que de verdad aparecen en el modo actual, para no
+  // ofrecer en el filtro opciones que siempre darían una lista vacía.
+  const playsOptions = useMemo(() => {
+    const set = new Set();
+    modeRanking.forEach((m) => {
+      const p = Number(m.plays) || 0;
+      if (p > 0) set.add(p);
+    });
+    return [...set].sort((a, b) => a - b);
+  }, [modeRanking]);
+
   const filteredRanking = useMemo(() => {
     // Solo las del modo actual: en Cine Elo el Ranking es "qué tan buena
     // es, comparada con las demás que ya viste"; en Watchlist, "cuál
@@ -1781,6 +1794,15 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     if (rankFilterShorts) {
       list = list.filter((m) => m.runtime > 0 && m.runtime <= 40);
     }
+    // En Watchlist no hay vistas: el filtro queda guardado pero no se aplica.
+    if (!isWL && rankFilterPlays !== "all") {
+      const atLeast = rankFilterPlays.endsWith("+");
+      const n = parseInt(rankFilterPlays, 10);
+      list = list.filter((m) => {
+        const p = Number(m.plays) || 0;
+        return atLeast ? p >= n : p === n;
+      });
+    }
     // .slice() a propósito: reverse() muta in-place, y "list" puede seguir
     // siendo la misma referencia que "modeRanking" si no se aplicó ningún
     // otro filtro arriba — sin el slice esto invertiría el ranking global.
@@ -1788,10 +1810,14 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       list = list.slice().reverse();
     }
     return list;
-  }, [modeRanking, rankFilterDirector, rankFilterGenre, rankFilterDecade, rankFilterShorts, rankReversed]);
+  }, [modeRanking, rankFilterDirector, rankFilterGenre, rankFilterDecade, rankFilterShorts, rankFilterPlays, isWL, rankReversed]);
 
   const hasRankFilters =
-    rankFilterDirector || rankFilterGenre || rankFilterDecade !== "all" || rankFilterShorts;
+    rankFilterDirector ||
+    rankFilterGenre ||
+    rankFilterDecade !== "all" ||
+    rankFilterShorts ||
+    (!isWL && rankFilterPlays !== "all");
 
   const duelPool = useMemo(() => {
     if (!movies) return [];
@@ -3366,6 +3392,27 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                       </select>
                     </label>
 
+                    {!isWL && playsOptions.length > 0 && (
+                      <label className="filter-label">
+                        Vistas
+                        <select
+                          className="filter-select"
+                          value={rankFilterPlays}
+                          onChange={(e) => setRankFilterPlays(e.target.value)}
+                        >
+                          <option value="all">Cualquier cantidad</option>
+                          {playsOptions.some((p) => p >= 2) && (
+                            <option value="2+">Revistas (2 o más)</option>
+                          )}
+                          {playsOptions.map((p) => (
+                            <option key={p} value={String(p)}>
+                              {p === 1 ? "1 vez" : `${p} veces`}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+
                     <label className="filter-label filter-checkbox">
                       <input
                         type="checkbox"
@@ -3383,6 +3430,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                           setRankFilterGenre("");
                           setRankFilterDecade("all");
                           setRankFilterShorts(false);
+                          setRankFilterPlays("all");
                         }}
                       >
                         limpiar filtros
