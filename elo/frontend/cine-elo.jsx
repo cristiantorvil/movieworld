@@ -535,8 +535,9 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   // Corto = 40 min o menos (mismo corte que usa la Academia para "Short
   // Film" — el runtime de TMDB no siempre lo marca como género aparte).
   const [rankFilterShorts, setRankFilterShorts] = useState(false);
-  // Veces vista: "all", un número exacto ("3") o "2+" (solo revistas).
-  const [rankFilterPlays, setRankFilterPlays] = useState("all");
+  // Rango de veces vista: desde rankPlaysMin hasta rankPlaysMax (0 = sin tope).
+  const [rankPlaysMin, setRankPlaysMin] = useState(1);
+  const [rankPlaysMax, setRankPlaysMax] = useState(0);
   const [rankReversed, setRankReversed] = useState(false);
   const [showRankFilters, setShowRankFilters] = useState(false);
   const [syncUrl, setSyncUrl] = useState(DEFAULT_SYNC_URL);
@@ -1758,16 +1759,12 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [modeMovies]);
 
-  // Cantidades de vistas que de verdad aparecen en el modo actual, para no
-  // ofrecer en el filtro opciones que siempre darían una lista vacía.
-  const playsOptions = useMemo(() => {
-    const set = new Set();
-    modeRanking.forEach((m) => {
-      const p = Number(m.plays) || 0;
-      if (p > 0) set.add(p);
-    });
-    return [...set].sort((a, b) => a - b);
-  }, [modeRanking]);
+  // Máximo de vistas en el modo actual: el tope del slider de rango.
+  const maxPlays = useMemo(
+    () => modeRanking.reduce((mx, m) => Math.max(mx, Number(m.plays) || 0), 0),
+    [modeRanking]
+  );
+  const rankPlaysActive = !isWL && (rankPlaysMin > 1 || rankPlaysMax > 0);
 
   const filteredRanking = useMemo(() => {
     // Solo las del modo actual: en Cine Elo el Ranking es "qué tan buena
@@ -1795,12 +1792,10 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       list = list.filter((m) => m.runtime > 0 && m.runtime <= 40);
     }
     // En Watchlist no hay vistas: el filtro queda guardado pero no se aplica.
-    if (!isWL && rankFilterPlays !== "all") {
-      const atLeast = rankFilterPlays.endsWith("+");
-      const n = parseInt(rankFilterPlays, 10);
+    if (rankPlaysActive) {
       list = list.filter((m) => {
         const p = Number(m.plays) || 0;
-        return atLeast ? p >= n : p === n;
+        return p >= rankPlaysMin && (rankPlaysMax === 0 || p <= rankPlaysMax);
       });
     }
     // .slice() a propósito: reverse() muta in-place, y "list" puede seguir
@@ -1810,14 +1805,14 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       list = list.slice().reverse();
     }
     return list;
-  }, [modeRanking, rankFilterDirector, rankFilterGenre, rankFilterDecade, rankFilterShorts, rankFilterPlays, isWL, rankReversed]);
+  }, [modeRanking, rankFilterDirector, rankFilterGenre, rankFilterDecade, rankFilterShorts, rankPlaysActive, rankPlaysMin, rankPlaysMax, rankReversed]);
 
   const hasRankFilters =
     rankFilterDirector ||
     rankFilterGenre ||
     rankFilterDecade !== "all" ||
     rankFilterShorts ||
-    (!isWL && rankFilterPlays !== "all");
+    rankPlaysActive;
 
   const duelPool = useMemo(() => {
     if (!movies) return [];
@@ -3392,24 +3387,47 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                       </select>
                     </label>
 
-                    {!isWL && playsOptions.length > 0 && (
+                    {!isWL && maxPlays > 1 && (
                       <label className="filter-label">
                         Vistas
-                        <select
-                          className="filter-select"
-                          value={rankFilterPlays}
-                          onChange={(e) => setRankFilterPlays(e.target.value)}
-                        >
-                          <option value="all">Cualquier cantidad</option>
-                          {playsOptions.some((p) => p >= 2) && (
-                            <option value="2+">Revistas (2 o más)</option>
-                          )}
-                          {playsOptions.map((p) => (
-                            <option key={p} value={String(p)}>
-                              {p === 1 ? "1 vez" : `${p} veces`}
-                            </option>
+                        <span className="filter-range-value">
+                          {rankPlaysMin === (rankPlaysMax || maxPlays)
+                            ? `${rankPlaysMin} ${rankPlaysMin === 1 ? "vez" : "veces"}`
+                            : `${rankPlaysMin} a ${rankPlaysMax || maxPlays} veces`}
+                        </span>
+                        <DualRangeSlider
+                          min={1}
+                          max={maxPlays}
+                          step={1}
+                          valueMin={rankPlaysMin}
+                          valueMax={rankPlaysMax > 0 ? Math.min(rankPlaysMax, maxPlays) : maxPlays}
+                          onChange={(newMin, newMax) => {
+                            setRankPlaysMin(newMin);
+                            setRankPlaysMax(newMax >= maxPlays ? 0 : newMax);
+                          }}
+                        />
+                        <div className="filter-range-presets">
+                          {[
+                            ["Todas", 1, 0],
+                            ["1 vez", 1, 1],
+                            ["Revistas (2+)", 2, 0],
+                            ["3 o más", 3, 0],
+                          ].map(([label, lo, hi]) => (
+                            <button
+                              key={label}
+                              className={
+                                "preset-btn" +
+                                (rankPlaysMin === lo && rankPlaysMax === hi ? " active" : "")
+                              }
+                              onClick={() => {
+                                setRankPlaysMin(lo);
+                                setRankPlaysMax(hi);
+                              }}
+                            >
+                              {label}
+                            </button>
                           ))}
-                        </select>
+                        </div>
                       </label>
                     )}
 
@@ -3430,7 +3448,8 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                           setRankFilterGenre("");
                           setRankFilterDecade("all");
                           setRankFilterShorts(false);
-                          setRankFilterPlays("all");
+                          setRankPlaysMin(1);
+                          setRankPlaysMax(0);
                         }}
                       >
                         limpiar filtros
