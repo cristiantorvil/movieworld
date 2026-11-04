@@ -1406,19 +1406,19 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   // Escala 1-10 (el doble de la escala real de 0.5-5) solo para mostrar —
   // el rating que se guarda sigue siendo 0.5-5 en todos lados.
   //
-  // El centro de la proyección se fuerza a 2.9/5 (=5.8/10) en vez de usar
-  // el promedio real de tus ratings — el ancho de la campana parte del real
+  // El centro de la proyección es el promedio real de tus ratings
+  // (meanRating), así dorado − plateado promedia 0 y solo muestra en qué
+  // pelis el Elo discrepa de tu nota. El ancho de la campana parte del real
   // (stdRating), pero se ensancha con PROJECTED_RATING_SPREAD para que
   // proporcionalmente entren más pelis en los extremos (0.1/10.0): con
   // spread=1 casi nada tocaba el piso o el techo (percentil+probit da una
   // normal "de verdad", con colas finas por construcción). spread=1.07 deja
   // la varianza del plateado en ~4.0 (era ~3.55 con spread=1).
-  const PROJECTED_RATING_TARGET_MEAN = 2.9;
   const PROJECTED_RATING_SPREAD = 1.07;
   const projectedRating = useCallback(
     (elo) => {
       if (!eloRatingStats) return null;
-      const { sortedElos, stdRating } = eloRatingStats;
+      const { sortedElos, meanRating, stdRating } = eloRatingStats;
       const n = sortedElos.length;
       // Rango de empate (todas las pelis con ESTE mismo Elo exacto):
       // percentil = el punto medio de ese rango, así todas quedan en el
@@ -1445,7 +1445,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       );
       const z = probit(percentile);
       const raw =
-        (PROJECTED_RATING_TARGET_MEAN + z * stdRating * PROJECTED_RATING_SPREAD) * 2;
+        (meanRating + z * stdRating * PROJECTED_RATING_SPREAD) * 2;
       const clamped = Math.max(0.1, Math.min(10, raw));
       return Math.round(clamped * 10) / 10;
     },
