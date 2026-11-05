@@ -245,8 +245,10 @@ function aplicarMaxRelations() {
   var n = dirs.getLastRow() - 1;
   var want = [];
   for (var r = 2; r <= n + 1; r++) {
+    // + 0,000001: 2,25^(−0,5) × 3 debería dar 2 exacto y en punto flotante
+    // puede quedar en 1,9999999…, que ROUNDDOWN bajaría a 1.
     want.push(['=MIN(' + MR_TOPE + ',ROUNDDOWN(IFERROR(VLOOKUP(' + col('director') + r + ',' +
-      MD_SHEET + '!$R:$S,2,FALSE),0))+IF(' + col('out') + r + '>0,2,0))']);
+      MD_SHEET + '!$R:$S,2,FALSE),0)+0.000001)+IF(' + col('out') + r + '>0,2,0))']);
   }
   var msg = _mdWithoutFilter_(dirs, function () {
     var range = dirs.getRange(2, dh['max relations'] + 1, n, 1);
