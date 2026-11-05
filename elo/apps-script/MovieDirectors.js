@@ -222,7 +222,8 @@ function _mdSetupFormulas_(ss) {
 // rating multiplica el aporte por 1,5: 4 → 1, 4,5 → 1,5, 5 → 2,25,
 // 3,5 → 0,67, 3 → 0,44, 0,5 → 0,06. Cada revisión cuenta doble (una de 4
 // vista 3 veces aporta 5); sin rating no aporta. El máximo es la suma
-// redondeada hacia abajo, más 2 si el director tiene "out", con tope MR_TOPE.
+// redondeada al entero más cercano (una sola película da 0 con 3, 1 con 3,5
+// o 4 y 2 con 4,5 o 5), más 2 si el director tiene "out", con tope MR_TOPE.
 var MR_TOPE = 60;
 
 function aplicarMaxRelations() {
@@ -245,9 +246,9 @@ function aplicarMaxRelations() {
   var n = dirs.getLastRow() - 1;
   var want = [];
   for (var r = 2; r <= n + 1; r++) {
-    // + 0,000001: 2,25^(−0,5) × 3 debería dar 2 exacto y en punto flotante
-    // puede quedar en 1,9999999…, que ROUNDDOWN bajaría a 1.
-    want.push(['=MIN(' + MR_TOPE + ',ROUNDDOWN(IFERROR(VLOOKUP(' + col('director') + r + ',' +
+    // + 0,000001: 2,25^0,5 debería dar 1,5 exacto y en punto flotante puede
+    // quedar en 1,4999999…, que ROUND bajaría a 1.
+    want.push(['=MIN(' + MR_TOPE + ',ROUND(IFERROR(VLOOKUP(' + col('director') + r + ',' +
       MD_SHEET + '!$R:$S,2,FALSE),0)+0.000001)+IF(' + col('out') + r + '>0,2,0))']);
   }
   var msg = _mdWithoutFilter_(dirs, function () {
