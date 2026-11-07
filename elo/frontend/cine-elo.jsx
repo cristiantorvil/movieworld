@@ -37,10 +37,9 @@ const SNAPSHOT_INTERVAL = 25; // guardar posiciones cada N duelos
 const MAX_SNAPSHOTS = 15; // tope de cortes guardados en el historial
 const SNAPSHOT_TOP_N = 1000; // solo se guarda el top 1000 en cada corte
 // Filtro "Máximo de duelos jugados": el slider va de 0 a este tope; un paso
-// más allá (CAP + 1) es "Todas" (sin tope). La watchlist llega a 100: ahí
-// las pelis acumulan muchos más duelos (no hay rating que las asiente).
-const MAX_DUELOS_FILTER_CAP = 50;
-const MAX_DUELOS_FILTER_CAP_WL = 100;
+// más allá (CAP + 1) es "Todas" (sin tope). Vistas y watchlist llegan a 200.
+const MAX_DUELOS_FILTER_CAP = 200;
+const MAX_DUELOS_FILTER_CAP_WL = 200;
 
 // Celda de elo de la Sheet utilizable ("" = vacía, no 0).
 function hasSheetElo(v) {
