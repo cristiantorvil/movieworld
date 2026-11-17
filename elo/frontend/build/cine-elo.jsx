@@ -3849,13 +3849,13 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                 {!isWL && (
                 <>
                 <div className="summary-card">
-                  <p className="summary-card-title">📉 Infravaloradas</p>
+                  <p className="summary-card-title">📈 Sobrevaloradas</p>
                   <p className="summary-card-sub">
-                    el Elo dice que las quieres más de lo que las puntuaste (mín. 10 duelos)
+                    les pusiste más nota de la que el Elo cree que merecen (mín. 10 duelos)
                   </p>
                   <SummaryList
                     onDuel={duelSpecificMovie}
-                    items={summaryStats.eloLovesMore}
+                    items={summaryStats.youLoveMore}
                     render={(m) => (
                       <InlineRatingDiff
                         movie={m}
@@ -3869,13 +3869,13 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                 </div>
 
                 <div className="summary-card">
-                  <p className="summary-card-title">📈 Sobrevaloradas</p>
+                  <p className="summary-card-title">📉 Infravaloradas</p>
                   <p className="summary-card-sub">
-                    les pusiste más nota de la que el Elo cree que merecen (mín. 10 duelos)
+                    el Elo dice que las quieres más de lo que las puntuaste (mín. 10 duelos)
                   </p>
                   <SummaryList
                     onDuel={duelSpecificMovie}
-                    items={summaryStats.youLoveMore}
+                    items={summaryStats.eloLovesMore}
                     render={(m) => (
                       <InlineRatingDiff
                         movie={m}
