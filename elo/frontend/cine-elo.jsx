@@ -1411,10 +1411,10 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   // (stdRating), pero se ensancha con PROJECTED_RATING_SPREAD para que
   // proporcionalmente entren más pelis en los extremos (0.1/10.0): con
   // spread=1 casi nada tocaba el piso o el techo (percentil+probit da una
-  // normal "de verdad", con colas finas por construcción). spread=1.3 deja
-  // la varianza del plateado en ~6.0 (era ~4.0 con 1.07 y ~3.55 con 1).
+  // normal "de verdad", con colas finas por construcción). spread=1.07 deja
+  // la varianza del plateado en ~4.0 (era ~3.55 con spread=1).
   const PROJECTED_RATING_TARGET_MEAN = 2.5;
-  const PROJECTED_RATING_SPREAD = 1.3;
+  const PROJECTED_RATING_SPREAD = 1.07;
   const projectedRating = useCallback(
     (elo) => {
       if (!eloRatingStats) return null;
