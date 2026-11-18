@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
 import {
   SYNC_URL as SHARED_SYNC_URL,
   getKFactor,
@@ -512,6 +512,23 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   const [winnerStaysMode, setWinnerStaysMode] = useState(false);
   const [loserStaysMode, setLoserStaysMode] = useState(false);
   const pendingChampionRef = useRef(null);
+  // Entre un duelo y el siguiente la zona del duelo se reemplaza por el
+  // resultado o por "Preparando el duelo…", la página se achica y el
+  // navegador sube el scroll. Guardamos dónde estaba antes del cambio y lo
+  // restauramos cuando aparece lo siguiente; duelAreaHeightRef mantiene la
+  // altura mientras tanto para que no haya salto visible.
+  const duelScrollRef = useRef(null);
+  const duelAreaRef = useRef(null);
+  const duelAreaHeightRef = useRef(0);
+  const keepDuelScroll = () => {
+    duelScrollRef.current = window.scrollY;
+    if (duelAreaRef.current) {
+      duelAreaHeightRef.current = Math.max(
+        duelAreaHeightRef.current,
+        duelAreaRef.current.offsetHeight
+      );
+    }
+  };
   const [showDirectorDuel, setShowDirectorDuel] = useState(false);
   const [directorDuelA, setDirectorDuelA] = useState("");
   const [directorDuelB, setDirectorDuelB] = useState("");
@@ -2161,6 +2178,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   // los deltas de elo de cada película sobre todos los pares en que participó.
   const resolveDuel = (orderedIds) => {
     if (!pair) return;
+    keepDuelScroll();
     const ordered = orderedIds
       .map((id) => pair.find((m) => m.id === id))
       .filter(Boolean);
@@ -2346,9 +2364,21 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   };
 
   const nextDuel = () => {
+    keepDuelScroll();
     setResult(null);
     setPair(null);
   };
+
+  useLayoutEffect(() => {
+    if (duelScrollRef.current == null || (!pair && !result)) return;
+    window.scrollTo(0, duelScrollRef.current);
+    duelScrollRef.current = null;
+  }, [pair, result]);
+
+  // Ya con el duelo nuevo en pantalla, la zona vuelve a su altura natural.
+  useEffect(() => {
+    if (pair && !result) duelAreaHeightRef.current = 0;
+  }, [pair, result]);
 
   // Auto-avanzar al siguiente duelo: 1s por cada rival enfrentado
   // (duelo de N → (N-1) segundos, así que uno de 10 tarda 9s antes de saltar)
@@ -3165,6 +3195,15 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                   </div>
                 )}
 
+                <div
+                  ref={duelAreaRef}
+                  style={{
+                    // flow-root: que los márgenes del duelo/resultado queden
+                    // dentro de esta caja y cuenten en su altura.
+                    display: "flow-root",
+                    minHeight: duelAreaHeightRef.current || undefined,
+                  }}
+                >
                 {duelPool.length < 2 ? (
                   <div className="empty">
                     <p className="empty-title">Muy pocas con estos filtros.</p>
@@ -3311,6 +3350,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                     <p className="empty-title">Preparando el duelo…</p>
                   </div>
                 )}
+                </div>
               </>
             )}
           </section>
