@@ -47,6 +47,14 @@ Desde `elo/edit.html` (enlazada en la portada) — buscá por título (sin carga
 
 Correr `grafo/grafo.ipynb` de punta a punta (lee la hoja "elo" en vivo, recalcula todo, regenera `grafo/index.html`). Es un paso manual — no está automatizado a propósito, ya que también implica bajar posters/retratos nuevos.
 
+## Clave de acceso al webhook
+
+La URL del webhook de Apps Script está en el HTML de las páginas, así que el backend exige una clave en cada pedido (`?token=...`) y rechaza todo lo demás con `{ok:false, error:"unauthorized"}`. La clave vive en la Script Property `APP_TOKEN` y **nunca** se commitea:
+
+- **Crear o rotar la clave:** en el editor de Apps Script, correr `generarAppToken()` y copiar la clave del log de ejecución. Si `APP_TOKEN` no existe, el backend rechaza todos los pedidos.
+- **En cada navegador:** la primera vez que una página llama al webhook pide la clave con un cuadro de texto y la guarda en `localStorage` (y en Cache Storage, para el Service Worker). Si la clave es incorrecta o se rotó, se borra y se vuelve a pedir; los guardados pendientes quedan en la cola y salen solos con la clave nueva.
+- Las llamadas pasan por un envoltorio de `fetch` en `elo/frontend/shared-engine.js`, así que el código nuevo que llame al webhook no tiene que hacer nada especial.
+
 ## Sync con GitHub
 
 Una tarea programada de Windows (`CineEloGitHubSync`) vigila la carpeta de Descargas por nuevos exports de `index.html` de Cine Elo y los sube solos a este repo.

@@ -1,4 +1,47 @@
+// ── Autenticación del webhook ──
+// La URL de este deployment es visible en el HTML de las páginas (y en el
+// repo), así que sin esto cualquiera que la tenga podría leer, editar o
+// borrar la Sheet. Cada pedido (GET o POST) tiene que traer ?token=<clave>
+// igual a la Script Property APP_TOKEN. Si APP_TOKEN no está configurada se
+// rechaza todo (falla cerrado). Para crear/rotar la clave: correr
+// generarAppToken() desde el editor de Apps Script y copiar la clave del log.
+function _isAuthorized_(e) {
+  var expected = PropertiesService.getScriptProperties().getProperty('APP_TOKEN');
+  if (!expected) return false;
+  var got = e && e.parameter && e.parameter.token;
+  if (typeof got !== 'string' || got.length !== expected.length) return false;
+  var diff = 0;
+  for (var i = 0; i < expected.length; i++) {
+    diff |= got.charCodeAt(i) ^ expected.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function _unauthorizedResponse_() {
+  var configured = !!PropertiesService.getScriptProperties().getProperty('APP_TOKEN');
+  return ContentService.createTextOutput(
+    JSON.stringify({
+      ok: false,
+      error: 'unauthorized',
+      msg: configured
+        ? 'Clave de acceso inválida o ausente.'
+        : 'Falta configurar APP_TOKEN en Script Properties (correr generarAppToken()).',
+    })
+  ).setMimeType(ContentService.MimeType.JSON);
+}
+
+// Correr a mano desde el editor de Apps Script. Genera una clave nueva,
+// la guarda en APP_TOKEN y la muestra en el log de ejecución. Rotarla
+// invalida la clave guardada en todos los navegadores (te la vuelven a pedir).
+function generarAppToken() {
+  var token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+  PropertiesService.getScriptProperties().setProperty('APP_TOKEN', token);
+  Logger.log('APP_TOKEN nueva: ' + token);
+  return token;
+}
+
 function doPost(e) {
+  if (!_isAuthorized_(e)) return _unauthorizedResponse_();
   try {
     var data = JSON.parse(e.postData.contents);
 
@@ -730,6 +773,7 @@ function handleSnapshot(data) {
 }
 
 function doGet(e) {
+  if (!_isAuthorized_(e)) return _unauthorizedResponse_();
   if (e && e.parameter && e.parameter.action === 'pull') {
     return handlePull();
   }
