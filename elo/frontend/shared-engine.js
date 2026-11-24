@@ -76,7 +76,8 @@ export function askForAppToken(message) {
   if (tokenPrompts >= MAX_TOKEN_PROMPTS) return "";
   tokenPrompts++;
   const t = window.prompt(
-    message || "Clave de acceso de Cine Elo (la de APP_TOKEN en Apps Script):",
+    message ||
+      "Contraseña de Cine Elo.\nSi es la primera vez, inventá una (mínimo 6 caracteres): queda fijada y es la que vas a usar en tus otros dispositivos.",
     ""
   );
   if (t && t.trim()) setAppToken(t);
