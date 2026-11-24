@@ -2,13 +2,31 @@
 // La URL de este deployment es visible en el HTML de las páginas (y en el
 // repo), así que sin esto cualquiera que la tenga podría leer, editar o
 // borrar la Sheet. Cada pedido (GET o POST) tiene que traer ?token=<clave>
-// igual a la Script Property APP_TOKEN. Si APP_TOKEN no está configurada se
-// rechaza todo (falla cerrado). Para crear/rotar la clave: correr
-// generarAppToken() desde el editor de Apps Script y copiar la clave del log.
+// igual a la Script Property APP_TOKEN.
+// Primera vez (APP_TOKEN vacía): la primera clave que llega queda fijada
+// como APP_TOKEN — así alcanza con inventar una contraseña en la app, sin
+// pasos en el editor. Para cambiarla: borrar APP_TOKEN en Configuración del
+// proyecto → Propiedades del script, y la próxima clave que se escriba en
+// la app pasa a ser la nueva.
+var MIN_APP_TOKEN_LENGTH = 6;
 function _isAuthorized_(e) {
-  var expected = PropertiesService.getScriptProperties().getProperty('APP_TOKEN');
-  if (!expected) return false;
+  var props = PropertiesService.getScriptProperties();
   var got = e && e.parameter && e.parameter.token;
+  var expected = props.getProperty('APP_TOKEN');
+  if (!expected) {
+    if (typeof got !== 'string' || got.length < MIN_APP_TOKEN_LENGTH) return false;
+    var lock = LockService.getScriptLock();
+    lock.waitLock(10000);
+    try {
+      expected = props.getProperty('APP_TOKEN');
+      if (!expected) {
+        props.setProperty('APP_TOKEN', got);
+        return true;
+      }
+    } finally {
+      lock.releaseLock();
+    }
+  }
   if (typeof got !== 'string' || got.length !== expected.length) return false;
   var diff = 0;
   for (var i = 0; i < expected.length; i++) {
@@ -25,7 +43,7 @@ function _unauthorizedResponse_() {
       error: 'unauthorized',
       msg: configured
         ? 'Clave de acceso inválida o ausente.'
-        : 'Falta configurar APP_TOKEN en Script Properties (correr generarAppToken()).',
+        : 'Todavía no hay clave: escribí una de al menos ' + MIN_APP_TOKEN_LENGTH + ' caracteres y queda fijada.',
     })
   ).setMimeType(ContentService.MimeType.JSON);
 }
