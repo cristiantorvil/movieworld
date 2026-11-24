@@ -20,6 +20,7 @@ import {
   overlayEloRows,
   pullEloLight,
   movieKey,
+  findByKey,
   reconcileWithPending,
   readPendingSync,
   flushAllPending,
@@ -332,6 +333,41 @@ function fullPullIsStale() {
     return Date.now() - (Number(localStorage.getItem(LAST_FULL_PULL_KEY)) || 0) > FULL_PULL_MAX_AGE_MS;
   } catch (e) {
     return true;
+  }
+}
+
+// ── Ubicación de una peli recién vista ──
+// Al marcar como vista una peli de la Watchlist, la app pasa a Vistas y
+// encadena PLACEMENT_DUELS duelos 1 vs 1 de esa peli contra rivales de Elo
+// parecido (pickNearbyChallenger), para que llegue a su lugar real en el
+// ranking en vez de quedar en el Elo semilla de su rating. Vive en
+// localStorage porque cambiar de modo remonta la app entera (y para
+// sobrevivir a una recarga a mitad de camino).
+const PLACEMENT_KEY = "cine-elo-placement";
+const PLACEMENT_DUELS = 10;
+function readPlacement() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PLACEMENT_KEY) || "null");
+    return p && p.key ? p : null;
+  } catch (e) {
+    return null;
+  }
+}
+function writePlacement(p) {
+  try {
+    if (p) localStorage.setItem(PLACEMENT_KEY, JSON.stringify(p));
+    else localStorage.removeItem(PLACEMENT_KEY);
+  } catch (e) {
+    // storage bloqueado: la ubicación sigue en memoria hasta recargar
+  }
+}
+// Guardado síncrono del catálogo, para cuando se cambia de modo en el mismo
+// click: el efecto "persist" de la instancia que se desmonta ya no corre.
+function persistMoviesNow(list) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+  } catch (e) {
+    // ignore
   }
 }
 
@@ -1425,12 +1461,14 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   // El centro de la proyección es el promedio real de tus ratings
   // (meanRating, ~3.07 = ~6.1/10), así dorado − plateado promedia 0 y solo
   // muestra en qué pelis el Elo discrepa de tu nota. El ancho de la campana
-  // parte del real (stdRating), pero se ensancha con PROJECTED_RATING_SPREAD
-  // para que entren más pelis en los extremos (0.1/10.0): percentil+probit da
-  // una normal "de verdad", con colas finas por construcción. spread=1.2 deja
-  // la varianza del plateado en ~5 y ~4.6% de las pelis en 10 (con 1.07 eran
-  // ~4 y ~2.9%).
-  const PROJECTED_RATING_SPREAD = 1.2;
+  // parte del real (stdRating) y se escala con PROJECTED_RATING_SPREAD
+  // (percentil+probit da una normal "de verdad", con colas finas por
+  // construcción). Con spread=1.2
+  // la varianza del plateado era ~4.8 (~4.6% de las pelis en 10); se bajó a
+  // 0.8 para recortarla a menos de la mitad: varianza ~2.3 (−52%), ~0.6% en
+  // 10 y casi nada bajo 1. Varianza ∝ spread², así que bajarla un 50% pide
+  // spread ≤ 1.2·√0.5 ≈ 0.85.
+  const PROJECTED_RATING_SPREAD = 0.8;
   const projectedRating = useCallback(
     (elo) => {
       if (!eloRatingStats) return null;
@@ -1954,6 +1992,26 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     return withDiff.slice(0, 24);
   }, [biasedMode, duelPool, projectedRating]);
 
+  const [placement, setPlacementState] = useState(() => (isWL ? null : readPlacement()));
+  const setPlacement = useCallback((p) => {
+    writePlacement(p);
+    setPlacementState(p);
+  }, []);
+  // Se pone en true recién después de limpiar filtros (duelSpecificMovie,
+  // más abajo): hasta entonces no se arma el duelo, si no ese mismo
+  // duelSpecificMovie lo borraría con setPair(null).
+  const [placementStarted, setPlacementStarted] = useState(false);
+  const placementMovie = useMemo(() => {
+    if (!placement || !movies) return null;
+    const m = findByKey(movies, placement.key);
+    return m && !isWatchlistMovie(m) ? m : null;
+  }, [placement, movies]);
+  // La peli ya no está (borrada, o volvió a la watchlist desde otro lado):
+  // no hay nada que ubicar.
+  useEffect(() => {
+    if (placement && movies && !placementMovie) setPlacement(null);
+  }, [placement, movies, placementMovie, setPlacement]);
+
   const pickBiasedPair = useCallback(() => {
     if (!biasedMode || biasedPool.length < 1 || duelPool.length < 2) {
       setPair(null);
@@ -1999,6 +2057,19 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   );
 
   useEffect(() => {
+    if (placementMovie) {
+      if (!placementStarted) return;
+      // Siempre 1 vs 1 y siempre con la peli que se está ubicando, más allá
+      // del tamaño de duelo / modos que haya elegidos.
+      pendingChampionRef.current = null;
+      if (!pair && duelPool && duelPool.length >= 1) {
+        const pool = duelPool.some((m) => m.id === placementMovie.id)
+          ? duelPool
+          : [placementMovie, ...duelPool];
+        pickContenders(pool, 2, placementMovie.id);
+      }
+      return;
+    }
     if (biasedMode) {
       if (!pair) pickBiasedPair();
       return;
@@ -2024,6 +2095,8 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     pickDirectorDuelPair,
     biasedMode,
     pickBiasedPair,
+    placementMovie,
+    placementStarted,
   ]);
 
   const [newTmdbId, setNewTmdbId] = useState("");
@@ -2160,13 +2233,30 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   // Click durante un duelo: en uno de 2, resuelve directo (la otra queda
   // última sola). En uno de 3/4, cada click agrega a la fila de "mejor a
   // peor" hasta que solo falta una, que se completa sola sin necesitar click.
+  //
+  // Antes de resolver se juega una animación corta (la ganadora salta al
+  // frente, la perdedora cae hacia atrás): DUEL_ANIM_MS. Con "reducir
+  // movimiento" activado en el sistema se resuelve directo.
+  const [duelAnim, setDuelAnim] = useState(null); // null | { order: ids }
+  const resolveDuelRef = useRef(null);
+  const duelAnimTimerRef = useRef(null);
+  useEffect(() => () => clearTimeout(duelAnimTimerRef.current), []);
   const chooseRank = (movieId) => {
-    if (!pair || result) return;
+    if (!pair || result || duelAnim) return;
     if (rankingPicks.includes(movieId)) return;
     const nextPicks = [...rankingPicks, movieId];
     if (nextPicks.length >= pair.length - 1) {
       const lastId = pair.map((m) => m.id).find((id) => !nextPicks.includes(id));
-      resolveDuel(lastId ? [...nextPicks, lastId] : nextPicks);
+      const order = lastId ? [...nextPicks, lastId] : nextPicks;
+      if (prefersReducedMotion()) {
+        resolveDuel(order);
+        return;
+      }
+      setDuelAnim({ order });
+      duelAnimTimerRef.current = setTimeout(() => {
+        setDuelAnim(null);
+        if (resolveDuelRef.current) resolveDuelRef.current(order);
+      }, DUEL_ANIM_MS);
     } else {
       setRankingPicks(nextPicks);
     }
@@ -2243,8 +2333,28 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
       dWins: winsAdded.get(m.id),
     }));
     setMovies(next);
-    setLastAction({ prevMovies, affectedIds, changes });
+    const placementCounts = !!(placementMovie && affectedIds.includes(placementMovie.id));
+    setLastAction({
+      prevMovies,
+      affectedIds,
+      changes,
+      placementBefore: placementCounts ? placement : undefined,
+    });
     syncElo(changes);
+    if (placementCounts) {
+      const done = (placement.done || 0) + 1;
+      if (done >= placement.total) {
+        const placed = next.find((m) => m.id === placementMovie.id);
+        const rank =
+          next.filter((m) => inMode(m) && placed && m.elo > placed.elo).length + 1;
+        setPlacement(null);
+        showToast(`🎯 "${placementMovie.title}" quedó ubicada en el #${rank}.`, {
+          timeoutMs: 6000,
+        });
+      } else {
+        setPlacement({ ...placement, done });
+      }
+    }
 
     // Contador de duelos + snapshot periódico de posiciones del ranking
     const newDuelCount = duelCount + 1;
@@ -2284,6 +2394,8 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     setResult({ ranking });
   };
 
+  resolveDuelRef.current = resolveDuel;
+
   const undoLastDuel = () => {
     if (!lastAction) return;
     // Deshacer = el mismo delta con signo contrario, aplicado sobre lo
@@ -2302,6 +2414,7 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
     syncElo(
       lastAction.changes.map((c) => ({ movie: c.movie, dElo: -c.dElo, dGames: -c.dGames, dWins: -c.dWins }))
     );
+    if (lastAction.placementBefore) setPlacement(lastAction.placementBefore);
     setLastAction(null);
     setResult(null);
     setRankingPicks([]);
@@ -2592,6 +2705,27 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
           comparisons: Number(movie.comparisons) || 0,
           wins: Number(movie.wins) || 0,
         };
+        if (becomingRated && isWL && onModeChange) {
+          // Recién vista: directo a Vistas a ubicarla con duelos 1 vs 1. El
+          // "deshacer" pasa al banner de ubicación (el toast de esta
+          // instancia se pierde al desmontarse).
+          persistMoviesNow(
+            (moviesRef.current || []).map((m) =>
+              m.id === movie.id
+                ? { ...m, rating: newRating, plays: newPlays, elo: newElo, comparisons: newComparisons, wins: newWins }
+                : m
+            )
+          );
+          writePlacement({
+            key: movieKey(movie),
+            title,
+            done: 0,
+            total: PLACEMENT_DUELS,
+            prev,
+          });
+          onModeChange("vistas");
+          return;
+        }
         showToast(
           becomingRated
             ? `"${title}" marcada como vista (★ ${newRating}).`
@@ -2625,8 +2759,55 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
         );
       }
     },
-    [pair, refreshPending, showToast]
+    [pair, refreshPending, showToast, isWL, onModeChange]
   );
+
+  // Arranque de la ubicación: mismos filtros limpios que "duelear esta
+  // peli" desde Ranking, para garantizar que entre en el pool.
+  useEffect(() => {
+    if (placementMovie && !placementStarted) {
+      duelSpecificMovie(placementMovie.id);
+      setPlacementStarted(true);
+    }
+  }, [placementMovie, placementStarted, duelSpecificMovie]);
+
+  const stopPlacement = () => {
+    setPlacement(null);
+    setPair(null);
+    setResult(null);
+  };
+
+  // "Me equivoqué, no la vi": vuelve a la watchlist con lo que tenía antes.
+  const undoPlacementWatched = () => {
+    if (!placementMovie || !placement || !placement.prev) return;
+    const movie = placementMovie;
+    const prev = placement.prev;
+    markLocalEdit(movie);
+    const updated = (moviesRef.current || movies).map((m) =>
+      m.id === movie.id ? { ...m, ...prev } : m
+    );
+    setMovies(updated);
+    persistMoviesNow(updated);
+    syncDurable(
+      {
+        type: "setFields",
+        tmdbId: movie.tmdbId || "",
+        title: movie.title,
+        year: movie.year,
+        changes: [
+          { col: "rating", value: prev.rating },
+          { col: "diary_count", value: prev.plays },
+          { col: "elo_rating", value: prev.elo },
+          { col: "elo_games", value: prev.comparisons },
+          { col: "elo_win", value: prev.wins },
+          { col: "elo_loss", value: Math.max(prev.comparisons - prev.wins, 0) },
+        ],
+      },
+      refreshPending
+    );
+    setPlacement(null);
+    if (onModeChange) onModeChange("watchlist");
+  };
 
   if (movies === null) {
     return (
@@ -3194,6 +3375,39 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                   </div>
                 )}
 
+                {placementMovie && placement && (
+                  <div className="placement-banner">
+                    <div className="placement-head">
+                      <span className="placement-eyebrow">🎯 Ubicando en el ranking</span>
+                      <span className="placement-count">
+                        {placement.done}/{placement.total}
+                      </span>
+                    </div>
+                    <p className="placement-title">
+                      {placementMovie.title}
+                      <span className="placement-rank">
+                        {" "}#{rankById.get(placementMovie.id) || "?"}
+                      </span>
+                    </p>
+                    <div className="placement-bar">
+                      <div
+                        className="placement-bar-fill"
+                        style={{ width: `${(placement.done / placement.total) * 100}%` }}
+                      />
+                    </div>
+                    <div className="placement-actions">
+                      {placement.done === 0 && placement.prev && (
+                        <button className="placement-btn" onClick={undoPlacementWatched}>
+                          ↩ No la vi, volver a la watchlist
+                        </button>
+                      )}
+                      <button className="placement-btn" onClick={stopPlacement}>
+                        Terminar ahora
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div
                   ref={duelAreaRef}
                   style={{
@@ -3220,7 +3434,10 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                     projectedRating={projectedRating}
                   />
                 ) : pair ? (
-                  <div className="duel">
+                  <div
+                    className={"duel" + (duelAnim ? " duel-resolving" : "")}
+                    key={pair.map((m) => m.id).join("|")}
+                  >
                     <p className="duel-caption">
                       {rankingPicks.length === 0
                         ? modeInfo.duelQuestion
@@ -3236,15 +3453,32 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                       {pair.map((m, i) => {
                         const pickIndex = rankingPicks.indexOf(m.id);
                         const picked = pickIndex !== -1;
+                        const animPlace = duelAnim ? duelAnim.order.indexOf(m.id) : -1;
+                        const animClass =
+                          animPlace === 0
+                            ? " movie-card-win"
+                            : animPlace === pair.length - 1
+                            ? " movie-card-lose"
+                            : animPlace > 0
+                            ? " movie-card-mid"
+                            : "";
                         return (
                         <React.Fragment key={m.id}>
                           <button
                             className={
-                              "movie-card" + (picked ? " movie-card-picked" : "")
+                              "movie-card card-3d " +
+                              (i % 2 === 0 ? "card-from-left" : "card-from-right") +
+                              (picked ? " movie-card-picked" : "") +
+                              animClass
                             }
+                            style={{ "--i": i }}
                             onClick={() => chooseRank(m.id)}
+                            onPointerMove={tiltCard}
+                            onPointerLeave={resetTilt}
                             disabled={picked}
                           >
+                            <span className="card-glare" aria-hidden="true" />
+                            {animPlace === 0 && <Sparks />}
                             <div className="poster-wrap">
                               <MoviePoster path={m.poster} title={m.title} />
                               {picked && (
@@ -3318,7 +3552,10 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
                           </button>
                           {i < pair.length - 1 && pair.length <= 4 && (
                             <div className="vs-wrap">
-                              <span className="vs">VS</span>
+                              <span className="vs">
+                                <span className="vs-ring" aria-hidden="true" />
+                                VS
+                              </span>
                             </div>
                           )}
                         </React.Fragment>
@@ -4621,6 +4858,50 @@ function SearchablePicker({ label, options, value, onChange, placeholder }) {
   );
 }
 
+const DUEL_ANIM_MS = 560;
+
+function prefersReducedMotion() {
+  try {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Inclinación 3D que sigue al puntero (mouse, o el dedo mientras se
+// arrastra). Solo escribe variables CSS en la tarjeta: nada de estado de
+// React, así no re-renderiza en cada movimiento.
+function tiltCard(e) {
+  if (e.pointerType === "touch" && e.buttons === 0) return;
+  const el = e.currentTarget;
+  const r = el.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width - 0.5;
+  const y = (e.clientY - r.top) / r.height - 0.5;
+  el.style.setProperty("--ry", (x * 14).toFixed(2) + "deg");
+  el.style.setProperty("--rx", (-y * 12).toFixed(2) + "deg");
+  el.style.setProperty("--gx", ((x + 0.5) * 100).toFixed(1) + "%");
+  el.style.setProperty("--gy", ((y + 0.5) * 100).toFixed(1) + "%");
+  el.classList.add("is-tilting");
+}
+
+function resetTilt(e) {
+  const el = e.currentTarget;
+  el.style.removeProperty("--ry");
+  el.style.removeProperty("--rx");
+  el.classList.remove("is-tilting");
+}
+
+// Estallido de chispas doradas para la ganadora (solo CSS).
+function Sparks() {
+  return (
+    <span className="sparks" aria-hidden="true">
+      {Array.from({ length: 10 }, (_, i) => (
+        <span key={i} className="spark" style={{ "--a": `${i * 36}deg` }} />
+      ))}
+    </span>
+  );
+}
+
 function MoviePoster({ path, title }) {
   const [failed, setFailed] = useState(false);
 
@@ -4682,7 +4963,7 @@ function DuelResult({ result, onNext, projectedRating }) {
     <div className="duel-result">
       <p className="duel-caption">resultado</p>
 
-      {ranking.map((r) => {
+      {ranking.map((r, idx) => {
         const oldProj = projectedRating ? projectedRating(r.oldElo) : null;
         const newProj = projectedRating ? projectedRating(r.newElo) : null;
         const projDelta =
@@ -4690,7 +4971,12 @@ function DuelResult({ result, onNext, projectedRating }) {
             ? Math.round((newProj - oldProj) * 10) / 10
             : null;
         return (
-          <div className={"result-card " + placeClass(r.place)} key={r.id}>
+          <div
+            className={"result-card " + placeClass(r.place)}
+            key={r.id}
+            style={{ "--i": idx }}
+          >
+            {r.place === 1 && <Sparks />}
             <div className="result-poster">
               <MoviePoster path={r.poster} title={r.title} />
             </div>
@@ -6479,6 +6765,365 @@ function StyleSheet() {
         border-radius: 6px;
         cursor: pointer;
         white-space: nowrap;
+      }
+      /* ─────────────── Capa visual: profundidad, 3D y movimiento ───────────────
+         Va al final a propósito: pisa transform/transition/overflow de las
+         reglas base de arriba sin tener que tocarlas una por una. */
+      .app-root {
+        position: relative;
+        isolation: isolate;
+        overflow-x: hidden;
+      }
+      .app-root::before {
+        content: "";
+        position: fixed;
+        inset: -25%;
+        z-index: -1;
+        pointer-events: none;
+        background:
+          radial-gradient(38% 28% at 18% 12%, rgba(242,193,78,0.11), transparent 70%),
+          radial-gradient(34% 30% at 86% 34%, rgba(192,57,43,0.11), transparent 70%),
+          radial-gradient(44% 34% at 50% 98%, rgba(96,112,210,0.09), transparent 70%);
+        animation: ambientDrift 22s ease-in-out infinite alternate;
+      }
+      @keyframes ambientDrift {
+        0% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+        50% { transform: translate3d(3%, -2%, 0) rotate(4deg) scale(1.05); }
+        100% { transform: translate3d(-4%, 3%, 0) rotate(-3deg) scale(1); }
+      }
+
+      /* Título con brillo que lo recorre */
+      .title {
+        background: linear-gradient(100deg, #F2C14E 0%, #F2C14E 38%, #FFF3C9 50%, #F2C14E 62%, #F2C14E 100%);
+        background-size: 260% 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        text-shadow: none;
+        filter: drop-shadow(0 0 14px rgba(242,193,78,0.3));
+        animation: titleShine 7s ease-in-out infinite;
+      }
+      @keyframes titleShine {
+        0%, 55% { background-position: 100% 0; }
+        100% { background-position: -60% 0; }
+      }
+
+      /* Perforaciones de película que "corren" como luces de marquesina */
+      .hole {
+        animation: marquee 2.4s ease-in-out infinite;
+      }
+      .hole:nth-child(3n+2) { animation-delay: 0.8s; }
+      .hole:nth-child(3n) { animation-delay: 1.6s; }
+      @keyframes marquee {
+        0%, 100% { opacity: 0.35; box-shadow: none; }
+        50% { opacity: 1; box-shadow: 0 0 8px rgba(242,193,78,0.8); }
+      }
+
+      /* Pestañas y botones con relieve */
+      .tab {
+        transition: transform 0.25s cubic-bezier(.2,.8,.2,1), color 0.2s, background 0.2s, box-shadow 0.25s;
+      }
+      .tab:hover { color: #EDEAE3; }
+      .tab.active {
+        transform: translateY(-2px);
+        box-shadow: 0 -6px 18px -8px rgba(242,193,78,0.55);
+      }
+      .btn-gold, .quick-toggle, .preset-btn, .mode-btn, .placement-btn {
+        transition: transform 0.18s cubic-bezier(.2,.8,.2,1), box-shadow 0.2s, background 0.2s, color 0.2s, border-color 0.2s;
+      }
+      .btn-gold:hover, .quick-toggle:hover, .preset-btn:hover, .placement-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px -8px rgba(242,193,78,0.6);
+      }
+      .btn-gold:active, .quick-toggle:active, .preset-btn:active, .mode-btn:active, .placement-btn:active {
+        transform: translateY(1px) scale(0.97);
+      }
+      .mode-btn.active {
+        box-shadow: 0 4px 16px -6px rgba(242,193,78,0.7);
+      }
+
+      /* Cambio de pestaña: el panel entra inclinándose desde atrás */
+      .main { perspective: 1200px; }
+      .main > section {
+        animation: panelIn 0.42s cubic-bezier(.2,.8,.2,1) both;
+        transform-origin: 50% 0;
+      }
+      @keyframes panelIn {
+        from { opacity: 0; transform: translate3d(0, 14px, -40px) rotateX(-7deg); }
+        to { opacity: 1; transform: none; }
+      }
+
+      /* Ranking: las primeras filas caen en cascada */
+      .rank-row { animation: rowIn 0.4s cubic-bezier(.2,.8,.2,1) backwards; }
+      .rank-row:nth-child(1) { animation-delay: 0.02s; }
+      .rank-row:nth-child(2) { animation-delay: 0.05s; }
+      .rank-row:nth-child(3) { animation-delay: 0.08s; }
+      .rank-row:nth-child(4) { animation-delay: 0.11s; }
+      .rank-row:nth-child(5) { animation-delay: 0.14s; }
+      .rank-row:nth-child(6) { animation-delay: 0.17s; }
+      .rank-row:nth-child(7) { animation-delay: 0.2s; }
+      .rank-row:nth-child(8) { animation-delay: 0.23s; }
+      .rank-row:nth-child(9) { animation-delay: 0.26s; }
+      .rank-row:nth-child(n+10) { animation-delay: 0.29s; }
+      @keyframes rowIn {
+        from { opacity: 0; transform: translate3d(-14px, 0, 0); }
+      }
+
+      /* ── Duelo en 3D ── */
+      .duel-cards { perspective: 1100px; }
+      .card-3d {
+        position: relative;
+        overflow: visible;
+        transform-style: preserve-3d;
+        transform: rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+        transition: transform 0.4s cubic-bezier(.2,.8,.2,1), box-shadow 0.35s, border-color 0.25s, opacity 0.3s, filter 0.3s;
+        background: linear-gradient(145deg, #252833 0%, #1B1D25 60%, #17181F 100%);
+        box-shadow: 0 14px 28px -16px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.05);
+        will-change: transform;
+      }
+      .card-3d.is-tilting {
+        transition: transform 0.08s linear, box-shadow 0.3s, border-color 0.25s;
+        border-color: rgba(242,193,78,0.45);
+        box-shadow: 0 26px 44px -18px rgba(0,0,0,0.95), 0 0 24px -6px rgba(242,193,78,0.35);
+      }
+      .card-3d:active {
+        transform: rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) scale(0.97);
+      }
+      .card-3d .poster-wrap {
+        transform: translateZ(30px);
+        box-shadow: 0 14px 22px -8px rgba(0,0,0,0.85);
+      }
+      .card-glare {
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        pointer-events: none;
+        background: radial-gradient(circle at var(--gx, 50%) var(--gy, 0%), rgba(255,255,255,0.16), transparent 55%);
+        opacity: 0;
+        transition: opacity 0.3s;
+      }
+      .card-3d.is-tilting .card-glare { opacity: 1; }
+
+      /* Entrada: cada contendiente llega girando desde su lado */
+      .card-from-left, .card-from-right {
+        animation-duration: 0.6s;
+        animation-timing-function: cubic-bezier(.2,.9,.25,1.12);
+        animation-fill-mode: backwards;
+        animation-delay: calc(var(--i, 0) * 90ms);
+      }
+      .card-from-left { animation-name: cardInLeft; }
+      .card-from-right { animation-name: cardInRight; }
+      @keyframes cardInLeft {
+        from { opacity: 0; transform: translate3d(-60px, 0, -140px) rotateY(38deg); }
+        to { opacity: 1; transform: none; }
+      }
+      @keyframes cardInRight {
+        from { opacity: 0; transform: translate3d(60px, 0, -140px) rotateY(-38deg); }
+        to { opacity: 1; transform: none; }
+      }
+
+      /* Desenlace: la ganadora salta al frente, la perdedora cae hacia atrás */
+      .movie-card-win {
+        z-index: 2;
+        border-color: #F2C14E;
+        animation: cardWin 0.56s cubic-bezier(.2,.9,.3,1.25) forwards;
+      }
+      @keyframes cardWin {
+        0% { transform: none; }
+        45% {
+          transform: translateZ(70px) scale(1.07) rotateX(5deg);
+          box-shadow: 0 0 0 2px #F2C14E, 0 0 46px rgba(242,193,78,0.6);
+        }
+        100% {
+          transform: translateZ(46px) scale(1.04);
+          box-shadow: 0 0 0 2px #F2C14E, 0 0 32px rgba(242,193,78,0.45);
+        }
+      }
+      .movie-card-lose { animation: cardLose 0.56s cubic-bezier(.5,0,.75,0) forwards; }
+      @keyframes cardLose {
+        to {
+          transform: translate3d(0, 18px, -180px) rotateX(-24deg);
+          opacity: 0.3;
+          filter: grayscale(1) brightness(0.6);
+        }
+      }
+      .movie-card-mid { animation: cardMid 0.56s ease forwards; }
+      @keyframes cardMid {
+        to { transform: translate3d(0, 0, -60px); opacity: 0.7; }
+      }
+      .duel-resolving .vs { animation: vsBurst 0.5s ease-in forwards; }
+      @keyframes vsBurst {
+        40% { transform: scale(1.35) rotate(-8deg); }
+        100% { transform: scale(0) rotate(30deg); opacity: 0; }
+      }
+
+      /* VS que late */
+      .vs-wrap { position: relative; z-index: 3; }
+      .vs {
+        position: relative;
+        display: inline-block;
+        box-shadow: 0 6px 18px rgba(192,57,43,0.55);
+        animation: vsPulse 2.2s ease-in-out infinite;
+      }
+      .vs-ring {
+        position: absolute;
+        inset: -6px;
+        border-radius: 999px;
+        border: 2px solid rgba(242,193,78,0.7);
+        pointer-events: none;
+        animation: vsRing 2.2s ease-out infinite;
+      }
+      @keyframes vsPulse {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.09); }
+      }
+      @keyframes vsRing {
+        0% { transform: scale(0.85); opacity: 0.9; }
+        100% { transform: scale(1.7); opacity: 0; }
+      }
+
+      /* Chispas */
+      .sparks {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 0;
+        height: 0;
+        pointer-events: none;
+        z-index: 5;
+      }
+      .spark {
+        position: absolute;
+        width: 7px;
+        height: 7px;
+        margin: -3.5px;
+        border-radius: 50%;
+        background: #FFE08A;
+        box-shadow: 0 0 10px #F2C14E, 0 0 2px #fff;
+        animation: sparkFly 0.75s cubic-bezier(.1,.7,.3,1) forwards;
+      }
+      .spark:nth-child(even) { background: #F2C14E; animation-duration: 0.9s; }
+      @keyframes sparkFly {
+        0% { transform: rotate(var(--a)) translateX(0) scale(1.2); opacity: 1; }
+        100% { transform: rotate(var(--a)) translateX(130px) scale(0.2); opacity: 0; }
+      }
+
+      /* Resultado: las fichas se dan vuelta como cartelitos */
+      .duel-result { perspective: 900px; }
+      .result-card {
+        position: relative;
+        overflow: visible;
+        transform-origin: 50% 0;
+        animation: resultIn 0.55s cubic-bezier(.2,.9,.3,1.15) backwards;
+        animation-delay: calc(var(--i, 0) * 120ms);
+        box-shadow: 0 12px 26px -16px rgba(0,0,0,0.9);
+      }
+      @keyframes resultIn {
+        from { opacity: 0; transform: rotateX(-70deg) translateY(-8px); }
+        to { transform: none; }
+      }
+      .result-winner {
+        background: linear-gradient(135deg, #2E301F 0%, #24261C 60%, #1E1F18 100%);
+        box-shadow: 0 0 0 1px rgba(242,193,78,0.45), 0 16px 34px -14px rgba(242,193,78,0.35);
+      }
+      .result-delta {
+        display: inline-block;
+        animation: deltaPop 0.5s cubic-bezier(.2,.9,.3,1.6) backwards;
+        animation-delay: calc(var(--i, 0) * 120ms + 300ms);
+      }
+      @keyframes deltaPop {
+        from { transform: scale(0.2); opacity: 0; }
+      }
+
+      /* Banner de ubicación (peli recién vista) */
+      .placement-banner {
+        position: relative;
+        overflow: hidden;
+        margin: 0 0 16px;
+        padding: 12px 14px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, rgba(242,193,78,0.16), rgba(192,57,43,0.12));
+        border: 1px solid rgba(242,193,78,0.4);
+        box-shadow: 0 12px 30px -16px rgba(242,193,78,0.5);
+        animation: panelIn 0.45s cubic-bezier(.2,.8,.2,1) both;
+      }
+      .placement-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        font-family: 'Space Mono', monospace;
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #F2C14E;
+      }
+      .placement-count { font-weight: 700; }
+      .placement-title {
+        font-family: 'Bebas Neue', sans-serif;
+        font-size: 24px;
+        letter-spacing: 0.03em;
+        margin: 4px 0 8px;
+        color: #EDEAE3;
+        line-height: 1.1;
+      }
+      .placement-rank {
+        font-family: 'Space Mono', monospace;
+        font-size: 13px;
+        color: #F2C14E;
+      }
+      .placement-bar {
+        height: 6px;
+        background: rgba(255,255,255,0.08);
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .placement-bar-fill {
+        position: relative;
+        height: 100%;
+        min-width: 6px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #C0392B, #F2C14E);
+        box-shadow: 0 0 12px rgba(242,193,78,0.7);
+        transition: width 0.6s cubic-bezier(.2,.8,.2,1);
+        overflow: hidden;
+      }
+      .placement-bar-fill::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+        transform: translateX(-100%);
+        animation: barShine 1.8s ease-in-out infinite;
+      }
+      @keyframes barShine {
+        to { transform: translateX(100%); }
+      }
+      .placement-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 10px;
+      }
+      .placement-btn {
+        background: rgba(0,0,0,0.28);
+        border: 1px solid rgba(242,193,78,0.3);
+        color: #EDEAE3;
+        font-family: 'Archivo', sans-serif;
+        font-size: 12px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration: 0.001ms !important;
+          animation-delay: 0s !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+        }
+        .card-3d { transform: none !important; }
+        .sparks { display: none; }
       }
     `}</style>
   );

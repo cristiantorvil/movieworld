@@ -18,6 +18,105 @@
 export const SYNC_URL =
   "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
 
+// ── Clave de acceso al webhook ──
+// El backend (Código.js, _isAuthorized_) rechaza cualquier pedido sin
+// ?token=<APP_TOKEN>. La clave NUNCA va en el código ni en el repo: se pide
+// una vez por navegador con prompt() y queda guardada en localStorage (para
+// las páginas) y en Cache Storage (para sw.js, que no tiene localStorage —
+// misma URL de cache que usa sw.js, ver APP_TOKEN_CACHE ahí).
+//
+// En vez de tocar cada llamada al webhook (son decenas, entre cine-elo.jsx,
+// add.html, edit.html y este archivo), se envuelve window.fetch una sola
+// vez: todo pedido cuya URL empiece con SYNC_URL sale con el token. Como
+// todas las páginas importan este módulo, el envoltorio queda instalado
+// antes de que corra cualquier otro código suyo.
+const APP_TOKEN_LS_KEY = "cine-elo-app-token";
+const APP_TOKEN_CACHE = "cine-elo-auth";
+const APP_TOKEN_CACHE_PATH = "__cine-elo-app-token__";
+const MAX_TOKEN_PROMPTS = 3;
+let tokenPrompts = 0;
+
+function tokenCacheUrl() {
+  return new URL(APP_TOKEN_CACHE_PATH, location.href).href;
+}
+
+function mirrorTokenToCache(token) {
+  try {
+    if (typeof caches === "undefined") return;
+    caches
+      .open(APP_TOKEN_CACHE)
+      .then((c) =>
+        token ? c.put(tokenCacheUrl(), new Response(token)) : c.delete(tokenCacheUrl())
+      )
+      .catch(() => {});
+  } catch (e) {}
+}
+
+export function getAppToken() {
+  try {
+    return localStorage.getItem(APP_TOKEN_LS_KEY) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+export function setAppToken(token) {
+  token = String(token || "").trim();
+  try {
+    if (token) localStorage.setItem(APP_TOKEN_LS_KEY, token);
+    else localStorage.removeItem(APP_TOKEN_LS_KEY);
+  } catch (e) {}
+  mirrorTokenToCache(token);
+}
+
+// Pide la clave al usuario (máximo MAX_TOKEN_PROMPTS veces por carga de
+// página, para no quedar en un loop de prompts si se cancela).
+export function askForAppToken(message) {
+  if (typeof window === "undefined" || !window.prompt) return "";
+  if (tokenPrompts >= MAX_TOKEN_PROMPTS) return "";
+  tokenPrompts++;
+  const t = window.prompt(
+    message || "Clave de acceso de Cine Elo (la de APP_TOKEN en Apps Script):",
+    ""
+  );
+  if (t && t.trim()) setAppToken(t);
+  return getAppToken();
+}
+
+function addTokenParam(url, token) {
+  return url + (url.indexOf("?") === -1 ? "?" : "&") + "token=" + encodeURIComponent(token);
+}
+
+if (typeof window !== "undefined" && window.fetch && !window.__cineEloFetchPatched) {
+  window.__cineEloFetchPatched = true;
+  const origFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : null;
+    if (!url || url.indexOf(SYNC_URL) !== 0) return origFetch(input, init);
+    const token = getAppToken() || askForAppToken();
+    const sent = token;
+    return origFetch(token ? addTokenParam(url, token) : url, init).then((res) => {
+      // Apps Script siempre responde 200: el rechazo viene en el JSON.
+      res
+        .clone()
+        .json()
+        .then((data) => {
+          if (data && data.error === "unauthorized" && getAppToken() === sent) {
+            setAppToken("");
+            // Se vuelve a pedir en el próximo pedido al webhook. Los
+            // guardados que fallaron quedan en la cola (ok:false nunca se
+            // descarta) y salen solos con la clave nueva.
+          }
+        })
+        .catch(() => {});
+      return res;
+    });
+  };
+  // Por si sw.js perdió su copia (Cache Storage borrada, SW reinstalado).
+  const existing = getAppToken();
+  if (existing) mirrorTokenToCache(existing);
+}
+
 export const START_ELO = 1200;
 
 // K dinámico: mientras menos duelos lleva una película, más se mueve su elo

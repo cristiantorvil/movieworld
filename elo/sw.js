@@ -11,6 +11,29 @@
 
 var SYNC_URL =
   "https://script.google.com/macros/s/AKfycbxj4NLejc7vBU17MyuJefuEA8YbjdP0czUNlGN6u96U_fYb1czZMkhUM2k_Y0gpBU0aQg/exec";
+// Clave de acceso al webhook (ver getAppToken/setAppToken en
+// frontend/shared-engine.js): las páginas la copian a Cache Storage porque
+// acá no hay localStorage. Sin clave no se manda nada — los items quedan en
+// IndexedDB y salen la próxima vez que se abra una página.
+var APP_TOKEN_CACHE = "cine-elo-auth";
+var APP_TOKEN_CACHE_PATH = "__cine-elo-app-token__";
+
+function getAppToken() {
+  var url = new URL(APP_TOKEN_CACHE_PATH, self.location.href).href;
+  return caches.open(APP_TOKEN_CACHE)
+    .then(function (c) { return c.match(url); })
+    .then(function (r) { return r ? r.text() : ""; })
+    .catch(function () { return ""; });
+}
+
+function apiFetch(url, options) {
+  return getAppToken().then(function (token) {
+    if (!token) throw new Error("falta la clave de acceso (APP_TOKEN)");
+    var sep = url.indexOf("?") === -1 ? "?" : "&";
+    return fetch(url + sep + "token=" + encodeURIComponent(token), options);
+  });
+}
+
 var IDB_NAME = "cine-elo-db";
 var IDB_STORE = "pendingSync";
 
@@ -52,7 +75,7 @@ function syncItem(item) {
   // fallback ahí) — items viejos ya en IndexedDB sin tmdbId simplemente
   // mandan "" acá, que el backend interpreta como "no viene id".
   if (item.type === "setFields") {
-    return fetch(
+    return apiFetch(
       SYNC_URL +
         "?action=setFields&tmdbId=" + encodeURIComponent(item.tmdbId || "") +
         "&title=" + encodeURIComponent(item.title || "") +
@@ -61,7 +84,7 @@ function syncItem(item) {
     ).then(function (r) { return r.json(); });
   }
   if (item.type === "create") {
-    return fetch(SYNC_URL + "?allowCreate=1", {
+    return apiFetch(SYNC_URL + "?allowCreate=1", {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify([item.payload]),
@@ -70,7 +93,7 @@ function syncItem(item) {
   if (item.type === "eloDelta") {
     // Duelo como delta (ver makeEloDeltaItem en frontend/shared-engine.js):
     // el backend lo suma a la fila y descarta reintentos por opId.
-    return fetch(SYNC_URL, {
+    return apiFetch(SYNC_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
@@ -91,7 +114,7 @@ function syncItem(item) {
   }
   if (item.type === "syncElo") {
     // Duelo con estado completo, de una versión anterior de la app.
-    return fetch(SYNC_URL, {
+    return apiFetch(SYNC_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify([{
@@ -109,7 +132,7 @@ function syncItem(item) {
     }).then(function (r) { return r.json(); });
   }
   if (item.type === "deleteMovie") {
-    return fetch(SYNC_URL, {
+    return apiFetch(SYNC_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({ type: "deleteMovie", tmdbId: item.tmdbId || "", title: item.title, year: item.year }),
