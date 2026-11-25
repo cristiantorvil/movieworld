@@ -590,9 +590,7 @@ function searchNodeByLabel(query) {
   for (let i = 0; i < allNodes.length; i++) {
     const n = allNodes[i];
     if ((n.label || "").toLowerCase().includes(query)) {
-      network.selectNodes([n.id]);
-      highlightSemantic(n.id);
-      network.focus(n.id, { scale: 1.5, animation: { duration: 800, easingFunction: "easeInOutQuad" } });
+      focusSearchedNode(n.id);
       return;
     }
   }
@@ -1397,7 +1395,7 @@ function setYearOrder(active) {
 // ======================= HIGHLIGHT =======================
 const HIGHLIGHT_EDGE_WIDTH_SCALE = 0.5;
 
-function highlightSemantic(startId) {
+function highlightSemantic(startId, opts) {
   const downstream = getDirectionalNeighborhood(startId, "to");
   const upstream   = getDirectionalNeighborhood(startId, "from");
   _highlightSet = new Set([...downstream.keys(), ...upstream.keys()]);
@@ -1507,8 +1505,52 @@ function highlightSemantic(startId) {
 
   const activeArr = Array.from(_highlightSet).filter(id => !hiddenByFilter.has(id));
   applyCompactPhysics(() => {
-    network.fit({ nodes: activeArr, animation: { duration: 400, easingFunction: "easeInOutQuad" } });
+    if (opts && opts.center) centerOnNode(startId, activeArr);
+    else network.fit({ nodes: activeArr, animation: { duration: 400, easingFunction: "easeInOutQuad" } });
   });
+}
+
+// Búsqueda: centra la vista en el nodo buscado, con el zoom justo para que
+// entre toda su vecindad alrededor (la distancia más lejana hacia cada lado
+// define la escala). Encuadrar el conjunto con fit() dejaba al buscado en
+// cualquier parte de la pantalla.
+function centerOnNode(nodeId, activeIds) {
+  const pos = network.getPositions([nodeId].concat(activeIds || []));
+  const c = pos[nodeId];
+  if (!c) return;
+  let dx = 0, dy = 0;
+  Object.keys(pos).forEach(id => {
+    dx = Math.max(dx, Math.abs(pos[id].x - c.x));
+    dy = Math.max(dy, Math.abs(pos[id].y - c.y));
+  });
+  // Centro de lo que realmente se ve: el lienzo puede ser más alto que la
+  // ventana (o quedar parcialmente tapado por el scroll), así que se usa la
+  // parte visible y se corrige con offset respecto del centro del lienzo.
+  const el = network.body.container;
+  const rc = el.getBoundingClientRect();
+  const visTop = Math.max(rc.top, 0);
+  const visBottom = Math.min(rc.bottom, window.innerHeight);
+  const visLeft = Math.max(rc.left, 0);
+  const visRight = Math.min(rc.right, window.innerWidth);
+  const w = Math.max(visRight - visLeft, 100);
+  const h = Math.max(visBottom - visTop, 100);
+  const offset = {
+    x: (visLeft + visRight) / 2 - (rc.left + rc.width / 2),
+    y: (visTop + visBottom) / 2 - (rc.top + rc.height / 2),
+  };
+  const margin = 90;
+  let scale = Math.min(w / 2 / (dx + margin), h / 2 / (dy + margin));
+  scale = Math.max(0.05, Math.min(1.5, scale));
+  network.moveTo({ position: c, scale, offset, animation: { duration: 700, easingFunction: "easeInOutQuad" } });
+}
+
+// Mientras la física reacomoda la vecindad, la vista queda "pegada" al nodo
+// (locked) para que no se escape de la pantalla; al terminar, centerOnNode
+// fija el zoom final (moveTo suelta el lock).
+function focusSearchedNode(nodeId) {
+  network.selectNodes([nodeId]);
+  highlightSemantic(nodeId, { center: true });
+  network.focus(nodeId, { scale: network.getScale(), locked: true, animation: { duration: 500, easingFunction: "easeInOutQuad" } });
 }
 
 function resetSemantic() { _highlightSet = null; applyFilters(); }
@@ -1651,9 +1693,7 @@ function renderSearchResults(matches) {
 }
 
 function selectSearchResult(nodeId) {
-  network.selectNodes([nodeId]);
-  highlightSemantic(nodeId);
-  network.focus(nodeId, { scale: 1.5, animation: { duration: 800, easingFunction: "easeInOutQuad" } });
+  focusSearchedNode(nodeId);
   renderSearchResults([]);
   const input = document.getElementById("nodeSearch");
   if (input) input.blur();
