@@ -1464,11 +1464,11 @@ function CineEloApp({ mode = "vistas", onModeChange }) {
   // parte del real (stdRating) y se escala con PROJECTED_RATING_SPREAD
   // (percentil+probit da una normal "de verdad", con colas finas por
   // construcción). Con spread=1.2
-  // la varianza del plateado era ~4.8 (~4.6% de las pelis en 10); se bajó a
-  // 0.8 para recortarla a menos de la mitad: varianza ~2.3 (−52%), ~0.6% en
-  // 10 y casi nada bajo 1. Varianza ∝ spread², así que bajarla un 50% pide
-  // spread ≤ 1.2·√0.5 ≈ 0.85.
-  const PROJECTED_RATING_SPREAD = 0.8;
+  // la varianza del plateado era ~4.8 (~4.6% de las pelis en 10), más
+  // abierta que la del dorado. spread=1 usa exactamente el desvío real de
+  // tus ratings: el plateado queda con la misma varianza que el dorado
+  // (~3.6 en escala 1-10; un poco menos por el tope en 10, ~2% de las pelis).
+  const PROJECTED_RATING_SPREAD = 1;
   const projectedRating = useCallback(
     (elo) => {
       if (!eloRatingStats) return null;
